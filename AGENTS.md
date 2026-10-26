@@ -32,3 +32,6 @@
 
 * **Atomic Changes:** Edit what was requested.
 * **No Validation Seeking:** Don't ask "Would you like me to update X?" if X is the obvious requirement to keep things working after a breaking change. Just do it.
+
+## 
+if Python is needed use `uv`

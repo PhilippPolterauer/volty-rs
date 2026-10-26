@@ -110,43 +110,42 @@ impl AppConfig {
     }
 
     pub fn load_from(path: impl AsRef<Path>) -> Result<Self, ConfigError> {
-        let path = path.as_ref();
-        let contents = match fs::read_to_string(path) {
-            Ok(contents) => contents,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                return Ok(Self::default())
-            }
-            Err(error) => {
-                return Err(ConfigError::new(format!(
-                    "could not read configuration {}: {error}",
-                    path.display()
-                )))
-            }
-        };
+        let path = Self::ensure_config_file_at(path)?;
+        let contents = fs::read_to_string(&path).map_err(|error| {
+            ConfigError::new(format!(
+                "could not read configuration {}: {error}",
+                path.display()
+            ))
+        })?;
 
-        parse_toml(&contents, path)
+        parse_toml(&contents, &path)
     }
 
     pub fn ensure_config_file() -> Result<PathBuf, ConfigError> {
         let path = config_path()
             .ok_or_else(|| ConfigError::new("could not determine the user configuration folder"))?;
+        Self::ensure_config_file_at(path)
+    }
+
+    fn ensure_config_file_at(path: impl AsRef<Path>) -> Result<PathBuf, ConfigError> {
+        let path = path.as_ref();
         if path.exists() {
-            return Ok(path);
+            return Ok(path.to_path_buf());
         }
 
         let defaults = Self::default();
         let contents = format!(
             "# Volty user configuration\n\
              # Notify at or below this battery percentage (1-100).\n\
-             low_battery_threshold = {}\n\
+             # low_battery_threshold = {}\n\
              # Seconds between successful battery readings (30-3600).\n\
-             poll_interval_seconds = {}\n\
+             # poll_interval_seconds = {}\n\
              # Seconds between retries after a polling error (5-300).\n\
-             retry_interval_seconds = {}\n\
+             # retry_interval_seconds = {}\n\
              # Set to false to disable low-battery toast notifications.\n\
-             notifications_enabled = {}\n\
+             # notifications_enabled = {}\n\
              # error, warn, info, debug, or trace.\n\
-             log_level = \"{}\"\n\
+             # log_level = \"{}\"\n\
              # Uncomment this table to override the default tray battery colors.\n\
              # Thresholds are inclusive upper bounds; red must be below yellow.\n\
              # [battery_color_map]\n\
@@ -163,7 +162,8 @@ impl AppConfig {
         );
         let parent = path
             .parent()
-            .ok_or_else(|| ConfigError::new("configuration path has no parent folder"))?;
+            .filter(|parent| !parent.as_os_str().is_empty())
+            .unwrap_or_else(|| Path::new("."));
         fs::create_dir_all(parent).map_err(|error| {
             ConfigError::new(format!(
                 "could not create configuration folder {}: {error}",
@@ -174,10 +174,12 @@ impl AppConfig {
         let mut file = match fs::OpenOptions::new()
             .write(true)
             .create_new(true)
-            .open(&path)
+            .open(path)
         {
             Ok(file) => file,
-            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => return Ok(path),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                return Ok(path.to_path_buf())
+            }
             Err(error) => {
                 return Err(ConfigError::new(format!(
                     "could not create configuration file {}: {error}",
@@ -191,7 +193,7 @@ impl AppConfig {
                 path.display()
             ))
         })?;
-        Ok(path)
+        Ok(path.to_path_buf())
     }
 }
 
@@ -535,5 +537,30 @@ mod tests {
         assert!(!LogLevel::Info.includes(LogLevel::Debug));
         assert!(!LogLevel::Info.includes(LogLevel::Trace));
         assert!(LogLevel::Trace.includes(LogLevel::Debug));
+    }
+
+    #[test]
+    fn missing_config_is_created_with_all_settings_commented_out() {
+        let directory = std::env::temp_dir().join(format!(
+            "volty-config-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let path = directory.join("config.toml");
+
+        assert_eq!(AppConfig::load_from(&path).unwrap(), AppConfig::default());
+        let created_path = path.as_path();
+        let contents = fs::read_to_string(&created_path).unwrap();
+        assert!(contents.lines().all(|line| line.starts_with('#')));
+
+        fs::remove_file(&created_path).unwrap();
+        assert_eq!(AppConfig::load_from(&path).unwrap(), AppConfig::default());
+        let recreated_contents = fs::read_to_string(&created_path).unwrap();
+        assert!(recreated_contents.lines().all(|line| line.starts_with('#')));
+
+        fs::remove_dir_all(directory).unwrap();
     }
 }

@@ -1,14 +1,32 @@
 use std::io;
 
 use windows_sys::Win32::{
-    Foundation::{COLORREF, HWND, LRESULT, WPARAM},
+    Foundation::{COLORREF, HINSTANCE, HWND, LRESULT, WPARAM},
     Graphics::Gdi::{
         CreateFontW, DeleteObject, GetSysColor, GetSysColorBrush, SetBkMode, SetTextColor,
         CLEARTYPE_QUALITY, CLIP_DEFAULT_PRECIS, COLOR_WINDOW, COLOR_WINDOWTEXT, DEFAULT_CHARSET,
         DEFAULT_PITCH, FF_DONTCARE, FW_NORMAL, FW_SEMIBOLD, OUT_DEFAULT_PRECIS, TRANSPARENT,
     },
-    UI::WindowsAndMessaging::{SendMessageW, WM_SETFONT},
+    UI::WindowsAndMessaging::{LoadImageW, SendMessageW, HICON, IMAGE_ICON, LR_SHARED, WM_SETFONT},
 };
+
+pub fn application_icon(instance: HINSTANCE, size: i32) -> io::Result<HICON> {
+    let icon = unsafe {
+        LoadImageW(
+            instance,
+            1usize as *const u16,
+            IMAGE_ICON,
+            size,
+            size,
+            LR_SHARED,
+        )
+    };
+    if icon.is_null() {
+        Err(io::Error::last_os_error())
+    } else {
+        Ok(icon as HICON)
+    }
+}
 
 pub struct FontSet {
     pub body: windows_sys::Win32::Graphics::Gdi::HFONT,

@@ -1,48 +1,45 @@
 # Volty (`volty-rs`)
 
 <p align="center">
-  <strong>A low-overhead Windows system-tray battery monitor for HID peripherals, written in Rust.</strong>
+  <img src="docs/icon.png" alt="Volty logo" width="220">
+</p>
+
+<p align="center">
+  <strong>A Windows system-tray battery monitor for supported HID peripherals, written in Rust.</strong>
 </p>
 
 <p align="center">
   <a href="#features">Features</a> •
   <a href="#architecture">Architecture</a> •
   <a href="#quick-start">Quick Start</a> •
-  <a href="#building-from-source">Building</a> •
+  <a href="#building-and-testing">Building</a> •
   <a href="#license">License</a>
 </p>
 
 ---
 
-## 👁️ The Vision
+## Current support
 
-Modern gaming mice like the **Logitech G502 X / G502 X Plus** are the initial use case: monitoring their battery level on Windows often forces users to run background suites like **Logitech G HUB**—consuming hundreds of megabytes of RAM and running unnecessary background telemetries.
-
-Standard Windows battery APIs (like ACPI) only report system battery status for laptops and fail to pick up proprietary USB HID peripherals.
-
-**Volty** aims to monitor battery levels across HID peripherals through protocol-specific backends, then present supported readings in the Windows taskbar tray. Logitech HID++ 2.0 is the first implemented backend; generic HID battery reports and other vendors are not supported yet.
+Volty is a Windows system-tray battery monitor. The current backend supports
+Logitech HID++ 2.0 interfaces and the standard Unified Battery and legacy
+Battery Status features. Other vendors and generic HID battery reports are
+not currently supported. Hardware compatibility is best-effort and has been
+tested on a limited set of Logitech hardware.
 
 > **Project status:** Volty is a vibe-coded hobby project. It is experimental,
 > has limited hardware testing, and is not production-ready or affiliated with
 > Logitech. Treat device support and battery readings as best-effort.
 
-### Core Philosophy
-
-* **⚡ Low Idle Overhead:** Written in Rust with a timer-driven device worker. On the local Windows MSVC run, idle CPU time was 0.062 seconds over 20 seconds; private working set was 1.32 MB and total working set was 11.23 MB. Shared system pages account for the difference. Memory varies with Windows and system state, so only the private working set was verified below 10 MB on this host.
-* **🔒 Zero Bloat:** No Electron, no heavy frameworks, no telemetry daemons, and no G HUB dependency.
-* **🛡️ Protocol Adapters:** Keeps device-specific discovery and decoding behind protocol backends; Logitech HID++ 2.0 is the first implementation.
-* **🔔 Smart Notifications:** Stays out of your way and fires a native Windows toast notification only when your battery crosses critical thresholds (e.g., 20%).
-
 ---
 
 ## ✨ Features
 
-* **Dynamic Tray Icon:** High-DPI rasterized numeric percentage rendered live inside the Windows system tray.
+* **HID++ Battery Monitoring:** Polls supported Logitech interfaces and paired-device indexes, lists each readable device, and summarizes the lowest reported battery percentage in the tray icon.
 * **Configurable Color Coding:** The default tray map is green above 30%, yellow from 16–30%, and red at 15% or below. Thresholds and colors can be overridden in the TOML configuration.
 * **Threshold Alerts:** One-time native Windows toast notification per discharge cycle when battery hits warning thresholds.
 * **One-Click Diagnostics:** A native Diagnose window shows recent app logs and HID details, with buttons to copy the log or open a GitHub issue draft.
-* **Smart Sleep Detection:** Handles mouse sleep cycles and wireless reconnects gracefully without crashing or throwing spurious errors.
-* **Single Portable Binary:** Runs as a standalone `.exe` with zero installer overhead or system modifications.
+* **Retry After Read Errors:** Polling resumes after errors using the configurable retry interval.
+* **Standalone Executable:** Releases provide a single `.exe` with no installer. Optional Start on Boot uses the current user's Windows Run setting.
 
 ---
 
@@ -68,15 +65,19 @@ volty-rs/
 │   │   └── Cargo.toml
 │   │
 │   └── volty-tray/            # Windows binary application
-│       ├── build.rs           # Embeds the Windows application manifest
+│       ├── build.rs           # Embeds the Windows application manifest and icon
 │       ├── volty.manifest
+│       ├── assets/
+│       │   └── volty.ico      # Windows application icon
 │       ├── src/
-│       │   ├── main.rs        # Single-instance guard
+│       │   ├── main.rs        # CLI dispatch and single-instance guard
 │       │   ├── hid_cli.rs     # On-demand HID++ profile/device diagnostics
 │       │   ├── app.rs         # Polling state machine and worker
 │       │   ├── config.rs      # Per-user TOML settings
 │       │   ├── tray.rs        # Dynamic icon generation & context menu
+│       │   ├── about.rs       # About window
 │       │   ├── diagnose.rs    # Native diagnostic window and clipboard actions
+│       │   ├── native_ui.rs   # Shared native Windows UI helpers
 │       │   ├── report.rs      # Local diagnostic report generation
 │       │   ├── logging.rs     # Level-filtered local log file
 │       │   └── notify.rs      # Windows toast dispatcher
@@ -112,9 +113,9 @@ device-address iteration, and the protocol-specific battery query.
 catalog is the dispatch source: an interface must match exactly one model;
 no match is skipped and overlapping matches are an error. The current catalog
 contains one Logitech HID++ 2.0 model. That backend then discovers battery
-features at runtime. The tray currently returns its first successful battery
-reading rather than maintaining a separate tray reading for every paired
-mouse.
+features at runtime. Polling retains every successful interface/device-index
+reading. The tray lists each readable device and uses the lowest reported
+percentage for its battery icon.
 
 `volty-tray` owns polling, configuration, tray presentation, and
 notifications. Its `build.rs` embeds `volty.manifest` in Windows builds.
@@ -154,7 +155,9 @@ cargo run --release --package volty-tray
 ```
 
 The first battery query is made at startup; subsequent polling occurs every two
-minutes. Use the tray menu to refresh, open configuration, enable startup, or
+minutes by default. Volty runs a single tray-app instance. The tray lists
+all devices with readable battery status; its icon reflects the lowest reported
+percentage. Use the menu to refresh, open configuration, enable startup, or
 quit. **About Volty** opens a small native window with the app version and a
 button to visit the project on GitHub.
 

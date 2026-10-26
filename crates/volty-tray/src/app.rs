@@ -1,5 +1,5 @@
 use std::{
-    collections::VecDeque,
+    collections::{HashMap, VecDeque},
     error::Error,
     io,
     path::{Path, PathBuf},
@@ -16,7 +16,7 @@ use crate::{
     config::{config_path, AppConfig, LogLevel},
     diagnose::show_diagnose_window,
     logging::FileLogger,
-    notify::{BatterySample, NotificationEngine},
+    notify::{BatterySample, NotificationEngine, NotificationOutcome},
     report::generate_diagnostic_report,
     tray::{set_start_on_boot_enabled, start_on_boot_enabled, TrayAction, TrayController},
 };
@@ -32,11 +32,56 @@ enum PollCommand {
 }
 
 struct DeviceReading {
+    identity: DeviceIdentity,
     name: String,
+    device_index: u8,
     battery: BatteryStatus,
 }
 
-type PollResult = Result<DeviceReading, String>;
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+struct DeviceIdentity {
+    interface_path: String,
+    device_index: u8,
+}
+
+struct DeviceNotifications {
+    config: AppConfig,
+    engines: HashMap<DeviceIdentity, NotificationEngine>,
+}
+
+impl DeviceNotifications {
+    fn from_config(config: AppConfig) -> Result<Self, Box<dyn Error>> {
+        NotificationEngine::from_config(config)?;
+        Ok(Self {
+            config,
+            engines: HashMap::new(),
+        })
+    }
+
+    fn set_config(&mut self, config: AppConfig) -> Result<(), Box<dyn Error>> {
+        NotificationEngine::from_config(config)?;
+        for engine in self.engines.values_mut() {
+            engine.set_config(config)?;
+        }
+        self.config = config;
+        Ok(())
+    }
+
+    fn update(
+        &mut self,
+        identity: DeviceIdentity,
+        device_name: &str,
+        sample: BatterySample,
+    ) -> Result<NotificationOutcome, Box<dyn Error>> {
+        let engine = self
+            .engines
+            .entry(identity)
+            .or_insert(NotificationEngine::from_config(self.config)?);
+        Ok(engine.update(device_name, sample)?)
+    }
+}
+
+type PollResult = Result<Vec<DeviceReading>, String>;
 
 struct ConfigWatch {
     _watcher: RecommendedWatcher,
@@ -74,7 +119,7 @@ pub fn run() -> Result<(), Box<dyn Error>> {
         )?;
         tray.update_status("", &format!("Configuration error: {message}"), None)?;
     }
-    let mut notifications = NotificationEngine::from_config(active_config)?;
+    let mut notifications = DeviceNotifications::from_config(active_config)?;
 
     let (commands_tx, commands_rx) = mpsc::channel();
     let (results_tx, results_rx) = mpsc::channel();
@@ -392,7 +437,7 @@ fn watch_config_file() -> Result<ConfigWatch, Box<dyn Error>> {
 
 fn reload_notification_config(
     tray: &mut TrayController,
-    notifications: &mut NotificationEngine,
+    notifications: &mut DeviceNotifications,
     current_error: &mut Option<String>,
     active_config: &mut AppConfig,
     commands: &mpsc::Sender<PollCommand>,
@@ -569,11 +614,27 @@ fn toggle_start_on_boot() -> Result<bool, Box<dyn Error>> {
 fn poll_worker(
     commands: mpsc::Receiver<PollCommand>,
     results: mpsc::Sender<PollResult>,
+    poll_interval: Duration,
+    retry_interval: Duration,
+) {
+    poll_worker_with_query(
+        commands,
+        results,
+        poll_interval,
+        retry_interval,
+        query_devices,
+    );
+}
+
+fn poll_worker_with_query(
+    commands: mpsc::Receiver<PollCommand>,
+    results: mpsc::Sender<PollResult>,
     mut poll_interval: Duration,
     mut retry_interval: Duration,
+    mut query: impl FnMut() -> PollResult,
 ) {
     loop {
-        let reading = query_devices();
+        let reading = query();
         let successful_read = reading.is_ok();
         let next_poll = if successful_read {
             poll_interval
@@ -606,6 +667,7 @@ fn query_devices() -> PollResult {
 
     let mut errors = Vec::new();
     let mut supported_interfaces = 0;
+    let mut readings = Vec::new();
     for interface in interfaces {
         let Some(mouse) = resolve_mouse_model(&interface).map_err(|error| {
             format!(
@@ -624,16 +686,29 @@ fn query_devices() -> PollResult {
             .filter(|name| !name.trim().is_empty())
             .map(str::to_owned)
             .unwrap_or_else(|| mouse.name().to_owned());
+        let interface_path = interface.path.to_string_lossy().into_owned();
 
         for &device_index in protocol.device_indices() {
             match protocol.query_battery(&interface, device_index) {
-                Ok(battery) => return Ok(DeviceReading { name, battery }),
+                Ok(battery) => readings.push(DeviceReading {
+                    identity: DeviceIdentity {
+                        interface_path: interface_path.clone(),
+                        device_index,
+                    },
+                    name: name.clone(),
+                    device_index,
+                    battery,
+                }),
                 Err(error) => errors.push(format!(
                     "{name} via {} (slot {device_index}): {error}",
                     protocol.name()
                 )),
             }
         }
+    }
+
+    if !readings.is_empty() {
+        return Ok(readings);
     }
 
     if supported_interfaces == 0 {
@@ -648,15 +723,15 @@ fn query_devices() -> PollResult {
 
 fn apply_poll_result(
     tray: &mut TrayController,
-    notifications: &mut NotificationEngine,
+    notifications: &mut DeviceNotifications,
     result: PollResult,
     notification_config_error: Option<&str>,
     diagnostic_log: &mut VecDeque<String>,
     file_logger: &mut FileLogger,
     started: Instant,
 ) -> io::Result<()> {
-    let reading = match result {
-        Ok(reading) => reading,
+    let readings = match result {
+        Ok(readings) => readings,
         Err(error) => {
             record_event(
                 diagnostic_log,
@@ -680,54 +755,126 @@ fn apply_poll_result(
         }
     };
 
-    let percentage = reading.battery.level_percent;
-    let mut status = battery_status_label(&reading.battery);
-    record_event(
-        diagnostic_log,
-        file_logger,
-        started,
-        LogLevel::Debug,
-        &format!(
-            "Battery read for {}: {} ({})",
-            reading.name,
-            percentage.map_or_else(|| "unknown".to_owned(), |value| format!("{value}%")),
-            status
-        ),
-    )?;
-    let charging = matches!(
-        reading.battery.state,
-        BatteryState::Charging | BatteryState::ChargingNearlyFull | BatteryState::ChargingSlow
-    );
-    let full = matches!(reading.battery.state, BatteryState::Charged)
-        || reading.battery.level == BatteryLevel::Full
-        || percentage.is_some_and(|percentage| percentage >= 100);
-    if percentage.is_some() || charging || full {
-        let sample = BatterySample {
-            // Percentage is irrelevant while charging/full because the engine
-            // resets its discharge-cycle guard before checking the threshold.
-            percentage: percentage.unwrap_or(0),
-            charging,
-            full,
+    let mut device_statuses = Vec::with_capacity(readings.len());
+    let mut lowest_percentage: Option<u8> = None;
+    for reading in readings {
+        let device_name = format_device_name(&reading.name, reading.device_index);
+        let percentage = reading.battery.level_percent;
+        lowest_percentage = match (lowest_percentage, percentage) {
+            (Some(current), Some(value)) => Some(current.min(value)),
+            (None, Some(value)) => Some(value),
+            (current, None) => current,
         };
-        if let Err(error) = notifications.update(sample) {
-            let error = error.to_string();
+        let mut status = battery_status_label(&reading.battery);
+        record_event(
+            diagnostic_log,
+            file_logger,
+            started,
+            LogLevel::Debug,
+            &format!(
+                "Battery read for {device_name}: {} ({status})",
+                percentage.map_or_else(|| "unknown".to_owned(), |value| format!("{value}%"))
+            ),
+        )?;
+        let charging = matches!(
+            reading.battery.state,
+            BatteryState::Charging | BatteryState::ChargingNearlyFull | BatteryState::ChargingSlow
+        );
+        let full = matches!(reading.battery.state, BatteryState::Charged)
+            || reading.battery.level == BatteryLevel::Full
+            || percentage.is_some_and(|percentage| percentage >= 100);
+        if percentage.is_some() || charging || full {
+            let sample = BatterySample {
+                // Percentage is irrelevant while charging/full because the engine
+                // resets that device's discharge-cycle guard before checking the threshold.
+                percentage: percentage.unwrap_or(0),
+                charging,
+                full,
+            };
+            let threshold = notifications.config.low_battery_threshold;
+            let enabled = notifications.config.notifications_enabled;
             record_event(
                 diagnostic_log,
                 file_logger,
                 started,
-                LogLevel::Error,
-                &format!("Notification error: {error}"),
+                LogLevel::Trace,
+                &format!(
+                    "Evaluating low-battery notification for {device_name}: battery={}%, charging={charging}, full={full}, enabled={enabled}, threshold={threshold}%",
+                    sample.percentage
+                ),
             )?;
-            status.push_str("; notification error: ");
-            status.push_str(&error);
+            match notifications.update(reading.identity, &device_name, sample) {
+                Ok(outcome) => {
+                    let detail = match outcome {
+                        NotificationOutcome::NotificationsDisabled => {
+                            "skipped: disabled in configuration"
+                        }
+                        NotificationOutcome::AboveThreshold => {
+                            "skipped: battery is above the threshold"
+                        }
+                        NotificationOutcome::AlreadyNotified => {
+                            "skipped: already delivered during this discharge cycle"
+                        }
+                        NotificationOutcome::Unchanged => "no notification due",
+                        NotificationOutcome::CycleReset => "discharge cycle reset",
+                        NotificationOutcome::Notified => "delivered successfully",
+                    };
+                    record_event(
+                        diagnostic_log,
+                        file_logger,
+                        started,
+                        if outcome == NotificationOutcome::Notified {
+                            LogLevel::Info
+                        } else {
+                            LogLevel::Trace
+                        },
+                        &format!(
+                            "Low-battery notification for {device_name} at {}% (threshold={threshold}%): {detail}",
+                            sample.percentage
+                        ),
+                    )?;
+                }
+                Err(error) => {
+                    let error = error.to_string();
+                    record_event(
+                        diagnostic_log,
+                        file_logger,
+                        started,
+                        LogLevel::Error,
+                        &format!("Notification error for {device_name}: {error}"),
+                    )?;
+                    status.push_str("; notification error: ");
+                    status.push_str(&error);
+                }
+            }
+        } else {
+            record_event(
+                diagnostic_log,
+                file_logger,
+                started,
+                LogLevel::Trace,
+                &format!(
+                    "Skipping low-battery notification for {device_name}: battery percentage unavailable and device is not charging or full"
+                ),
+            )?;
         }
+        let percentage_label = percentage.map_or_else(
+            || "percentage unavailable".to_owned(),
+            |value| format!("{value}%"),
+        );
+        device_statuses.push(format!("{device_name}: {percentage_label} ({status})"));
     }
-    if percentage.is_none() {
-        status.push_str("; percentage unavailable");
+    let device_count = device_statuses.len();
+    if let Some(error) = notification_config_error {
+        device_statuses.push(format!("Notification configuration error: {error}"));
     }
-    append_config_error(&mut status, notification_config_error);
+    let mut summary = format!(
+        "{device_count} device{} monitored",
+        if device_count == 1 { "" } else { "s" }
+    );
+    append_config_error(&mut summary, notification_config_error);
 
-    if let Err(error) = tray.update_status(&reading.name, &status, percentage) {
+    if let Err(error) = tray.update_devices(&summary, &device_statuses, lowest_percentage) {
         record_event(
             diagnostic_log,
             file_logger,
@@ -737,6 +884,14 @@ fn apply_poll_result(
         )?;
     }
     Ok(())
+}
+
+fn format_device_name(name: &str, device_index: u8) -> String {
+    if device_index == 0xff {
+        format!("{name} (direct)")
+    } else {
+        format!("{name} (slot {device_index})")
+    }
 }
 
 fn append_config_error(status: &mut String, error: Option<&str>) {
@@ -815,4 +970,47 @@ fn record_event(
         level.as_str()
     ));
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc,
+    };
+
+    #[test]
+    fn refresh_command_triggers_an_immediate_device_poll() {
+        let (commands_tx, commands_rx) = mpsc::channel();
+        let (results_tx, results_rx) = mpsc::channel();
+        let query_count = Arc::new(AtomicUsize::new(0));
+        let worker_query_count = Arc::clone(&query_count);
+        let worker = thread::spawn(move || {
+            poll_worker_with_query(
+                commands_rx,
+                results_tx,
+                Duration::from_secs(60),
+                Duration::from_secs(60),
+                move || {
+                    worker_query_count.fetch_add(1, Ordering::Relaxed);
+                    Ok(Vec::new())
+                },
+            );
+        });
+
+        assert!(results_rx
+            .recv_timeout(Duration::from_secs(5))
+            .unwrap()
+            .is_ok());
+        commands_tx.send(PollCommand::Refresh).unwrap();
+        assert!(results_rx
+            .recv_timeout(Duration::from_secs(5))
+            .unwrap()
+            .is_ok());
+        commands_tx.send(PollCommand::Quit).unwrap();
+        worker.join().unwrap();
+
+        assert_eq!(query_count.load(Ordering::Relaxed), 2);
+    }
 }

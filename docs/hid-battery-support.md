@@ -79,9 +79,10 @@ from a profile.
 Today the only registered model is the Logitech HID++ 2.0 mouse. Its backend
 matches vendor ID `0x046d` and usage page `0xff00`. After selection, runtime
 feature discovery and battery decoding determine whether a supported battery
-feature is available. The tray returns the first successful battery reading.
-A matching interface is therefore a candidate, not proof that it reports a
-supported battery.
+feature is available. Polling keeps every successful interface/device-index
+reading, so one matching interface is a candidate rather than proof that it
+reports a supported battery. The tray lists each readable device and uses the
+lowest reported percentage for its battery icon.
 
 To get a device into tray polling:
 

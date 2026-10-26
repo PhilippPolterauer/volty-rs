@@ -19,7 +19,13 @@ pub struct BatterySample {
 /// Result of processing a sample.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NotificationOutcome {
-    /// No notification was due.
+    /// Notifications are disabled in the active configuration.
+    NotificationsDisabled,
+    /// The battery percentage is above the configured threshold.
+    AboveThreshold,
+    /// A notification was already sent during this discharge cycle.
+    AlreadyNotified,
+    /// No notification was due for this sample.
     Unchanged,
     /// Charging or a full battery reset a previously consumed cycle.
     CycleReset,
@@ -87,7 +93,17 @@ impl NotificationEngine {
     /// repeatedly attempting the same toast on every polling iteration.
     pub fn update(
         &mut self,
+        device_name: &str,
         sample: BatterySample,
+    ) -> Result<NotificationOutcome, NotificationError> {
+        self.update_with(device_name, sample, show_low_battery_notification)
+    }
+
+    fn update_with(
+        &mut self,
+        device_name: &str,
+        sample: BatterySample,
+        dispatch: impl FnOnce(&str, u8) -> Result<(), NotificationError>,
     ) -> Result<NotificationOutcome, NotificationError> {
         if sample.charging || sample.full || sample.percentage >= 100 {
             let was_notified = self.notified_this_discharge;
@@ -100,14 +116,22 @@ impl NotificationEngine {
         }
 
         if !self.notifications_enabled {
-            return Ok(NotificationOutcome::Unchanged);
+            return Ok(NotificationOutcome::NotificationsDisabled);
+        }
+
+        if sample.percentage > self.threshold_percent {
+            return Ok(NotificationOutcome::AboveThreshold);
+        }
+
+        if self.notified_this_discharge {
+            return Ok(NotificationOutcome::AlreadyNotified);
         }
 
         if !self.consume_discharge_alert(sample.percentage) {
-            return Ok(NotificationOutcome::Unchanged);
+            return Ok(NotificationOutcome::AlreadyNotified);
         }
 
-        show_low_battery_notification(sample.percentage)?;
+        dispatch(device_name, sample.percentage)?;
         Ok(NotificationOutcome::Notified)
     }
 
@@ -131,11 +155,14 @@ fn validate_threshold(threshold_percent: u8) -> Result<(), NotificationError> {
 }
 
 #[cfg(windows)]
-fn show_low_battery_notification(percentage: u8) -> Result<(), NotificationError> {
+fn show_low_battery_notification(
+    device_name: &str,
+    percentage: u8,
+) -> Result<(), NotificationError> {
     notify_rust::Notification::new()
         .summary("Volty — Low Battery")
         .body(&format!(
-            "Logitech G502 X battery is at {percentage}%. Connect charging cable."
+            "{device_name} battery is at {percentage}%. Connect charging cable."
         ))
         .show()
         .map(|_| ())
@@ -145,7 +172,10 @@ fn show_low_battery_notification(percentage: u8) -> Result<(), NotificationError
 }
 
 #[cfg(not(windows))]
-fn show_low_battery_notification(_percentage: u8) -> Result<(), NotificationError> {
+fn show_low_battery_notification(
+    _device_name: &str,
+    _percentage: u8,
+) -> Result<(), NotificationError> {
     Err(NotificationError::new(
         "native low-battery notifications are only supported on Windows",
     ))
@@ -164,11 +194,14 @@ mod tests {
         assert!(!engine.consume_discharge_alert(10));
         assert_eq!(
             engine
-                .update(BatterySample {
-                    percentage: 19,
-                    charging: true,
-                    full: false,
-                })
+                .update(
+                    "Test device",
+                    BatterySample {
+                        percentage: 19,
+                        charging: true,
+                        full: false,
+                    },
+                )
                 .unwrap(),
             NotificationOutcome::CycleReset
         );
@@ -205,6 +238,58 @@ mod tests {
     }
 
     #[test]
+    fn configured_threshold_dispatches_low_battery_notification_once() {
+        let config = AppConfig {
+            low_battery_threshold: 100,
+            ..AppConfig::default()
+        };
+        let mut engine = NotificationEngine::from_config(config).unwrap();
+        let sample = BatterySample {
+            percentage: 78,
+            charging: false,
+            full: false,
+        };
+        let mut dispatched = None;
+
+        assert_eq!(
+            engine
+                .update_with("Test device", sample, |name, percentage| {
+                    dispatched = Some((name.to_owned(), percentage));
+                    Ok(())
+                })
+                .unwrap(),
+            NotificationOutcome::Notified
+        );
+        assert_eq!(dispatched, Some(("Test device".to_owned(), 78)));
+        assert_eq!(
+            engine
+                .update_with("Test device", sample, |_, _| {
+                    panic!("a discharge cycle must only dispatch one notification")
+                })
+                .unwrap(),
+            NotificationOutcome::AlreadyNotified
+        );
+    }
+
+    #[test]
+    fn above_threshold_sample_reports_skipped_notification() {
+        let mut engine = NotificationEngine::from_config(AppConfig::default()).unwrap();
+        let outcome = engine
+            .update_with(
+                "Test device",
+                BatterySample {
+                    percentage: 21,
+                    charging: false,
+                    full: false,
+                },
+                |_, _| panic!("an above-threshold sample must not dispatch a notification"),
+            )
+            .unwrap();
+
+        assert_eq!(outcome, NotificationOutcome::AboveThreshold);
+    }
+
+    #[test]
     fn reloading_threshold_preserves_discharge_notification_guard() {
         let mut engine = NotificationEngine::from_config(AppConfig::default()).unwrap();
         assert!(engine.consume_discharge_alert(20));
@@ -227,13 +312,16 @@ mod tests {
         .unwrap();
         assert_eq!(
             engine
-                .update(BatterySample {
-                    percentage: 10,
-                    charging: false,
-                    full: false,
-                })
+                .update(
+                    "Test device",
+                    BatterySample {
+                        percentage: 10,
+                        charging: false,
+                        full: false,
+                    },
+                )
                 .unwrap(),
-            NotificationOutcome::Unchanged
+            NotificationOutcome::NotificationsDisabled
         );
 
         engine.set_config(AppConfig::default()).unwrap();

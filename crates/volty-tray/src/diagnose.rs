@@ -26,7 +26,9 @@ use windows_sys::Win32::{
     },
 };
 
-use crate::native_ui::{edit_control_color, set_control_font, static_control_color, FontSet};
+use crate::native_ui::{
+    application_icon, edit_control_color, set_control_font, static_control_color, FontSet,
+};
 
 const WINDOW_CLASS: &str = "VoltyDiagnoseWindow";
 const COPY_LOG_ID: usize = 1001;
@@ -60,7 +62,7 @@ pub fn show_diagnose_window(report: &str) -> Result<(), Box<dyn Error>> {
         cbClsExtra: 0,
         cbWndExtra: 0,
         hInstance: instance,
-        hIcon: ptr::null_mut(),
+        hIcon: application_icon(instance, 32)?,
         hCursor: ptr::null_mut(),
         hbrBackground: unsafe { GetSysColorBrush(COLOR_WINDOW) },
         lpszMenuName: ptr::null(),

@@ -5,21 +5,24 @@ use windows_sys::Win32::{
         GetLastError, ERROR_CLASS_ALREADY_EXISTS, HINSTANCE, HWND, LPARAM, LRESULT, WPARAM,
     },
     Graphics::Gdi::{GetSysColorBrush, COLOR_WINDOW},
-    System::{LibraryLoader::GetModuleHandleW, SystemServices::SS_ETCHEDHORZ},
+    System::{
+        LibraryLoader::GetModuleHandleW,
+        SystemServices::{SS_ETCHEDHORZ, SS_ICON},
+    },
     UI::{
         Shell::ShellExecuteW,
         WindowsAndMessaging::{
             CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetMessageW,
-            GetWindowLongPtrW, PostQuitMessage, RegisterClassW, SetWindowLongPtrW, SetWindowTextW,
-            ShowWindow, TranslateMessage, BS_PUSHBUTTON, CREATESTRUCTW, CW_USEDEFAULT,
-            GWLP_USERDATA, MSG, SW_SHOWNORMAL, WM_CLOSE, WM_COMMAND, WM_CTLCOLORSTATIC, WM_DESTROY,
-            WM_NCCREATE, WNDCLASSW, WS_CAPTION, WS_CHILD, WS_OVERLAPPED, WS_SYSMENU, WS_TABSTOP,
-            WS_VISIBLE,
+            GetWindowLongPtrW, PostQuitMessage, RegisterClassW, SendMessageW, SetWindowLongPtrW,
+            SetWindowTextW, ShowWindow, TranslateMessage, BS_PUSHBUTTON, CREATESTRUCTW,
+            CW_USEDEFAULT, GWLP_USERDATA, MSG, STM_SETICON, SW_SHOWNORMAL, WM_CLOSE, WM_COMMAND,
+            WM_CTLCOLORSTATIC, WM_DESTROY, WM_NCCREATE, WNDCLASSW, WS_CAPTION, WS_CHILD,
+            WS_OVERLAPPED, WS_SYSMENU, WS_TABSTOP, WS_VISIBLE,
         },
     },
 };
 
-use crate::native_ui::{set_control_font, static_control_color, FontSet};
+use crate::native_ui::{application_icon, set_control_font, static_control_color, FontSet};
 
 const WINDOW_CLASS: &str = "VoltyAboutWindow";
 const STAR_ON_GITHUB_ID: usize = 1001;
@@ -46,7 +49,7 @@ pub fn show_about_window() -> Result<(), Box<dyn Error>> {
         cbClsExtra: 0,
         cbWndExtra: 0,
         hInstance: instance,
-        hIcon: ptr::null_mut(),
+        hIcon: application_icon(instance, 32)?,
         hCursor: ptr::null_mut(),
         hbrBackground: unsafe { GetSysColorBrush(COLOR_WINDOW) },
         lpszMenuName: ptr::null(),
@@ -73,7 +76,7 @@ pub fn show_about_window() -> Result<(), Box<dyn Error>> {
             CW_USEDEFAULT,
             CW_USEDEFAULT,
             500,
-            300,
+            280,
             ptr::null_mut(),
             ptr::null_mut(),
             instance,
@@ -121,10 +124,35 @@ unsafe fn create_controls(
     let button_class = to_wide("BUTTON");
     let heading_text = to_wide("Volty");
     let version_text = to_wide(&format!("VERSION {}", env!("CARGO_PKG_VERSION")));
-    let description_text = to_wide("Lightweight Logitech battery monitor");
+    let description_text = to_wide(
+        "A low-overhead Windows system-tray battery monitor for HID peripherals, written in Rust.",
+    );
     let status_text = to_wide("");
+    let empty_text = to_wide("");
     let star_text = to_wide("Star on GitHub");
     let close_text = to_wide("Close");
+
+    let icon = create_child(
+        window,
+        instance,
+        &static_class,
+        &empty_text,
+        WS_CHILD | WS_VISIBLE | SS_ICON,
+        24,
+        24,
+        128,
+        128,
+        0,
+    );
+    if icon.is_null() {
+        return Err(io::Error::last_os_error().into());
+    }
+    SendMessageW(
+        icon,
+        STM_SETICON,
+        application_icon(instance, 128)? as usize,
+        0,
+    );
 
     let heading = create_child(
         window,
@@ -132,9 +160,9 @@ unsafe fn create_controls(
         &static_class,
         &heading_text,
         WS_CHILD | WS_VISIBLE,
-        28,
-        20,
-        420,
+        164,
+        22,
+        300,
         38,
         0,
     );
@@ -149,9 +177,9 @@ unsafe fn create_controls(
         &static_class,
         &version_text,
         WS_CHILD | WS_VISIBLE,
-        30,
-        63,
-        420,
+        166,
+        65,
+        300,
         22,
         0,
     );
@@ -166,10 +194,10 @@ unsafe fn create_controls(
         &static_class,
         &description_text,
         WS_CHILD | WS_VISIBLE,
-        30,
-        99,
-        420,
-        24,
+        166,
+        98,
+        300,
+        48,
         0,
     );
     if description.is_null() {
@@ -185,7 +213,7 @@ unsafe fn create_controls(
         &separator_text,
         WS_CHILD | WS_VISIBLE | SS_ETCHEDHORZ,
         24,
-        165,
+        184,
         436,
         2,
         0,
@@ -202,8 +230,8 @@ unsafe fn create_controls(
         &status_text,
         WS_CHILD | WS_VISIBLE,
         30,
-        132,
-        420,
+        154,
+        436,
         22,
         0,
     );
@@ -223,7 +251,7 @@ unsafe fn create_controls(
             text,
             WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON as u32,
             x,
-            198,
+            205,
             width,
             36,
             id,

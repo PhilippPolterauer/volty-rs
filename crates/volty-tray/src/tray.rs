@@ -12,7 +12,7 @@ use std::{
 
 use image::{Rgba, RgbaImage};
 use tray_icon::{
-    menu::{CheckMenuItem, Menu, MenuEvent, MenuItem, PredefinedMenuItem},
+    menu::{CheckMenuItem, Menu, MenuEvent, MenuItem, PredefinedMenuItem, Submenu},
     Icon, TrayIcon, TrayIconBuilder,
 };
 
@@ -20,6 +20,7 @@ use crate::config::BatteryColorMap;
 
 const ICON_SIZE: u32 = 16;
 const MAX_STATUS_CHARS: usize = 80;
+const MAX_TOOLTIP_UTF16_UNITS: usize = 127;
 #[cfg(windows)]
 const BATTERY_RUN_KEY: &str = "Software\\Microsoft\\Windows\\CurrentVersion\\Run";
 #[cfg(windows)]
@@ -66,12 +67,12 @@ impl Error for TrayError {}
 pub struct TrayController {
     icon: TrayIcon,
     status_item: MenuItem,
+    device_status_submenu: Submenu,
+    device_status_items: Vec<MenuItem>,
     start_on_boot_item: CheckMenuItem,
     actions_tx: Sender<TrayAction>,
     actions_rx: Receiver<TrayAction>,
     percentage: Option<u8>,
-    device_name: String,
-    charge_status: String,
     battery_color_map: BatteryColorMap,
 }
 
@@ -83,8 +84,19 @@ impl TrayController {
     /// that autostart is unsupported when selected.
     pub fn new() -> Result<Self, TrayError> {
         let start_on_boot = start_on_boot_enabled()?;
-        let status_item =
-            MenuItem::with_id("volty.status", "Searching for Logitech device", false, None);
+        let status_item = MenuItem::with_id(
+            "volty.status",
+            "Searching for supported devices",
+            false,
+            None,
+        );
+        let device_status_submenu = Submenu::with_id("volty.devices", "Device Status", true);
+        let searching_item = MenuItem::new("Searching for supported devices", false, None);
+        device_status_submenu
+            .append(&searching_item)
+            .map_err(|error| {
+                TrayError::new(format!("could not add tray device status: {error}"))
+            })?;
         let refresh_item = MenuItem::with_id(REFRESH_ID, "Refresh Now", true, None);
         let configuration_item =
             MenuItem::with_id(CONFIGURATION_ID, "Open Configuration", true, None);
@@ -98,6 +110,9 @@ impl TrayController {
         let menu = Menu::new();
         menu.append(&status_item)
             .map_err(|error| TrayError::new(format!("could not add tray status: {error}")))?;
+        menu.append(&device_status_submenu).map_err(|error| {
+            TrayError::new(format!("could not add device status menu: {error}"))
+        })?;
         menu.append(&PredefinedMenuItem::separator())
             .map_err(|error| TrayError::new(format!("could not add tray separator: {error}")))?;
         menu.append(&refresh_item)
@@ -122,7 +137,7 @@ impl TrayController {
             .map_err(|error| TrayError::new(format!("could not add quit action: {error}")))?;
 
         let icon = TrayIconBuilder::new()
-            .with_tooltip("Volty — Searching for Logitech device")
+            .with_tooltip("Volty — Searching for supported devices")
             .with_icon(unknown_battery_icon_at_size(ICON_SIZE)?)
             .with_menu(Box::new(menu))
             .build()
@@ -132,12 +147,12 @@ impl TrayController {
         Ok(Self {
             icon,
             status_item,
+            device_status_submenu,
+            device_status_items: vec![searching_item],
             start_on_boot_item,
             actions_tx,
             actions_rx,
             percentage: None,
-            device_name: String::new(),
-            charge_status: "Unknown".to_owned(),
             battery_color_map: BatteryColorMap::default(),
         })
     }
@@ -171,10 +186,55 @@ impl TrayController {
             self.percentage = Some(percentage);
         }
         let icon_percentage = percentage.or(self.percentage);
-        self.device_name = device_name.to_owned();
-        self.charge_status = status.to_owned();
+        let live_status = match percentage {
+            Some(percentage) => format!("{device_name}: {percentage}% ({status})"),
+            None if device_name.is_empty() => status.to_owned(),
+            None => format!("{device_name}: {status}"),
+        };
+        let live_status = shorten_status(&live_status);
+        self.update_display(
+            &live_status,
+            &live_status,
+            icon_percentage,
+            icon_size,
+            std::slice::from_ref(&live_status),
+        )
+    }
 
-        let icon = match icon_percentage {
+    /// Displays a row for every readable device. The tray tooltip contains the
+    /// full list when it fits; the Device Status submenu always retains every row.
+    pub fn update_devices(
+        &mut self,
+        summary: &str,
+        device_statuses: &[String],
+        percentage: Option<u8>,
+    ) -> Result<(), TrayError> {
+        let percentage = percentage.map(|value| value.min(100));
+        if let Some(percentage) = percentage {
+            self.percentage = Some(percentage);
+        }
+        let icon_percentage = percentage.or(self.percentage);
+        let tooltip = tooltip_for_devices(summary, device_statuses);
+        self.update_display(
+            &shorten_status(summary),
+            &tooltip,
+            icon_percentage,
+            ICON_SIZE,
+            device_statuses,
+        )
+    }
+
+    fn update_display(
+        &mut self,
+        menu_status: &str,
+        tooltip: &str,
+        percentage: Option<u8>,
+        icon_size: u32,
+        device_statuses: &[String],
+    ) -> Result<(), TrayError> {
+        self.status_item.set_text(menu_status);
+        self.replace_device_status_items(device_statuses)?;
+        let icon = match percentage {
             Some(percentage) => numeric_battery_icon_at_size_with_color_map(
                 percentage,
                 icon_size,
@@ -185,16 +245,32 @@ impl TrayController {
         self.icon
             .set_icon(Some(icon))
             .map_err(|error| TrayError::new(format!("could not update tray icon: {error}")))?;
-        let live_status = match percentage {
-            Some(percentage) => format!("{device_name}: {percentage}% ({status})"),
-            None if device_name.is_empty() => status.to_owned(),
-            None => format!("{device_name}: {status}"),
-        };
-        let live_status = shorten_status(&live_status);
-        self.status_item.set_text(&live_status);
         self.icon
-            .set_tooltip(Some(&live_status))
+            .set_tooltip(Some(tooltip))
             .map_err(|error| TrayError::new(format!("could not update tray tooltip: {error}")))?;
+        Ok(())
+    }
+
+    fn replace_device_status_items(&mut self, device_statuses: &[String]) -> Result<(), TrayError> {
+        for item in self.device_status_items.drain(..) {
+            self.device_status_submenu.remove(&item).map_err(|error| {
+                TrayError::new(format!("could not clear tray device status: {error}"))
+            })?;
+        }
+
+        let empty_status = "No device status available".to_owned();
+        let statuses = if device_statuses.is_empty() {
+            std::slice::from_ref(&empty_status)
+        } else {
+            device_statuses
+        };
+        for status in statuses {
+            let item = MenuItem::new(status, false, None);
+            self.device_status_submenu.append(&item).map_err(|error| {
+                TrayError::new(format!("could not update tray device status: {error}"))
+            })?;
+            self.device_status_items.push(item);
+        }
         Ok(())
     }
 
@@ -289,6 +365,29 @@ impl TrayController {
     }
 }
 
+fn tooltip_for_devices(summary: &str, device_statuses: &[String]) -> String {
+    let details = device_statuses.join("; ");
+    if details.encode_utf16().count() <= MAX_TOOLTIP_UTF16_UNITS {
+        return details;
+    }
+    shorten_tooltip(&format!("{summary}; right-click for all device stats"))
+}
+
+fn shorten_tooltip(status: &str) -> String {
+    let mut tooltip = String::new();
+    let mut utf16_units = 0;
+    for character in status.chars() {
+        let character_units = character.len_utf16();
+        if utf16_units + character_units > MAX_TOOLTIP_UTF16_UNITS - 1 {
+            tooltip.push('…');
+            return tooltip;
+        }
+        tooltip.push(character);
+        utf16_units += character_units;
+    }
+    tooltip
+}
+
 fn shorten_status(status: &str) -> String {
     let mut characters = status.chars();
     let mut shortened: String = characters.by_ref().take(MAX_STATUS_CHARS).collect();
@@ -311,7 +410,7 @@ fn numeric_battery_rgba_with_color_map(
     battery_color_map: BatteryColorMap,
 ) -> Result<Vec<u8>, TrayError> {
     validate_icon_size(size)?;
-    Ok(scale_icon(render_numeric_battery(percentage, battery_color_map), size).into_raw())
+    Ok(render_numeric_battery(percentage, size, battery_color_map).into_raw())
 }
 
 /// Produces a numeric battery icon at 16×16 or 32×32 pixels.
@@ -332,58 +431,42 @@ fn numeric_battery_icon_at_size_with_color_map(
         .map_err(|error| TrayError::new(format!("could not create battery icon: {error}")))
 }
 
-fn render_numeric_battery(percentage: u8, battery_color_map: BatteryColorMap) -> RgbaImage {
+fn render_numeric_battery(
+    percentage: u8,
+    size: u32,
+    battery_color_map: BatteryColorMap,
+) -> RgbaImage {
     let percentage = percentage.min(100);
-    let color = battery_color_map.color_for(percentage);
-    let mut image = RgbaImage::from_pixel(ICON_SIZE, ICON_SIZE, Rgba([0, 0, 0, 0]));
-    let outline = Rgba([225, 232, 238, 255]);
-    let interior = Rgba([30, 36, 42, 255]);
+    let scale = size as f32 * SUPERSAMPLE as f32 / ICON_SIZE as f32;
+    let mut image = RgbaImage::from_pixel(
+        size * SUPERSAMPLE,
+        size * SUPERSAMPLE,
+        Rgba([0, 0, 0, 0]),
+    );
+    let fill_color = battery_color_map.color_for(percentage);
 
-    // Battery body and terminal.
-    for x in 1..14 {
-        image.put_pixel(x, 2, outline);
-        image.put_pixel(x, 13, outline);
+    if percentage > 0 {
+        let fill_width = 9.4 * (f32::from(percentage) / 100.0).max(0.08);
+        fill_rounded_rect(
+            &mut image,
+            scale,
+            2.55,
+            4.3,
+            fill_width,
+            7.4,
+            1.1,
+            Rgba([fill_color[0], fill_color[1], fill_color[2], 255]),
+        );
     }
-    for y in 2..=13 {
-        image.put_pixel(1, y, outline);
-        image.put_pixel(13, y, outline);
-    }
-    for x in 14..16 {
-        for y in 6..10 {
-            image.put_pixel(x, y, outline);
-        }
-    }
-    for x in 2..13 {
-        for y in 3..13 {
-            image.put_pixel(x, y, interior);
-        }
-    }
+    draw_battery_shell(&mut image, scale, Rgba([232, 238, 243, 255]));
 
-    // The fill gives a quick visual indication in addition to the number.
-    let fill_width = (u32::from(percentage) * 9 / 100).max(if percentage > 0 { 1 } else { 0 });
-    for x in 3..(3 + fill_width) {
-        for y in 10..13 {
-            image.put_pixel(x, y, Rgba([color[0], color[1], color[2], 255]));
-        }
-    }
-
-    let text_color = if ((battery_color_map.red_max_percent + 1)
-        ..=battery_color_map.yellow_max_percent)
-        .contains(&percentage)
-    {
-        Rgba([20, 24, 27, 255])
-    } else {
-        Rgba([255, 255, 255, 255])
-    };
-    draw_number(&mut image, percentage, text_color);
-
-    image
+    downsample_icon(image, size)
 }
 
 /// Renders the neutral unknown/error icon as an RGBA buffer (16×16 or 32×32).
 pub fn unknown_battery_rgba(size: u32) -> Result<Vec<u8>, TrayError> {
     validate_icon_size(size)?;
-    Ok(scale_icon(render_unknown_battery(), size).into_raw())
+    Ok(render_unknown_battery(size).into_raw())
 }
 
 fn unknown_battery_icon_at_size(size: u32) -> Result<Icon, TrayError> {
@@ -392,38 +475,34 @@ fn unknown_battery_icon_at_size(size: u32) -> Result<Icon, TrayError> {
         .map_err(|error| TrayError::new(format!("could not create unknown battery icon: {error}")))
 }
 
-fn render_unknown_battery() -> RgbaImage {
-    let mut image = RgbaImage::from_pixel(ICON_SIZE, ICON_SIZE, Rgba([0, 0, 0, 0]));
-    let outline = Rgba([225, 232, 238, 255]);
-    let interior = Rgba([54, 61, 68, 255]);
-    for x in 1..14 {
-        image.put_pixel(x, 2, outline);
-        image.put_pixel(x, 13, outline);
-    }
-    for y in 2..=13 {
-        image.put_pixel(1, y, outline);
-        image.put_pixel(13, y, outline);
-    }
-    for x in 14..16 {
-        for y in 6..10 {
-            image.put_pixel(x, y, outline);
-        }
-    }
-    for x in 2..13 {
-        for y in 3..13 {
-            image.put_pixel(x, y, interior);
-        }
-    }
+fn render_unknown_battery(size: u32) -> RgbaImage {
+    let scale = size as f32 * SUPERSAMPLE as f32 / ICON_SIZE as f32;
+    let mut image = RgbaImage::from_pixel(
+        size * SUPERSAMPLE,
+        size * SUPERSAMPLE,
+        Rgba([0, 0, 0, 0]),
+    );
+    let outline = Rgba([232, 238, 243, 255]);
+    draw_battery_shell(&mut image, scale, outline);
 
-    let question_mark = [0b111, 0b001, 0b011, 0b000, 0b010];
-    for (row, bits) in question_mark.iter().enumerate() {
-        for column in 0..3 {
-            if bits & (1 << (2 - column)) != 0 {
-                image.put_pixel(6 + column, 5 + row as u32, Rgba([255, 255, 255, 255]));
-            }
-        }
+    let question_mark = [
+        (6.0, 6.4),
+        (6.25, 5.8),
+        (6.8, 5.35),
+        (7.65, 5.2),
+        (8.55, 5.35),
+        (9.2, 5.9),
+        (9.35, 6.55),
+        (9.1, 7.15),
+        (8.55, 7.65),
+        (7.95, 8.15),
+    ];
+    for points in question_mark.windows(2) {
+        draw_line_segment(&mut image, scale, points[0], points[1], 1.15, outline);
     }
-    image
+    fill_circle(&mut image, scale, 7.95, 9.75, 0.65, outline);
+
+    downsample_icon(image, size)
 }
 
 fn validate_icon_size(size: u32) -> Result<(), TrayError> {
@@ -588,6 +667,28 @@ mod tests {
         let shortened = shorten_status(&long);
         assert_eq!(shortened.chars().count(), MAX_STATUS_CHARS);
         assert!(shortened.ends_with('…'));
+    }
+
+    #[test]
+    fn tooltip_includes_all_device_statuses_when_they_fit() {
+        let statuses = vec![
+            "Mouse A (slot 1): 85% (Discharging)".to_owned(),
+            "Mouse B (slot 2): 42% (Charging)".to_owned(),
+        ];
+
+        assert_eq!(
+            tooltip_for_devices("2 devices monitored", &statuses),
+            statuses.join("; ")
+        );
+    }
+
+    #[test]
+    fn long_tooltip_points_to_full_device_status_menu() {
+        let statuses = vec!["x".repeat(MAX_TOOLTIP_UTF16_UNITS); 2];
+        let tooltip = tooltip_for_devices("2 devices monitored", &statuses);
+
+        assert!(tooltip.encode_utf16().count() <= MAX_TOOLTIP_UTF16_UNITS);
+        assert!(tooltip.contains("right-click for all device stats"));
     }
 
     #[test]
