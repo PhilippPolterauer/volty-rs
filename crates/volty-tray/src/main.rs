@@ -15,6 +15,8 @@ mod notify;
 #[cfg(windows)]
 mod report;
 #[cfg(windows)]
+mod state;
+#[cfg(windows)]
 mod tray;
 
 fn main() {

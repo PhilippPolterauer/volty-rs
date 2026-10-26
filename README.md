@@ -34,7 +34,7 @@ tested on a limited set of Logitech hardware.
 
 ## ✨ Features
 
-* **HID++ Battery Monitoring:** Polls supported Logitech interfaces and paired-device indexes, uses each device's HID++ name when available, and summarizes the lowest reported battery percentage in the tray icon.
+* **HID++ Battery Monitoring:** Polls supported Logitech interfaces and paired-device indexes, prioritizes recently successful receiver slots from a machine-local SQLite cache, uses each device's HID++ name when available, and summarizes the lowest reported battery percentage in the tray icon.
 * **Configurable Color Coding:** The default tray map is green above 30%, yellow from 16–30%, and red at 15% or below. Thresholds and colors can be overridden in the TOML configuration.
 * **Threshold Alerts:** One-time native Windows toast notification per discharge cycle when battery hits warning thresholds.
 * **One-Click Diagnostics:** A native Diagnose window shows recent app logs and HID details, with buttons to copy the log or open a GitHub issue draft.

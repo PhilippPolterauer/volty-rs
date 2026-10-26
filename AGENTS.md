@@ -32,6 +32,7 @@
 
 * **Atomic Changes:** Edit what was requested.
 * **No Validation Seeking:** Don't ask "Would you like me to update X?" if X is the obvious requirement to keep things working after a breaking change. Just do it.
+* **Release Changelog:** When preparing a release, update `CHANGELOG.md` with the version, release date, and user-facing changes; move the released items out of `[Unreleased]`.
 
 ## 
 if Python is needed use `uv`

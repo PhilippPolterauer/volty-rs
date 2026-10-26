@@ -84,6 +84,14 @@ reading, so one matching interface is a candidate rather than proof that it
 reports a supported battery. The tray lists each readable device and uses the
 lowest reported percentage for its battery icon.
 
+Successful readings are forwarded to notifications immediately instead of
+waiting for every candidate slot to finish scanning. Volty stores the last
+successful device-index order per HID interface in
+`%LOCALAPPDATA%\Volty\device-state.sqlite3` and tries those indexes first on
+later polls. This cache only changes discovery order: unreadable or missing
+state falls back to the full index scan, and successful readings remain usable
+while the rest of discovery continues.
+
 To get a device into tray polling:
 
 1. If the existing matcher selects it and the existing backend already

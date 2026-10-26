@@ -34,3 +34,6 @@ windows-sys = { version = "0.59", features = [
     "Win32_UI_Shell",
 ] }
 winreg = "0.52"
+
+[target.x86_64-pc-windows-msvc.dependencies]
+rusqlite = { version = "0.41.0", features = ["bundled"], default-features = false }
