@@ -1,0 +1,13 @@
+[package]
+name = "volty-hid"
+version = "0.1.0"
+edition = "2021"
+description = "HID++ 2.0 frame and Logitech battery helpers"
+license = "MIT OR Apache-2.0"
+
+[features]
+default = []
+hidapi = ["dep:hidapi"]
+
+[dependencies]
+hidapi = { version = "2.6", optional = true }
