@@ -4,7 +4,7 @@ version = "0.1.0"
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
-description = "Bluetooth LE GATT battery discovery for Volty"
+description = "Bluetooth battery discovery for Volty"
 
 [dependencies]
 volty-battery = { path = "../volty-battery" }

@@ -3,9 +3,10 @@
 ## Supported Bluetooth scope
 
 Volty reads battery percentages from connected Bluetooth devices when Windows
-supplies the `System.Devices.BatteryLife` property. For Windows-paired
-Bluetooth Low Energy (BLE) devices without that property, it attempts to read
-the standardized GATT Battery Service and Battery Level characteristic:
+supplies the `System.Devices.BatteryLife` property. It also reads
+Windows-paired Bluetooth Low Energy (BLE) devices, including paired devices
+that Windows does not report as connected, through the standardized GATT
+Battery Service and Battery Level characteristic:
 
 - Battery Service: `0x180F`
 - Battery Level characteristic: `0x2A19`
@@ -18,7 +19,10 @@ unknown because neither source reports it.
 Volty does not initiate pairing or perform broad Bluetooth scans. GATT reads
 are attempted for paired devices even when Windows does not report an active
 BLE connection; Windows must still be able to reach the device. Each
-asynchronous Windows Runtime operation has a five-second timeout. A device
+asynchronous Windows Runtime operation has a five-second timeout, and the
+paired-device pass has a conservative 30-second overall budget. If that
+budget is exhausted, already collected readings are retained, remaining
+paired devices are skipped, and an explicit warning is recorded. A device
 without an available Windows battery property or GATT service is skipped;
 failures are logged without suppressing valid readings from other devices or
 the HID backend. If Windows reports multiple
@@ -61,8 +65,9 @@ The implemented structure keeps the backends separate:
 
 ### Device discovery
 
-- Volty enumerates Windows-paired Bluetooth LE devices. It does not pair
-  devices or perform a broad discovery scan.
+- Volty checks connected Bluetooth devices for the Windows battery-life
+  property and enumerates Windows-paired Bluetooth LE devices. It does not
+  pair devices or perform a broad discovery scan.
 - A device must expose GATT Battery Service `0x180F` and Battery Level
   characteristic `0x2A19`; classic HFP and vendor-specific battery reports are
   not read.
@@ -78,7 +83,9 @@ The implemented structure keeps the backends separate:
 ### GATT reads
 
 - `volty-bluetooth` uses Windows Runtime Bluetooth/GATT APIs. Every asynchronous
-  operation has a five-second timeout and is cancelled if it expires.
+  operation has a five-second timeout and is cancelled if it expires. The
+  paired-device pass also stops at its 30-second overall budget, retaining
+  partial readings and warning when remaining devices are skipped.
 - Missing services are skipped. Read errors are reported per device and do not
   suppress valid readings from other devices.
 - Multiple matching services or characteristics are reported as ambiguous;
@@ -96,9 +103,12 @@ The implemented structure keeps the backends separate:
 
 - The Diagnose report identifies supported backends and includes Bluetooth
   scan counts and reading status from the recent application log.
+- **Discover Devices Now** in the tray triggers an immediate HID and Bluetooth
+  poll. Trace logs explain HID interface matches or skips and Bluetooth
+  selector, Windows battery-property, and GATT Battery Service match results.
 - Opaque Windows Bluetooth device IDs and addresses are retained only
   internally for stable notification identity; they are not written to logs
-  or reports.
+  or reports. HID interface paths are also excluded from discovery logs.
 
 ## Verification and hardware validation
 

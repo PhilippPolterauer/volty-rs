@@ -21,10 +21,12 @@
 
 ## Current support
 
-Volty is a Windows system-tray battery monitor. It supports Logitech HID++ 2.0 interfaces and connected Bluetooth devices for which Windows
-provides the battery-life device property, plus Bluetooth LE devices that
+Volty is a Windows system-tray battery monitor. It supports Logitech HID++ 2.0
+interfaces, connected Bluetooth devices for which Windows provides the
+battery-life device property, and Windows-paired Bluetooth LE devices that
 expose the standard Battery Service (`0x180F`) and Battery Level characteristic
-(`0x2A19`).
+(`0x2A19`), including paired BLE devices that Windows does not report as
+connected.
 Other vendor HID protocols, generic HID battery reports, classic Bluetooth HFP
 battery indications, and vendor-specific Bluetooth protocols are not currently
 supported. Hardware compatibility is best-effort; Bluetooth support has not
@@ -39,7 +41,7 @@ been validated with every headset.
 ## ✨ Features
 
 * **HID++ Battery Monitoring:** Polls supported Logitech interfaces and paired-device indexes, prioritizes recently successful receiver slots from a machine-local SQLite cache, and uses each device's HID++ name when available.
-* **Bluetooth Battery Monitoring:** Reads a battery percentage from the Windows device property when available, or attempts the standard GATT Battery Service on Windows-paired BLE devices.
+* **Bluetooth Battery Monitoring:** Reads battery levels from connected Bluetooth devices with the Windows device property and from Windows-paired BLE devices, including paired BLE devices that Windows does not report as connected.
 * **Configurable Color Coding:** The default tray map is green above 30%, yellow from 16–30%, and red at 15% or below. Thresholds and colors can be overridden in the TOML configuration.
 * **Threshold Alerts:** One-time native Windows toast notification per discharge cycle when battery hits warning thresholds.
 * **One-Click Diagnostics:** A native Diagnose window shows recent app logs, Bluetooth read status, and HID details, with buttons to copy the log or open a GitHub issue draft.
@@ -98,7 +100,7 @@ before sharing it. Nothing is uploaded automatically.
 volty-rs/
 ├── crates/
 │   ├── volty-battery/         # Protocol-neutral normalized battery readings
-│   ├── volty-bluetooth/       # Windows Bluetooth LE GATT battery backend
+│   ├── volty-bluetooth/       # Windows Bluetooth battery discovery backend
 │   ├── volty-hid/             # Zero-UI, zero-Win32 protocol crate
 │   │   ├── src/
 │   │   │   ├── lib.rs         # Public API and optional HID device access
@@ -133,10 +135,10 @@ volty-rs/
 ### Runtime data flow
 
 ```text
-HID interface enumeration        Connected Bluetooth devices
+HID interface enumeration        Bluetooth battery discovery
         |                                |
         v                                ├── Windows battery-life property
-SUPPORTED_MICE -> BatteryProtocol       └── BLE GATT Battery Service
+SUPPORTED_MICE -> BatteryProtocol       └── Windows-paired BLE GATT Battery Service
         |                                |
         └────────────────┬───────────────┘
                          v

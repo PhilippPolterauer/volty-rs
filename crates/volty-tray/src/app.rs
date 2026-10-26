@@ -33,7 +33,7 @@ const CONFIG_RELOAD_DEBOUNCE: Duration = Duration::from_millis(200);
 const MAX_DIAGNOSTIC_LOG_ENTRIES: usize = 200;
 
 enum PollCommand {
-    Refresh,
+    Discover,
     UpdateIntervals { poll: Duration, retry: Duration },
     Quit,
 }
@@ -322,13 +322,13 @@ pub fn run() -> Result<(), Box<dyn Error>> {
 
         loop {
             match tray.try_recv_action() {
-                Ok(TrayAction::RefreshNow) => {
+                Ok(TrayAction::DiscoverDevicesNow) => {
                     record_event(
                         &mut diagnostic_log,
                         &mut file_logger,
                         started,
-                        LogLevel::Debug,
-                        "Manual battery refresh requested",
+                        LogLevel::Info,
+                        "Manual device discovery requested from tray",
                     )?;
                     let config_changed = reload_notification_config(
                         &mut tray,
@@ -364,14 +364,14 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                             started,
                         )?;
                     }
-                    if commands_tx.send(PollCommand::Refresh).is_err() {
+                    if commands_tx.send(PollCommand::Discover).is_err() {
                         report_error(
                             &mut tray,
                             &mut diagnostic_log,
                             &mut file_logger,
                             started,
-                            "Refresh error",
-                            "device poller has stopped",
+                            "Discovery error",
+                            "device discovery poller has stopped",
                         )?;
                     }
                 }
@@ -489,7 +489,7 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                         Ok(()) => {
                             monitored_devices.insert(identity.clone(), monitored);
                             let refresh_failed =
-                                request_device_refresh(&commands_tx, monitored).is_err();
+                                request_device_discovery(&commands_tx, monitored).is_err();
                             notifications.retain_monitored_devices(&monitored_devices);
                             let device_name = discovered_devices
                                 .iter()
@@ -534,8 +534,8 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                                     &mut diagnostic_log,
                                     &mut file_logger,
                                     started,
-                                    "Refresh error",
-                                    "device poller has stopped",
+                                    "Discovery error",
+                                    "device discovery poller has stopped",
                                 )?;
                             }
                         }
@@ -655,14 +655,14 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                     started,
                 )?;
             }
-            if config_changed && commands_tx.send(PollCommand::Refresh).is_err() {
+            if config_changed && commands_tx.send(PollCommand::Discover).is_err() {
                 report_error(
                     &mut tray,
                     &mut diagnostic_log,
                     &mut file_logger,
                     started,
-                    "Refresh error",
-                    "device poller has stopped",
+                    "Discovery error",
+                    "device discovery poller has stopped",
                 )?;
             }
         }
@@ -1054,12 +1054,12 @@ fn poll_worker(
     );
 }
 
-fn request_device_refresh(
+fn request_device_discovery(
     commands: &mpsc::Sender<PollCommand>,
     monitored: bool,
 ) -> Result<(), mpsc::SendError<PollCommand>> {
     if monitored {
-        commands.send(PollCommand::Refresh)
+        commands.send(PollCommand::Discover)
     } else {
         Ok(())
     }
@@ -1087,7 +1087,7 @@ fn poll_worker_with_query(
         let mut wait_interval = next_poll;
         loop {
             match commands.recv_timeout(wait_interval) {
-                Ok(PollCommand::Refresh) | Err(RecvTimeoutError::Timeout) => break,
+                Ok(PollCommand::Discover) | Err(RecvTimeoutError::Timeout) => break,
                 Ok(PollCommand::UpdateIntervals { poll, retry }) => {
                     poll_interval = poll;
                     retry_interval = retry;
@@ -1119,7 +1119,15 @@ fn query_devices(
     for interface in interfaces {
         let mouse = match resolve_mouse_model(&interface) {
             Ok(Some(mouse)) => mouse,
-            Ok(None) => continue,
+            Ok(None) => {
+                results
+                    .send(PollUpdate::Trace(format!(
+                        "HID discovery skipped an unsupported interface (VID=0x{:04x}, PID=0x{:04x}, usage_page={:?}): no supported HID protocol matched its interface metadata",
+                        interface.vendor_id, interface.product_id, interface.usage_page
+                    )))
+                    .map_err(|_| "device polling result receiver disconnected".to_owned())?;
+                continue;
+            }
             Err(error) => {
                 errors.push(format!(
                     "Ambiguous HID backend match for {:04x}:{:04x}: {error}",
@@ -1136,6 +1144,16 @@ fn query_devices(
             .filter(|name| !name.trim().is_empty())
             .map(str::to_owned)
             .unwrap_or_else(|| mouse.name().to_owned());
+        results
+            .send(PollUpdate::Trace(format!(
+                "HID discovery matched {fallback_name:?} to {} using {} (VID=0x{:04x}, PID=0x{:04x}, usage_page={:?})",
+                mouse.name(),
+                protocol.name(),
+                interface.vendor_id,
+                interface.product_id,
+                interface.usage_page
+            )))
+            .map_err(|_| "device polling result receiver disconnected".to_owned())?;
         let interface_path = interface.path.to_string_lossy().into_owned();
         let preferred_indices = device_state
             .as_ref()
@@ -1225,7 +1243,7 @@ fn query_devices(
         }
     }
 
-    match volty_bluetooth::scan_connected_devices() {
+    match volty_bluetooth::scan_battery_devices() {
         Ok(scan) => {
             results
                 .send(PollUpdate::Trace(format!(
@@ -1235,6 +1253,11 @@ fn query_devices(
                     scan.warnings.len()
                 )))
                 .map_err(|_| "device polling result receiver disconnected".to_owned())?;
+            for event in scan.discovery_events {
+                results
+                    .send(PollUpdate::Trace(format!("Bluetooth discovery: {event}")))
+                    .map_err(|_| "device polling result receiver disconnected".to_owned())?;
+            }
             errors.extend(
                 scan.warnings
                     .into_iter()
@@ -1694,7 +1717,7 @@ mod tests {
     }
 
     #[test]
-    fn refresh_command_triggers_an_immediate_device_poll() {
+    fn discovery_command_triggers_an_immediate_device_poll() {
         let (commands_tx, commands_rx) = mpsc::channel();
         let (results_tx, results_rx) = mpsc::channel();
         let query_count = Arc::new(AtomicUsize::new(0));
@@ -1716,7 +1739,7 @@ mod tests {
             results_rx.recv_timeout(Duration::from_secs(5)).unwrap(),
             PollUpdate::Finished(Ok(()))
         ));
-        commands_tx.send(PollCommand::Refresh).unwrap();
+        commands_tx.send(PollCommand::Discover).unwrap();
         assert!(matches!(
             results_rx.recv_timeout(Duration::from_secs(5)).unwrap(),
             PollUpdate::Finished(Ok(()))
@@ -1728,7 +1751,7 @@ mod tests {
     }
 
     #[test]
-    fn re_enabling_device_requests_immediate_refresh_but_disabling_does_not() {
+    fn re_enabling_device_requests_immediate_discovery_but_disabling_does_not() {
         let (commands_tx, commands_rx) = mpsc::channel();
         let (results_tx, results_rx) = mpsc::channel();
         let query_count = Arc::new(AtomicUsize::new(0));
@@ -1750,12 +1773,12 @@ mod tests {
             results_rx.recv_timeout(Duration::from_secs(5)).unwrap(),
             PollUpdate::Finished(Ok(()))
         ));
-        request_device_refresh(&commands_tx, true).unwrap();
+        request_device_discovery(&commands_tx, true).unwrap();
         assert!(matches!(
             results_rx.recv_timeout(Duration::from_secs(5)).unwrap(),
             PollUpdate::Finished(Ok(()))
         ));
-        request_device_refresh(&commands_tx, false).unwrap();
+        request_device_discovery(&commands_tx, false).unwrap();
         thread::sleep(Duration::from_millis(50));
         assert_eq!(query_count.load(Ordering::Relaxed), 2);
 
@@ -1935,6 +1958,24 @@ mod tests {
         assert_eq!(bluetooth.config_id(), "bluetooth:receiver-path");
         assert_ne!(hid.config_id(), bluetooth.config_id());
         assert_eq!(hid.config_id(), hid.clone().config_id());
+    }
+
+    #[test]
+    fn new_devices_are_monitored_by_default() {
+        let hid = test_reading();
+        let mut bluetooth = test_reading();
+        bluetooth.identity = DeviceIdentity::Bluetooth {
+            device_id: "bluetooth-device".to_owned(),
+        };
+        bluetooth.name = "Bluetooth device".to_owned();
+
+        let latest_readings = HashMap::from([
+            (hid.identity.clone(), hid),
+            (bluetooth.identity.clone(), bluetooth),
+        ]);
+        let visible = monitored_readings(&latest_readings, &BTreeMap::new());
+
+        assert_eq!(visible.len(), 2);
     }
 
     #[test]

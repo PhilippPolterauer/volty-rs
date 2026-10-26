@@ -29,7 +29,7 @@ const APP_RUN_VALUE: &str = "Volty";
 const APP_SETTINGS_KEY: &str = "Software\\Volty";
 #[cfg(windows)]
 const STARTUP_PROMPT_VALUE: &str = "StartupPrompted";
-const REFRESH_ID: &str = "volty.refresh";
+const DISCOVER_ID: &str = "volty.discover";
 const CONFIGURATION_ID: &str = "volty.configuration";
 const LOG_FILE_ID: &str = "volty.open-log-file";
 const DIAGNOSE_ID: &str = "volty.diagnose";
@@ -55,7 +55,7 @@ struct MonitoredDeviceMenuItem {
 /// Actions that the application should handle after polling the controller.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TrayAction {
-    RefreshNow,
+    DiscoverDevicesNow,
     OpenConfiguration,
     OpenLogFile,
     Diagnose,
@@ -115,7 +115,7 @@ impl TrayController {
             false,
             None,
         );
-        let refresh_item = MenuItem::with_id(REFRESH_ID, "Refresh Now", true, None);
+        let discover_item = MenuItem::with_id(DISCOVER_ID, "Discover Devices Now", true, None);
         let configuration_item =
             MenuItem::with_id(CONFIGURATION_ID, "Open Configuration", true, None);
         let open_log_item = MenuItem::with_id(LOG_FILE_ID, "Open Log File", true, None);
@@ -146,8 +146,9 @@ impl TrayController {
         })?;
         menu.append(&PredefinedMenuItem::separator())
             .map_err(|error| TrayError::new(format!("could not add tray separator: {error}")))?;
-        menu.append(&refresh_item)
-            .map_err(|error| TrayError::new(format!("could not add refresh action: {error}")))?;
+        menu.append(&discover_item).map_err(|error| {
+            TrayError::new(format!("could not add device-discovery action: {error}"))
+        })?;
         menu.append(&configuration_item).map_err(|error| {
             TrayError::new(format!("could not add configuration action: {error}"))
         })?;
@@ -388,9 +389,9 @@ impl TrayController {
             };
 
             let id = event.id.0.as_str();
-            if id == REFRESH_ID {
+            if id == DISCOVER_ID {
                 self.actions_tx
-                    .send(TrayAction::RefreshNow)
+                    .send(TrayAction::DiscoverDevicesNow)
                     .map_err(|_| TrayError::new("tray action receiver has been dropped"))?;
                 handled += 1;
             } else if id == CONFIGURATION_ID {

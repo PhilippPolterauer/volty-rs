@@ -9,10 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Added Windows Bluetooth LE battery monitoring and device discovery in the tray app.
+- Added SQLite-backed device state and prioritized HID polling.
 - Added a design plan for Bluetooth headphone battery support and extended the battery protocol abstractions toward that work.
 
 ### Changed
 
+- Consolidated battery management in the shared `volty-battery` crate, removing duplicate protocol implementations and unused build scripts.
 - Refactored battery notification and configuration handling.
 - Removed the standalone diagnostic command executor; mouse battery queries stay in protocol backends.
 - Clarified HID battery support and project documentation.
