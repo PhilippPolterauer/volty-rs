@@ -14,7 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - Refactored battery notification and configuration handling.
-- Removed redundant protocol metadata from command profiles.
+- Removed the standalone diagnostic command executor; mouse battery queries stay in protocol backends.
 - Clarified HID battery support and project documentation.
 
 ## [0.1.0] - 2026-10-26

@@ -1,0 +1,22 @@
+[package]
+name = "volty-bluetooth"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Bluetooth LE GATT battery discovery for Volty"
+
+[dependencies]
+volty-battery = { path = "../volty-battery" }
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.62.2", features = [
+    "Devices_Bluetooth",
+    "Devices_Bluetooth_GenericAttributeProfile",
+    "Devices_Enumeration",
+    "Foundation",
+    "Storage_Streams",
+    "Win32_System_WinRT",
+] }
+windows-collections = "0.3.2"
+windows-future = "0.3.2"

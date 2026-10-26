@@ -125,7 +125,7 @@ unsafe fn create_controls(
     let heading_text = to_wide("Volty");
     let version_text = to_wide(&format!("VERSION {}", env!("CARGO_PKG_VERSION")));
     let description_text = to_wide(
-        "A low-overhead Windows system-tray battery monitor for HID peripherals, written in Rust.",
+        "A low-overhead Windows system-tray battery monitor for supported HID and Bluetooth LE devices, written in Rust.",
     );
     let status_text = to_wide("");
     let empty_text = to_wide("");

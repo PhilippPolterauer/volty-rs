@@ -2,8 +2,8 @@
 
 This is Volty's first backend example: it covers diagnosing a Logitech HID++
 mouse and deciding whether it already works or needs a code change. For the
-generic HID battery-level goal, component model, profile format, and packaging
-options, see [Generic HID battery-level support](./hid-battery-support.md).
+generic HID battery-level goal and backend architecture, see
+[Generic HID battery-level support](./hid-battery-support.md).
 
 ## What is supported today
 
@@ -17,16 +17,11 @@ features:
 
 Feature runtime indexes are discovered from Root for each query; do not
 hard-code an index shown by one device. If a mouse implements either standard
-feature correctly, it should work without adding a model-specific profile or
-changing Rust code.
+feature correctly, it should work without model-specific code.
 
-TOML profiles are currently a diagnostic and testing facility for
-`volty hid run`. The tray does **not** load profiles. A profile that reads or
-decodes a new feature is not, by itself, enough to make that feature appear in
-the tray. Also, the tray currently returns the first successful battery
-reading it finds while scanning detected interfaces and device indexes
-`0xFF`, `1`–`6`; it does not show a separate reading for every mouse paired to
-a receiver.
+The tray queries its built-in battery features directly. It keeps each
+successful interface/device-index reading and shows every readable device;
+on-demand diagnostics do not select or register tray backends.
 
 ## 1. Identify the HID++ interface and device index
 
@@ -56,28 +51,19 @@ interface number reported by `inspect`. Look for logical feature `0x1004` or
 `0x1000`; the output also shows the runtime index and version assigned on that
 device.
 
-## 2. Test Unified Battery with the read-only profile
+## 2. Inspect feature mappings and verify tray behavior
 
-The read-only profile example in the
-[README's HID diagnostics section](../README.md#hid-diagnostics) tests Unified
-Battery (`0x1004`, function 1). Volty includes this profile in the executable;
-list built-in profiles and run it by ID:
+Use the on-demand feature command to check which battery features the device
+advertises and what runtime indexes Root assigns:
 
 ```powershell
-cargo run --release --package volty-tray -- hid profiles
-cargo run --release --package volty-tray -- hid run --profile builtin:logitech-hidpp/unified-battery --command battery-status --device-index 0x01 --vid 0x046d --pid 0xc547 --usage-page 0xff00 --usage 0x0002
+cargo run --release --package volty-tray -- hid features --device-index 0x01 --vid 0x046d --pid 0xc547 --usage-page 0xff00 --usage 0x0002
 ```
 
-The same TOML profile can also be saved to a custom file and passed as a path
-with `--profile .\battery.toml`.
-Use the correct device index and interface selectors from step 1. A successful
-run prints the decoded result and raw request/response frames. The profile
-engine resolves the feature's runtime index when it runs the command.
-
-This example only tests `0x1004`. If discovery shows only legacy Battery
-Status (`0x1000`), the tray already has a built-in reader for it; test the
-mouse in the tray after confirming that it responds to the standard feature.
-Do not interpret the legacy raw level as a percentage.
+Look for logical feature `0x1004` or `0x1000`. The tray already queries both:
+Unified Battery uses its reported percentage only when supported, while the
+legacy raw level is never treated as a percentage. Then verify the reading in
+the tray; the diagnostic feature listing alone does not read battery status.
 
 ## 3. Decide whether code changes are needed
 
@@ -85,22 +71,18 @@ Do not interpret the legacy raw level as a percentage.
 
 No model-specific battery change should be necessary. Connect the mouse or its
 receiver and let the tray poll. It scans detected Logitech interfaces and
-device indexes `0xFF`, `1`–`6`, stopping at the first successful battery
-response.
+device indexes `0xFF`, `1`–`6`, retaining each successful battery response.
 
-If the profile succeeds but the tray does not show a reading, check that the
-tray is using the same interface and paired-device slot that responded in the
-diagnostic. Include the `features` output and the profile's TX/RX result when
-investigating a discrepancy. Diagnostic output can contain local device
-details; review it before sharing.
+If the tray does not show a reading, check that it is using the same interface
+and paired-device slot shown by the feature listing. Diagnostic output can
+contain local device details; review it before sharing.
 
 ### The battery is exposed through another feature or encoding
 
-First use a read-only profile to establish the logical feature ID, function,
-request parameters, response fields, and whether the level is genuinely a
-percentage. The profile engine supports raw data and common integer, flag,
-enum, and Unified Battery decoders. Keep a successful profile as a reproducible
-protocol example, but remember it does not change tray polling.
+Use feature discovery and a read-only hardware query to establish the logical
+feature ID, function, request parameters, response fields, and whether the
+level is genuinely a percentage. Record observed request/response frames for
+tests, but do not treat a standalone diagnostic result as tray support.
 
 To make a non-standard battery feature available in the tray:
 
@@ -127,6 +109,12 @@ protocol-specific frames and errors should not leak into tray code. The
 registry is the only place that should make a new mouse family available to
 polling.
 
+Implement `query_device_name` only when the protocol exposes a useful display
+name. The poller requests it after delivering the first battery reading and
+caches the result, including a missing name or lookup failure, for that active
+device connection. A battery-query failure invalidates the cache so a
+replacement device in the same receiver slot can be named.
+
 ## Validate changes
 
 From the repository root:
@@ -143,5 +131,5 @@ Then build and verify the tray with the target mouse or receiver on Windows:
 cargo build --release --package volty-tray --locked
 ```
 
-Use named read-only profile commands for diagnosis. Avoid arbitrary `hid raw`
+Use read-only diagnostics when inspecting hardware. Avoid arbitrary `hid raw`
 requests and state-changing commands when testing battery support.

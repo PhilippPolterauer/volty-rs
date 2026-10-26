@@ -1,153 +1,115 @@
-# Bluetooth headphone battery support plan
+# Bluetooth headphone battery support
 
-## Goal
+## Supported Bluetooth scope
 
-Extend Volty to show battery readings reported by supported Bluetooth
-headphones, while keeping its existing Logitech HID++ support intact.
-
-This plan interprets "headphones that announce their power" as headphones that
-make a battery reading available to Windows. The first implementation should
-support the standardized Bluetooth Low Energy (BLE) Battery Service, not infer
-battery from voice prompts or assume every Bluetooth headset exposes the same
-information.
-
-## Recommended MVP scope
-
-Support paired BLE headphones that Windows can reach through GATT and that
-expose:
+Volty reads battery percentages from connected Bluetooth devices when Windows
+supplies the `System.Devices.BatteryLife` property. For Windows-paired
+Bluetooth Low Energy (BLE) devices without that property, it attempts to read
+the standardized GATT Battery Service and Battery Level characteristic:
 
 - Battery Service: `0x180F`
 - Battery Level characteristic: `0x2A19`
 
-Discover the service and read its characteristic through Windows Bluetooth
-APIs. Do not assume the percentage is present in the BLE advertising packet.
-Treat a valid one-byte value from 0 through 100 as a percentage. Treat missing,
-malformed, or out-of-range values as unavailable, and do not infer charging
-state unless the device or another reliable API reports it.
+The Windows property and GATT backend do not infer percentages from advertising
+data. Only values from 0 through 100 are accepted; the Windows property's
+unknown sentinel (101) is treated as unavailable. Charging state remains
+unknown because neither source reports it.
 
-The MVP should not initiate pairing or perform broad background scans. Start
-with devices Windows already knows about and can currently reach; confirm the
-exact enumeration behavior in the hardware prototype before committing to an
-API shape.
+Volty does not initiate pairing or perform broad Bluetooth scans. GATT reads
+are attempted for paired devices even when Windows does not report an active
+BLE connection; Windows must still be able to reach the device. Each
+asynchronous Windows Runtime operation has a five-second timeout. A device
+without an available Windows battery property or GATT service is skipped;
+failures are logged without suppressing valid readings from other devices or
+the HID backend. If Windows reports multiple
+Battery Services or Battery Level characteristics for one device, Volty
+reports an ambiguity rather than inventing left/right/case labels or combining
+the values.
 
 Classic Bluetooth Hands-Free Profile (HFP) battery indications and
 manufacturer-specific protocols are separate follow-up work. They are not
 interchangeable with GATT, and the MVP should not claim support for headphones
-that expose neither the standard GATT service nor an implemented vendor
-protocol.
+that expose neither the standard GATT service nor a separately implemented
+protocol. Being visible as a connected Bluetooth audio device in Windows does
+not by itself mean that its battery is readable through GATT.
 
 ## Current architecture and integration boundary
 
-The current HID path enumerates interfaces, resolves each against
+The HID path enumerates interfaces, resolves each against
 `SUPPORTED_MICE`, and calls a `BatteryProtocol` using a `HidInterfaceInfo` and
 device index. That contract is specifically for HID; a Bluetooth GATT device
 should not be forced into it. See [`protocol.rs`](../crates/volty-hid/src/protocol.rs)
 and the polling flow in [`app.rs`](../crates/volty-tray/src/app.rs).
 
-The tray already accepts multiple device rows, computes the lowest reported
-percentage for its icon, and sends per-device low-battery notifications. The
-shared reading type currently lives in the HID crate, however, and the polling
-identity is an HID interface path plus a device index. See
-[`battery.rs`](../crates/volty-hid/src/battery.rs) and
-[`app.rs`](../crates/volty-tray/src/app.rs).
+The tray accepts multiple device rows, computes the lowest reported percentage
+for its icon, and sends per-device low-battery notifications.
 
-Recommended structure:
+The implemented structure keeps the backends separate:
 
 1. Keep `BatteryProtocol`, `MouseModel`, and `SUPPORTED_MICE` HID-specific.
-2. Extract the normalized battery model (`BatteryStatus`, `BatteryLevel`,
-   `BatteryState`, and source metadata) into a small protocol-neutral
-   `volty-battery` crate. Keep HID++ decoding in `volty-hid`; have both
-   backends return the shared model.
-3. Add a `volty-bluetooth` crate for Windows GATT discovery and battery reads.
-   Keep Windows Bluetooth transport out of `volty-hid` and tray rendering.
-   Use Windows Runtime Bluetooth/GATT APIs; `hidapi` only handles HID and is
-   not a GATT transport.
-4. Have the tray polling worker call the existing HID query and the new
-   Bluetooth query, then merge their readings. Keep the orchestration simple:
-   separate source-specific query functions are sufficient; a dynamic plugin
-   registry is not needed for two backends.
+2. `volty-battery` owns the protocol-neutral normalized reading types.
+   `volty-hid` retains HID++ decoding and returns the shared model.
+3. `volty-bluetooth` reads the Windows battery-life property and owns GATT
+   discovery and battery reads. Keep Windows Bluetooth transport out of
+   `volty-hid` and tray rendering. `hidapi` only handles HID and is not a GATT
+   transport.
+4. The tray polling worker queries both backends and merges successful
+   readings. Device identity includes the source, so HID and Bluetooth
+   notification state cannot collide.
 
-## Implementation steps
+## Runtime behavior
 
-### 1. Prove the Windows and device behavior
+### Device discovery
 
-- Select at least one target headset and verify whether it exposes the BLE
-  Battery Service while paired and connected.
-- Prototype Windows device enumeration, GATT service discovery, characteristic
-  reads, and behavior when the device is disconnected or the service is
-  unavailable.
-- Distinguish standard GATT support from classic HFP or vendor-specific
-  reporting before setting the supported-device claim.
-- Record Windows versions and device/firmware versions used for the test.
+- Volty enumerates Windows-paired Bluetooth LE devices. It does not pair
+  devices or perform a broad discovery scan.
+- A device must expose GATT Battery Service `0x180F` and Battery Level
+  characteristic `0x2A19`; classic HFP and vendor-specific battery reports are
+  not read.
 
-### 2. Create a shared battery model
+### Battery model
 
-- Add `volty-battery` to the workspace and move the normalized reading types
-  out of `volty-hid/src/battery.rs`; leave protocol-specific HID++ parsers in
-  `volty-hid`.
-- Add a Bluetooth GATT source identifier to the normalized source metadata.
-- Represent battery percentage as a percentage only when the source reports a
-  valid value. Leave charging state unknown for Battery Service readings
-  unless a reliable source supplies it.
-- Update `volty-hid` and the tray to consume the shared types.
+- The protocol-neutral reading types live in `volty-battery`; HID++ decoding
+  remains in `volty-hid`.
+- A valid one-byte Battery Level value from 0 through 100 is reported as a
+  percentage. Charging state remains unknown because this characteristic does
+  not provide that information.
 
-### 3. Implement the BLE GATT backend
+### GATT reads
 
-- Add `volty-bluetooth` and its Windows-only Bluetooth/GATT dependencies.
-- Enumerate eligible Windows-known Bluetooth devices and identify those
-  reachable through GATT.
-- Discover Battery Service `0x180F`, then read Battery Level `0x2A19`.
-- Bound asynchronous operations with timeouts so a missing or sleeping headset
-  cannot stall polling. Treat disconnects and stale GATT services as
-  recoverable per-device failures.
-- If a headset exposes multiple battery services, report separate components
-  only when Windows provides a reliable way to identify them; do not invent
-  left/right/case labels or silently combine ambiguous values.
+- `volty-bluetooth` uses Windows Runtime Bluetooth/GATT APIs. Every asynchronous
+  operation has a five-second timeout and is cancelled if it expires.
+- Missing services are skipped. Read errors are reported per device and do not
+  suppress valid readings from other devices.
+- Multiple matching services or characteristics are reported as ambiguous;
+  values are not combined and components are not assigned invented labels.
 
-### 4. Merge Bluetooth readings into polling and the tray
+### Polling and tray
 
-- Replace the HID-only polling result with a source-neutral batch that can
-  contain readings and per-source warnings. A Bluetooth failure must not hide
-  valid HID readings, and vice versa.
-- Replace the HID-only `DeviceIdentity` (interface path plus index) with a
-  source-tagged identity suitable for both backends. Use a stable opaque
-  Windows device identity internally, together with a component identifier
-  when needed; do not log raw Bluetooth addresses or device IDs.
-- Keep notifications keyed per physical device/component so one headset does
-  not inherit another device's low-battery notification state.
-- Reuse the existing poll/retry intervals initially. Do not add Bluetooth
-  settings until there is a demonstrated user need.
-- Display Bluetooth device names without fake HID slot numbers. The existing
-  tray list and lowest-percentage icon behavior should continue to work.
+- The tray poller queries HID and Bluetooth independently. It preserves
+  successful readings if the other source fails, and keeps low-battery
+  notification state keyed by source-specific device identity.
+- Bluetooth names are shown without HID slot numbers. The existing tray list
+  and lowest-percentage icon behavior apply to both sources.
 
-### 5. Update diagnostics and user-facing text
+## Diagnostics and privacy
 
-- Report the source and a useful failure reason, such as service unavailable,
-  read timeout, or device disconnected.
-- Include Bluetooth support/read status in diagnostics, but omit raw Bluetooth
-  addresses and system device paths.
-- Change mouse-only status text and product descriptions to device-neutral
-  wording where applicable.
-- Update the architecture and supported-device sections in
-  [`README.md`](../README.md), and link this plan from the relevant battery
-  support documentation.
+- The Diagnose report identifies supported backends and includes Bluetooth
+  scan counts and reading status from the recent application log.
+- Opaque Windows Bluetooth device IDs and addresses are retained only
+  internally for stable notification identity; they are not written to logs
+  or reports.
 
-## Tests and acceptance criteria
+## Verification and hardware validation
 
 ### Automated tests
 
 - Battery Level decoding accepts valid values from 0 through 100 and rejects
   malformed or out-of-range values.
-- GATT service/characteristic absence, access errors, timeouts, and disconnects
-  are surfaced as Bluetooth-source failures rather than fabricated readings.
-- Poll aggregation preserves successful readings when another backend fails,
-  and reports an aggregate error only when no source provides a reading.
-- Device identities keep notification state isolated between HID devices,
-  Bluetooth devices, and distinct headphone components.
 - Existing HID++ parsing, polling, notification, and tray behavior remains
   unchanged.
 
-### Hardware acceptance
+Hardware verification is still required for each target headset:
 
 - A tested BLE headset exposing Battery Service appears in the device list
   with its reported percentage.

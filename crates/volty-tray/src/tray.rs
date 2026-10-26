@@ -25,13 +25,32 @@ const MAX_TOOLTIP_UTF16_UNITS: usize = 127;
 const BATTERY_RUN_KEY: &str = "Software\\Microsoft\\Windows\\CurrentVersion\\Run";
 #[cfg(windows)]
 const APP_RUN_VALUE: &str = "Volty";
+#[cfg(windows)]
+const APP_SETTINGS_KEY: &str = "Software\\Volty";
+#[cfg(windows)]
+const STARTUP_PROMPT_VALUE: &str = "StartupPrompted";
 const REFRESH_ID: &str = "volty.refresh";
 const CONFIGURATION_ID: &str = "volty.configuration";
 const LOG_FILE_ID: &str = "volty.open-log-file";
 const DIAGNOSE_ID: &str = "volty.diagnose";
 const START_ON_BOOT_ID: &str = "volty.start-on-boot";
+const MONITORED_DEVICES_ID: &str = "volty.monitored-devices";
+const MONITORED_DEVICE_ITEM_PREFIX: &str = "volty.monitored-device";
 const ABOUT_ID: &str = "volty.about";
 const QUIT_ID: &str = "volty.quit";
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeviceMonitorEntry {
+    pub identity: String,
+    pub name: String,
+    pub monitored: bool,
+}
+
+struct MonitoredDeviceMenuItem {
+    menu_id: String,
+    identity: String,
+    item: CheckMenuItem,
+}
 
 /// Actions that the application should handle after polling the controller.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -41,6 +60,7 @@ pub enum TrayAction {
     OpenLogFile,
     Diagnose,
     ToggleStartOnBoot,
+    SetDeviceMonitored { identity: String, monitored: bool },
     About,
     Quit,
 }
@@ -66,9 +86,14 @@ impl Error for TrayError {}
 /// Owns the native tray icon, its menu and the receiver for application actions.
 pub struct TrayController {
     icon: TrayIcon,
+    menu: Menu,
     status_item: MenuItem,
-    device_status_submenu: Submenu,
     device_status_items: Vec<MenuItem>,
+    monitored_devices_menu: Submenu,
+    monitored_devices_empty_item: Option<MenuItem>,
+    monitored_device_items: Vec<MonitoredDeviceMenuItem>,
+    known_monitored_devices: Vec<DeviceMonitorEntry>,
+    next_monitored_device_menu_id: u64,
     start_on_boot_item: CheckMenuItem,
     actions_tx: Sender<TrayAction>,
     actions_rx: Receiver<TrayAction>,
@@ -83,20 +108,13 @@ impl TrayController {
     /// other platforms the check item starts unchecked and the action reports
     /// that autostart is unsupported when selected.
     pub fn new() -> Result<Self, TrayError> {
-        let start_on_boot = start_on_boot_enabled()?;
+        let start_on_boot = start_on_boot_for_first_run()?;
         let status_item = MenuItem::with_id(
             "volty.status",
             "Searching for supported devices",
             false,
             None,
         );
-        let device_status_submenu = Submenu::with_id("volty.devices", "Device Status", true);
-        let searching_item = MenuItem::new("Searching for supported devices", false, None);
-        device_status_submenu
-            .append(&searching_item)
-            .map_err(|error| {
-                TrayError::new(format!("could not add tray device status: {error}"))
-            })?;
         let refresh_item = MenuItem::with_id(REFRESH_ID, "Refresh Now", true, None);
         let configuration_item =
             MenuItem::with_id(CONFIGURATION_ID, "Open Configuration", true, None);
@@ -105,13 +123,26 @@ impl TrayController {
             MenuItem::with_id(DIAGNOSE_ID, "Diagnose / Report an Issue", true, None);
         let start_on_boot_item =
             CheckMenuItem::with_id(START_ON_BOOT_ID, "Start on Boot", true, start_on_boot, None);
+        let monitored_devices_menu =
+            Submenu::with_id(MONITORED_DEVICES_ID, "Monitored Devices", true);
+        let monitored_devices_empty_item =
+            MenuItem::new("No supported devices discovered", false, None);
+        monitored_devices_menu
+            .append(&monitored_devices_empty_item)
+            .map_err(|error| {
+                TrayError::new(format!(
+                    "could not add empty monitored-devices status: {error}"
+                ))
+            })?;
         let about_item = MenuItem::with_id(ABOUT_ID, "About Volty", true, None);
         let quit_item = MenuItem::with_id(QUIT_ID, "Quit", true, None);
         let menu = Menu::new();
         menu.append(&status_item)
             .map_err(|error| TrayError::new(format!("could not add tray status: {error}")))?;
-        menu.append(&device_status_submenu).map_err(|error| {
-            TrayError::new(format!("could not add device status menu: {error}"))
+        menu.append(&PredefinedMenuItem::separator())
+            .map_err(|error| TrayError::new(format!("could not add tray separator: {error}")))?;
+        menu.append(&monitored_devices_menu).map_err(|error| {
+            TrayError::new(format!("could not add monitored-devices menu: {error}"))
         })?;
         menu.append(&PredefinedMenuItem::separator())
             .map_err(|error| TrayError::new(format!("could not add tray separator: {error}")))?;
@@ -139,16 +170,21 @@ impl TrayController {
         let icon = TrayIconBuilder::new()
             .with_tooltip("Volty — Searching for supported devices")
             .with_icon(unknown_battery_icon_at_size(ICON_SIZE)?)
-            .with_menu(Box::new(menu))
+            .with_menu(Box::new(menu.clone()))
             .build()
             .map_err(|error| TrayError::new(format!("could not create tray icon: {error}")))?;
         let (actions_tx, actions_rx) = mpsc::channel();
 
         Ok(Self {
             icon,
+            menu,
             status_item,
-            device_status_submenu,
-            device_status_items: vec![searching_item],
+            device_status_items: Vec::new(),
+            monitored_devices_menu,
+            monitored_devices_empty_item: Some(monitored_devices_empty_item),
+            monitored_device_items: Vec::new(),
+            known_monitored_devices: Vec::new(),
+            next_monitored_device_menu_id: 0,
             start_on_boot_item,
             actions_tx,
             actions_rx,
@@ -192,17 +228,11 @@ impl TrayController {
             None => format!("{device_name}: {status}"),
         };
         let live_status = shorten_status(&live_status);
-        self.update_display(
-            &live_status,
-            &live_status,
-            icon_percentage,
-            icon_size,
-            std::slice::from_ref(&live_status),
-        )
+        self.update_display(&live_status, &live_status, icon_percentage, icon_size, &[])
     }
 
-    /// Displays a row for every readable device. The tray tooltip contains the
-    /// full list when it fits; the Device Status submenu always retains every row.
+    /// Displays each readable device at the top of the tray menu. The tooltip
+    /// contains the full list when it fits.
     pub fn update_devices(
         &mut self,
         summary: &str,
@@ -212,16 +242,88 @@ impl TrayController {
         let percentage = percentage.map(|value| value.min(100));
         if let Some(percentage) = percentage {
             self.percentage = Some(percentage);
+        } else if device_statuses.is_empty() {
+            self.percentage = None;
         }
         let icon_percentage = percentage.or(self.percentage);
         let tooltip = tooltip_for_devices(summary, device_statuses);
+        let empty_status = "No device status available".to_owned();
+        let menu_device_statuses = if device_statuses.is_empty() {
+            std::slice::from_ref(&empty_status)
+        } else {
+            device_statuses
+        };
         self.update_display(
             &shorten_status(summary),
             &tooltip,
             icon_percentage,
             ICON_SIZE,
-            device_statuses,
+            menu_device_statuses,
         )
+    }
+
+    pub fn update_monitored_devices(
+        &mut self,
+        devices: &[DeviceMonitorEntry],
+    ) -> Result<(), TrayError> {
+        let mut devices = devices.to_vec();
+        devices.sort_by(|left, right| {
+            left.name
+                .cmp(&right.name)
+                .then_with(|| left.identity.cmp(&right.identity))
+        });
+        if devices == self.known_monitored_devices {
+            return Ok(());
+        }
+
+        for entry in self.monitored_device_items.drain(..) {
+            self.monitored_devices_menu
+                .remove(&entry.item)
+                .map_err(|error| {
+                    TrayError::new(format!("could not clear monitored devices: {error}"))
+                })?;
+        }
+
+        if devices.is_empty() {
+            if self.monitored_devices_empty_item.is_none() {
+                let item = MenuItem::new("No supported devices discovered", false, None);
+                self.monitored_devices_menu.append(&item).map_err(|error| {
+                    TrayError::new(format!(
+                        "could not update empty monitored-devices status: {error}"
+                    ))
+                })?;
+                self.monitored_devices_empty_item = Some(item);
+            }
+            self.known_monitored_devices = devices;
+            return Ok(());
+        }
+
+        if let Some(item) = self.monitored_devices_empty_item.take() {
+            self.monitored_devices_menu.remove(&item).map_err(|error| {
+                TrayError::new(format!(
+                    "could not clear empty monitored-devices status: {error}"
+                ))
+            })?;
+        }
+
+        for device in &devices {
+            let sequence = self.next_monitored_device_menu_id;
+            self.next_monitored_device_menu_id = sequence
+                .checked_add(1)
+                .ok_or_else(|| TrayError::new("monitored-device menu ID space exhausted"))?;
+            let menu_id = format!("{MONITORED_DEVICE_ITEM_PREFIX}.{sequence}");
+            let item = CheckMenuItem::with_id(&menu_id, &device.name, true, device.monitored, None);
+            self.monitored_devices_menu.append(&item).map_err(|error| {
+                TrayError::new(format!("could not add monitored device: {error}"))
+            })?;
+            self.monitored_device_items.push(MonitoredDeviceMenuItem {
+                menu_id,
+                identity: device.identity.clone(),
+                item,
+            });
+        }
+        self.known_monitored_devices = devices;
+        Ok(())
     }
 
     fn update_display(
@@ -251,20 +353,14 @@ impl TrayController {
 
     fn replace_device_status_items(&mut self, device_statuses: &[String]) -> Result<(), TrayError> {
         for item in self.device_status_items.drain(..) {
-            self.device_status_submenu.remove(&item).map_err(|error| {
+            self.menu.remove(&item).map_err(|error| {
                 TrayError::new(format!("could not clear tray device status: {error}"))
             })?;
         }
 
-        let empty_status = "No device status available".to_owned();
-        let statuses = if device_statuses.is_empty() {
-            std::slice::from_ref(&empty_status)
-        } else {
-            device_statuses
-        };
-        for status in statuses {
+        for (index, status) in device_statuses.iter().enumerate() {
             let item = MenuItem::new(status, false, None);
-            self.device_status_submenu.append(&item).map_err(|error| {
+            self.menu.insert(&item, index + 1).map_err(|error| {
                 TrayError::new(format!("could not update tray device status: {error}"))
             })?;
             self.device_status_items.push(item);
@@ -317,6 +413,18 @@ impl TrayController {
                     .send(TrayAction::ToggleStartOnBoot)
                     .map_err(|_| TrayError::new("tray action receiver has been dropped"))?;
                 handled += 1;
+            } else if let Some(entry) = self
+                .monitored_device_items
+                .iter()
+                .find(|entry| entry.menu_id == id)
+            {
+                self.actions_tx
+                    .send(TrayAction::SetDeviceMonitored {
+                        identity: entry.identity.clone(),
+                        monitored: entry.item.is_checked(),
+                    })
+                    .map_err(|_| TrayError::new("tray action receiver has been dropped"))?;
+                handled += 1;
             } else if id == ABOUT_ID {
                 self.actions_tx
                     .send(TrayAction::About)
@@ -339,6 +447,16 @@ impl TrayController {
 
     pub fn set_start_on_boot_checked(&self, checked: bool) {
         self.start_on_boot_item.set_checked(checked);
+    }
+
+    pub fn set_device_monitored_checked(&self, identity: &str, checked: bool) {
+        if let Some(entry) = self
+            .monitored_device_items
+            .iter()
+            .find(|entry| entry.identity == identity)
+        {
+            entry.item.set_checked(checked);
+        }
     }
 
     pub fn set_battery_color_map(
@@ -735,6 +853,90 @@ pub fn start_on_boot_enabled() -> Result<bool, TrayError> {
     {
         Ok(false)
     }
+}
+
+#[cfg(windows)]
+fn start_on_boot_for_first_run() -> Result<bool, TrayError> {
+    let enabled = start_on_boot_enabled()?;
+    if enabled || startup_prompt_shown()? {
+        return Ok(enabled);
+    }
+
+    let text = to_wide(
+        "Would you like Volty to start automatically when you sign in to Windows?\n\n\
+         If you choose Yes, Windows will start Volty from this executable's current location. \
+         Keep the file there. You can change this later from the tray menu.",
+    );
+    let title = to_wide("Start Volty with Windows?");
+    let response = unsafe {
+        windows_sys::Win32::UI::WindowsAndMessaging::MessageBoxW(
+            std::ptr::null_mut(),
+            text.as_ptr(),
+            title.as_ptr(),
+            windows_sys::Win32::UI::WindowsAndMessaging::MB_DEFBUTTON2
+                | windows_sys::Win32::UI::WindowsAndMessaging::MB_ICONQUESTION
+                | windows_sys::Win32::UI::WindowsAndMessaging::MB_YESNO,
+        )
+    };
+    if response == 0 {
+        return Err(TrayError::new(format!(
+            "could not show first-run startup prompt: {}",
+            std::io::Error::last_os_error()
+        )));
+    }
+    let enable_startup = response == windows_sys::Win32::UI::WindowsAndMessaging::IDYES;
+    if enable_startup {
+        set_start_on_boot_enabled(true)?;
+    }
+    set_startup_prompt_shown()?;
+    Ok(enable_startup)
+}
+
+#[cfg(windows)]
+fn startup_prompt_shown() -> Result<bool, TrayError> {
+    use winreg::{enums::HKEY_CURRENT_USER, RegKey};
+
+    let current_user = RegKey::predef(HKEY_CURRENT_USER);
+    let key = match current_user.open_subkey_with_flags(APP_SETTINGS_KEY, winreg::enums::KEY_READ) {
+        Ok(key) => key,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => {
+            return Err(TrayError::new(format!(
+                "could not read first-run startup preference: {error}"
+            )))
+        }
+    };
+    match key.get_value::<u32, _>(STARTUP_PROMPT_VALUE) {
+        Ok(value) => Ok(value != 0),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(TrayError::new(format!(
+            "could not read first-run startup preference: {error}"
+        ))),
+    }
+}
+
+#[cfg(windows)]
+fn set_startup_prompt_shown() -> Result<(), TrayError> {
+    use winreg::{enums::HKEY_CURRENT_USER, RegKey};
+
+    let current_user = RegKey::predef(HKEY_CURRENT_USER);
+    let (key, _) = current_user
+        .create_subkey(APP_SETTINGS_KEY)
+        .map_err(|error| {
+            TrayError::new(format!(
+                "could not save first-run startup preference: {error}"
+            ))
+        })?;
+    key.set_value(STARTUP_PROMPT_VALUE, &1u32).map_err(|error| {
+        TrayError::new(format!(
+            "could not save first-run startup preference: {error}"
+        ))
+    })
+}
+
+#[cfg(windows)]
+fn to_wide(value: &str) -> Vec<u16> {
+    value.encode_utf16().chain(Some(0)).collect()
 }
 
 /// Enables or disables Windows startup using the current executable's Run entry.

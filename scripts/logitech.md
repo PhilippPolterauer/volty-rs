@@ -34,7 +34,7 @@ late replies with the current request. `--swid` selects the starting value
 
 The diagnostic opens only matching HID interfaces and sends HID++ queries. It
 does call the HID write API to transmit them, but it does not send commands
-that change settings, profiles, pairing, or firmware. It logs to the console
+that change settings, pairing, or firmware. It logs to the console
 and a timestamped text file in the current directory by default. Logs include
 the enumerated HID path and serial number; review and redact them before
 sharing.

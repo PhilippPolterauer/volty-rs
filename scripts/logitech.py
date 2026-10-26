@@ -10,7 +10,7 @@ Examples:
     uv run .\hidpp_debug.py --pid 0xC547 --slots 1
 
 The script only sends HID++ GetFeature requests and battery status read requests.
-It does not alter settings, profiles, pairing, or firmware.
+It does not alter settings, pairing, or firmware.
 """
 from __future__ import annotations
 

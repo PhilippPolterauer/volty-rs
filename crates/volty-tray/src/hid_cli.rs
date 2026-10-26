@@ -1,10 +1,7 @@
 #[cfg(windows)]
-use std::cell::RefCell;
 use std::collections::HashMap;
 use std::error::Error;
 use std::fmt;
-#[cfg(windows)]
-use std::rc::Rc;
 
 #[derive(Debug)]
 pub struct CliError(String);
@@ -52,8 +49,6 @@ pub fn run(args: &[String]) -> Result<(), CliError> {
     match command {
         "inspect" => inspect(options),
         "features" => features(options),
-        "profiles" => list_profiles(options),
-        "run" => run_profile(options),
         "raw" => raw(options),
         _ => Err(error(format!(
             "unknown HID command '{command}'\n{HID_USAGE}"
@@ -62,7 +57,7 @@ pub fn run(args: &[String]) -> Result<(), CliError> {
 }
 
 #[cfg(windows)]
-const HID_USAGE: &str = "Usage: volty hid <inspect|features|profiles|run|raw> [options]\n\
+const HID_USAGE: &str = "Usage: volty hid <inspect|features|raw> [options]\n\
 Run `volty hid <command> --help` for command options.";
 
 #[cfg(windows)]
@@ -83,24 +78,6 @@ Report lengths are not exposed by the current hidapi API.",
             "Usage: volty hid features --device-index NUMBER [interface selector]\n\
 Discovers logical feature IDs and their runtime indexes for a paired HID++ device.\n\
   --device-index NUMBER        HID++ device index (not the USB interface number)\n\
-  --vid, --vendor-id HEX       Vendor ID\n\
-  --pid, --product-id HEX      Product ID\n\
-  --usage-page HEX             HID usage page\n\
-  --usage HEX                  HID usage\n\
-  --interface NUMBER           HID interface number\n\
-  --path PATH                  Exact hidapi path",
-        ),
-        "profiles" => Some(
-            "Usage: volty hid profiles\n\
-Lists the built-in command profiles embedded in this executable.",
-        ),
-        "run" => Some(
-            "Usage: volty hid run --profile NAME|FILE --command NAME --device-index NUMBER [interface selector] [--allow-state-changing]\n\
-Loads a built-in or custom TOML profile, validates it, and executes the named command.\n\
-  --profile NAME|FILE          Built-in ID (builtin:NAME) or custom TOML path\n\
-  --command NAME               Command name from the profile\n\
-  --device-index NUMBER        HID++ device index (not the USB interface number)\n\
-  --allow-state-changing       Authorize a profile command marked state-changing\n\
   --vid, --vendor-id HEX       Vendor ID\n\
   --pid, --product-id HEX      Product ID\n\
   --usage-page HEX             HID usage page\n\
@@ -187,7 +164,7 @@ fn check_options(options: &Options, allowed: &[&str]) -> Result<(), CliError> {
 fn reject_state_flag(options: &Options) -> Result<(), CliError> {
     if options.allow_state_changing {
         Err(error(
-            "--allow-state-changing is only valid for the run and raw commands",
+            "--allow-state-changing is only valid for the raw command",
         ))
     } else {
         Ok(())
@@ -375,47 +352,6 @@ fn select_interface(
 }
 
 #[cfg(windows)]
-#[derive(Default)]
-struct FrameTrace {
-    requests: Vec<Vec<u8>>,
-    responses: Vec<Vec<u8>>,
-}
-
-#[cfg(windows)]
-struct DiagnosticTransport<T> {
-    inner: T,
-    trace: Rc<RefCell<FrameTrace>>,
-}
-
-#[cfg(windows)]
-impl<T: volty_hid::HidppTransport> volty_hid::HidppTransport for DiagnosticTransport<T> {
-    fn transact(
-        &mut self,
-        request: &volty_hid::HidppFrame,
-        timeout: std::time::Duration,
-    ) -> Result<volty_hid::HidppFrame, volty_hid::HidppError> {
-        if let Ok(bytes) = request.encode() {
-            self.trace.borrow_mut().requests.push(bytes);
-        }
-        let response = volty_hid::HidppTransport::transact(&mut self.inner, request, timeout)?;
-        if let Ok(bytes) = response.encode() {
-            self.trace.borrow_mut().responses.push(bytes);
-        }
-        Ok(response)
-    }
-}
-
-#[cfg(windows)]
-fn print_trace(trace: &FrameTrace) {
-    for (index, frame) in trace.requests.iter().enumerate() {
-        println!("TX[{index}]: {frame:02x?}");
-    }
-    for (index, frame) in trace.responses.iter().enumerate() {
-        println!("RX[{index}]: {frame:02x?}");
-    }
-}
-
-#[cfg(windows)]
 fn required<'a>(options: &'a Options, name: &str) -> Result<&'a str, CliError> {
     option(options, &[name]).ok_or_else(|| error(format!("missing required option {name}")))
 }
@@ -465,94 +401,6 @@ fn features(options: Options) -> Result<(), CliError> {
             logical_id, feature.feature_index, feature.feature_type, feature.version
         );
     }
-    Ok(())
-}
-
-#[cfg(windows)]
-fn list_profiles(options: Options) -> Result<(), CliError> {
-    reject_state_flag(&options)?;
-    check_options(&options, &[])?;
-
-    let names: Vec<_> = volty_hid::builtin_profile_names().collect();
-    if names.is_empty() {
-        println!("No built-in profiles are available.");
-    } else {
-        println!("Built-in profiles:");
-        for name in names {
-            println!("  {name}");
-        }
-    }
-    Ok(())
-}
-
-#[cfg(windows)]
-fn run_profile(options: Options) -> Result<(), CliError> {
-    check_options(
-        &options,
-        &[
-            "--profile",
-            "--command",
-            "--device-index",
-            "--vid",
-            "--vendor-id",
-            "--pid",
-            "--product-id",
-            "--usage-page",
-            "--usage",
-            "--interface",
-            "--interface-number",
-            "--path",
-        ],
-    )?;
-    let profile_source = required(&options, "--profile")?;
-    let command_name = required(&options, "--command")?;
-    let device_index = device_index(&options)?;
-    let contents = if let Some(name) = profile_source.strip_prefix("builtin:") {
-        let source = volty_hid::builtin_profile_source(name).ok_or_else(|| {
-            let available = volty_hid::builtin_profile_names()
-                .collect::<Vec<_>>()
-                .join(", ");
-            if available.is_empty() {
-                error(format!(
-                    "unknown built-in profile '{name}'; no built-in profiles are available"
-                ))
-            } else {
-                error(format!(
-                    "unknown built-in profile '{name}'; available profiles: {available}"
-                ))
-            }
-        })?;
-        source.to_owned()
-    } else {
-        std::fs::read_to_string(profile_source)
-            .map_err(|cause| error(format!("cannot read profile '{}': {cause}", profile_source)))?
-    };
-    let profile = volty_hid::CommandProfile::from_toml(&contents)
-        .map_err(|cause| error(format!("invalid TOML profile: {cause}")))?;
-    if options.allow_state_changing {
-        println!("WARNING: state-changing commands in this profile are authorized.");
-    }
-
-    let selector = selector(&options)?;
-    let session = volty_hid::HidppSession::open(&selector).map_err(|error| error.to_string())?;
-    let trace = Rc::new(RefCell::new(FrameTrace::default()));
-    let transport = DiagnosticTransport {
-        inner: session,
-        trace: Rc::clone(&trace),
-    };
-    let mut executor = volty_hid::CommandExecutor::new(transport);
-    let result = executor
-        .execute(
-            &profile,
-            command_name,
-            device_index,
-            options.allow_state_changing,
-        )
-        .map_err(|cause| error(cause.to_string()));
-
-    print_trace(&trace.borrow());
-    let result = result?;
-    println!("decoded: {:?}", result.decoded);
     Ok(())
 }
 

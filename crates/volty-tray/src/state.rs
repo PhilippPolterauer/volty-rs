@@ -1,5 +1,5 @@
 use std::{
-    collections::HashSet,
+    collections::{BTreeMap, HashSet},
     env, fs, io,
     path::{Path, PathBuf},
     time::Duration,
@@ -48,6 +48,10 @@ impl DeviceState {
                     CHECK (device_index BETWEEN 0 AND 255),
                 seen_order INTEGER NOT NULL,
                 PRIMARY KEY (interface_path, device_index)
+            ) WITHOUT ROWID;
+            CREATE TABLE IF NOT EXISTS monitored_devices (
+                identity TEXT PRIMARY KEY,
+                monitored INTEGER NOT NULL CHECK (monitored IN (0, 1))
             ) WITHOUT ROWID;",
         )?;
         Ok(Self { connection })
@@ -106,6 +110,61 @@ impl DeviceState {
         transaction.commit()?;
         Ok(())
     }
+
+    pub fn monitored_devices(&self) -> Result<BTreeMap<String, bool>, Box<dyn std::error::Error>> {
+        let mut statement = self
+            .connection
+            .prepare("SELECT identity, monitored FROM monitored_devices ORDER BY identity")?;
+        let rows = statement.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, bool>(1)?))
+        })?;
+        let mut devices = BTreeMap::new();
+        for row in rows {
+            let (identity, monitored) = row?;
+            devices.insert(identity, monitored);
+        }
+        Ok(devices)
+    }
+
+    pub fn set_device_monitored(
+        &mut self,
+        identity: &str,
+        monitored: bool,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        if identity.is_empty() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "device identity must not be empty",
+            )
+            .into());
+        }
+        self.connection.execute(
+            "INSERT INTO monitored_devices (identity, monitored)
+             VALUES (?1, ?2)
+             ON CONFLICT (identity)
+             DO UPDATE SET monitored = excluded.monitored",
+            params![identity, monitored],
+        )?;
+        Ok(())
+    }
+
+    pub fn import_legacy_monitored_devices(
+        &mut self,
+        devices: &BTreeMap<String, bool>,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let transaction = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        for (identity, monitored) in devices {
+            transaction.execute(
+                "INSERT OR IGNORE INTO monitored_devices (identity, monitored)
+                 VALUES (?1, ?2)",
+                params![identity, monitored],
+            )?;
+        }
+        transaction.commit()?;
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -159,6 +218,41 @@ mod tests {
                 .ordered_device_indices("receiver-b", &defaults)
                 .unwrap(),
             [2, 0xff, 1, 3, 4, 5, 6]
+        );
+        drop(state);
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn monitored_devices_are_persisted_and_legacy_import_does_not_override() {
+        let path = std::env::temp_dir().join(format!(
+            "volty-monitor-state-{}-{}.sqlite3",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let legacy = BTreeMap::from([
+            ("device-a".to_owned(), false),
+            ("device-b".to_owned(), true),
+        ]);
+
+        {
+            let mut state = DeviceState::open(&path).unwrap();
+            state.import_legacy_monitored_devices(&legacy).unwrap();
+            state.set_device_monitored("device-a", true).unwrap();
+            assert_eq!(
+                state.monitored_devices().unwrap(),
+                BTreeMap::from([("device-a".to_owned(), true), ("device-b".to_owned(), true),])
+            );
+            state.import_legacy_monitored_devices(&legacy).unwrap();
+        }
+
+        let state = DeviceState::open(&path).unwrap();
+        assert_eq!(
+            state.monitored_devices().unwrap(),
+            BTreeMap::from([("device-a".to_owned(), true), ("device-b".to_owned(), true),])
         );
         drop(state);
         fs::remove_file(path).unwrap();

@@ -1,9 +1,12 @@
 use std::{
+    collections::BTreeMap,
     error::Error,
     fmt, fs,
     io::Write,
     path::{Path, PathBuf},
 };
+
+use toml_edit::Document;
 
 pub const DEFAULT_LOW_BATTERY_THRESHOLD: u8 = 20;
 pub const DEFAULT_POLL_INTERVAL_SECONDS: u64 = 120;
@@ -153,7 +156,8 @@ impl AppConfig {
              # yellow_max_percent = 30\n\
              # red = \"#d23030\"\n\
              # yellow = \"#ebbe23\"\n\
-             # green = \"#2daa4b\"\n",
+             # green = \"#2daa4b\"\n\
+             # Per-device monitoring choices are stored in local SQLite state.\n",
             defaults.low_battery_threshold,
             defaults.poll_interval_seconds,
             defaults.retry_interval_seconds,
@@ -212,6 +216,92 @@ pub fn config_path() -> Option<PathBuf> {
             .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".config")))
             .map(|root| root.join("volty").join("config.toml"))
     }
+}
+
+pub fn load_legacy_monitored_devices() -> Result<BTreeMap<String, bool>, ConfigError> {
+    let Some(path) = config_path() else {
+        return Ok(BTreeMap::new());
+    };
+    load_legacy_monitored_devices_from(path)
+}
+
+fn load_legacy_monitored_devices_from(
+    path: impl AsRef<Path>,
+) -> Result<BTreeMap<String, bool>, ConfigError> {
+    let path = path.as_ref();
+    if !path.exists() {
+        return Ok(BTreeMap::new());
+    }
+    let contents = fs::read_to_string(path).map_err(|error| {
+        ConfigError::new(format!(
+            "could not read configuration {}: {error}",
+            path.display()
+        ))
+    })?;
+    let document = contents.parse::<toml::Value>().map_err(|error| {
+        ConfigError::new(format!("invalid configuration {}: {error}", path.display()))
+    })?;
+    let Some(value) = document
+        .as_table()
+        .and_then(|table| table.get("monitored_devices"))
+    else {
+        return Ok(BTreeMap::new());
+    };
+    let devices = value.as_table().ok_or_else(|| {
+        ConfigError::new(format!(
+            "invalid configuration {}: legacy monitored_devices must be a table",
+            path.display()
+        ))
+    })?;
+    let mut monitored_devices = BTreeMap::new();
+    for (identity, value) in devices {
+        if identity.is_empty() {
+            return Err(ConfigError::new(format!(
+                "invalid configuration {}: monitored device identities must not be empty",
+                path.display()
+            )));
+        }
+        let monitored = value.as_bool().ok_or_else(|| {
+            ConfigError::new(format!(
+                "invalid configuration {}: monitored device entries must be booleans",
+                path.display()
+            ))
+        })?;
+        monitored_devices.insert(identity.clone(), monitored);
+    }
+    Ok(monitored_devices)
+}
+
+pub fn remove_legacy_monitored_devices() -> Result<(), ConfigError> {
+    let Some(path) = config_path() else {
+        return Ok(());
+    };
+    remove_legacy_monitored_devices_from(path)
+}
+
+fn remove_legacy_monitored_devices_from(path: impl AsRef<Path>) -> Result<(), ConfigError> {
+    let path = path.as_ref();
+    if !path.exists() {
+        return Ok(());
+    }
+    let contents = fs::read_to_string(path).map_err(|error| {
+        ConfigError::new(format!(
+            "could not read configuration {}: {error}",
+            path.display()
+        ))
+    })?;
+    let mut document = contents.parse::<Document>().map_err(|error| {
+        ConfigError::new(format!("invalid configuration {}: {error}", path.display()))
+    })?;
+    if document.remove("monitored_devices").is_some() {
+        fs::write(path, document.to_string()).map_err(|error| {
+            ConfigError::new(format!(
+                "could not remove legacy monitored_devices from {}: {error}",
+                path.display()
+            ))
+        })?;
+    }
+    Ok(())
 }
 
 #[derive(Debug)]
@@ -294,6 +384,7 @@ fn parse_toml(contents: &str, path: &Path) -> Result<AppConfig, ConfigError> {
                 config.battery_color_map =
                     parse_battery_color_map(value, config.battery_color_map, path)?;
             }
+            "monitored_devices" => {}
             _ => {
                 return Err(ConfigError::new(format!(
                     "invalid configuration {}: unknown setting {key:?}",
@@ -463,6 +554,10 @@ mod tests {
                 battery_color_map: BatteryColorMap::default(),
             }
         );
+        assert_eq!(
+            parse_toml("[monitored_devices]\n\"bluetooth:test\" = false\n", path).unwrap(),
+            AppConfig::default()
+        );
         for level in [
             LogLevel::Error,
             LogLevel::Warn,
@@ -560,6 +655,59 @@ mod tests {
         assert_eq!(AppConfig::load_from(&path).unwrap(), AppConfig::default());
         let recreated_contents = fs::read_to_string(&created_path).unwrap();
         assert!(recreated_contents.lines().all(|line| line.starts_with('#')));
+
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn legacy_monitor_preferences_are_loaded_then_removed_without_losing_comments() {
+        let directory = std::env::temp_dir().join(format!(
+            "volty-legacy-monitor-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let path = directory.join("config.toml");
+        fs::create_dir_all(&directory).unwrap();
+        fs::write(
+            &path,
+            "# User comment\nlow_battery_threshold = 25\n\n[monitored_devices]\n\"bluetooth:test\" = false\n\n[battery_color_map]\nred_max_percent = 10\n",
+        )
+        .unwrap();
+
+        assert_eq!(
+            load_legacy_monitored_devices_from(&path).unwrap(),
+            BTreeMap::from([("bluetooth:test".to_owned(), false)])
+        );
+        remove_legacy_monitored_devices_from(&path).unwrap();
+
+        let reloaded = AppConfig::load_from(&path).unwrap();
+        assert_eq!(reloaded.low_battery_threshold, 25);
+        assert_eq!(reloaded.battery_color_map.red_max_percent, 10);
+        let contents = fs::read_to_string(&path).unwrap();
+        assert!(contents.contains("# User comment"));
+        assert!(!contents.contains("[monitored_devices]"));
+
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn malformed_legacy_monitor_preferences_are_reported() {
+        let directory = std::env::temp_dir().join(format!(
+            "volty-invalid-legacy-monitor-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&directory).unwrap();
+        let path = directory.join("config.toml");
+        fs::write(&path, "[monitored_devices]\ndevice = \"false\"\n").unwrap();
+
+        assert!(load_legacy_monitored_devices_from(&path).is_err());
 
         fs::remove_dir_all(directory).unwrap();
     }

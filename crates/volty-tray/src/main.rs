@@ -1,3 +1,5 @@
+#![cfg_attr(windows, windows_subsystem = "windows")]
+
 #[cfg(windows)]
 mod about;
 #[cfg(windows)]
@@ -20,10 +22,109 @@ mod state;
 mod tray;
 
 fn main() {
+    #[cfg(windows)]
+    let cli_mode = std::env::args().nth(1).as_deref() == Some("hid");
+
+    #[cfg(windows)]
+    if cli_mode {
+        if let Err(error) = attach_cli_console() {
+            show_error(&format!(
+                "volty: could not initialize diagnostic console: {error}"
+            ));
+            std::process::exit(2);
+        }
+    }
+
     if let Err(error) = run() {
-        eprintln!("volty: {error}");
+        let message = format!("volty: {error}");
+        #[cfg(windows)]
+        if cli_mode {
+            eprintln!("{message}");
+        } else {
+            show_error(&message);
+        }
+        #[cfg(not(windows))]
+        eprintln!("{message}");
         std::process::exit(2);
     }
+}
+
+#[cfg(windows)]
+fn show_error(message: &str) {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{MessageBoxW, MB_ICONERROR, MB_OK};
+
+    let message: Vec<u16> = message.encode_utf16().chain(Some(0)).collect();
+    let title: Vec<u16> = "Volty".encode_utf16().chain(Some(0)).collect();
+    unsafe {
+        MessageBoxW(
+            std::ptr::null_mut(),
+            message.as_ptr(),
+            title.as_ptr(),
+            MB_ICONERROR | MB_OK,
+        );
+    }
+}
+
+#[cfg(windows)]
+fn attach_cli_console() -> std::io::Result<()> {
+    use windows_sys::Win32::{
+        Foundation::{
+            CloseHandle, GetLastError, ERROR_ACCESS_DENIED, GENERIC_READ, GENERIC_WRITE, HANDLE,
+            INVALID_HANDLE_VALUE,
+        },
+        Storage::FileSystem::{
+            CreateFileW, FILE_ATTRIBUTE_NORMAL, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING,
+        },
+        System::Console::{
+            AllocConsole, AttachConsole, GetStdHandle, SetStdHandle, ATTACH_PARENT_PROCESS,
+            STD_ERROR_HANDLE, STD_OUTPUT_HANDLE,
+        },
+    };
+
+    let is_valid_handle = |handle: HANDLE| !handle.is_null() && handle != INVALID_HANDLE_VALUE;
+    if is_valid_handle(unsafe { GetStdHandle(STD_OUTPUT_HANDLE) })
+        && is_valid_handle(unsafe { GetStdHandle(STD_ERROR_HANDLE) })
+    {
+        return Ok(());
+    }
+
+    if unsafe { AttachConsole(ATTACH_PARENT_PROCESS) } == 0
+        && unsafe { GetLastError() } != ERROR_ACCESS_DENIED
+        && unsafe { AllocConsole() } == 0
+    {
+        return Err(std::io::Error::last_os_error());
+    }
+
+    for (standard_handle, console_name) in [
+        (STD_OUTPUT_HANDLE, "CONOUT$\0"),
+        (STD_ERROR_HANDLE, "CONOUT$\0"),
+    ] {
+        if is_valid_handle(unsafe { GetStdHandle(standard_handle) }) {
+            continue;
+        }
+
+        let console_name: Vec<u16> = console_name.encode_utf16().collect();
+        let handle = unsafe {
+            CreateFileW(
+                console_name.as_ptr(),
+                GENERIC_READ | GENERIC_WRITE,
+                FILE_SHARE_READ | FILE_SHARE_WRITE,
+                std::ptr::null(),
+                OPEN_EXISTING,
+                FILE_ATTRIBUTE_NORMAL,
+                std::ptr::null_mut(),
+            )
+        };
+        if handle == INVALID_HANDLE_VALUE {
+            return Err(std::io::Error::last_os_error());
+        }
+        if unsafe { SetStdHandle(standard_handle, handle) } == 0 {
+            unsafe { CloseHandle(handle) };
+            return Err(std::io::Error::last_os_error());
+        }
+    }
+
+    Ok(())
 }
 
 fn run() -> Result<(), Box<dyn std::error::Error>> {

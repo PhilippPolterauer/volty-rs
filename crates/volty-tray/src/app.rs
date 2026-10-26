@@ -1,5 +1,5 @@
 use std::{
-    collections::{HashMap, VecDeque},
+    collections::{BTreeMap, HashMap, HashSet, VecDeque},
     error::Error,
     io,
     path::{Path, PathBuf},
@@ -9,17 +9,24 @@ use std::{
 };
 
 use notify::{Event, RecommendedWatcher, RecursiveMode, Watcher};
-use volty_hid::{BatteryLevel, BatteryState, BatteryStatus};
+use volty_battery::{BatteryLevel, BatterySource, BatteryState, BatteryStatus};
+use volty_hid::{BatteryProtocol, HidInterfaceInfo};
 
 use crate::{
     about::show_about_window,
-    config::{config_path, AppConfig, LogLevel},
+    config::{
+        config_path, load_legacy_monitored_devices, remove_legacy_monitored_devices, AppConfig,
+        LogLevel,
+    },
     diagnose::show_diagnose_window,
     logging::FileLogger,
     notify::{BatterySample, NotificationEngine, NotificationOutcome},
     report::generate_diagnostic_report,
     state::DeviceState,
-    tray::{set_start_on_boot_enabled, start_on_boot_enabled, TrayAction, TrayController},
+    tray::{
+        set_start_on_boot_enabled, start_on_boot_enabled, DeviceMonitorEntry, TrayAction,
+        TrayController,
+    },
 };
 
 const UI_POLL_INTERVAL: Duration = Duration::from_millis(100);
@@ -32,19 +39,85 @@ enum PollCommand {
     Quit,
 }
 
+#[derive(Clone)]
 struct DeviceReading {
     identity: DeviceIdentity,
     name: String,
-    name_discovery_error: Option<String>,
-    device_index: u8,
+    device_index: Option<u8>,
     battery: BatteryStatus,
     notification_error: Option<String>,
 }
 
-#[derive(Clone, Debug, Eq, Hash, PartialEq)]
-struct DeviceIdentity {
-    interface_path: String,
+struct PendingDeviceName {
+    identity: DeviceIdentity,
+    interface: HidInterfaceInfo,
+    protocol: &'static dyn BatteryProtocol,
+    fallback_name: String,
     device_index: u8,
+}
+
+#[derive(Clone, Eq, Hash, PartialEq)]
+enum DeviceIdentity {
+    Hid {
+        interface_path: String,
+        device_index: u8,
+    },
+    Bluetooth {
+        device_id: String,
+    },
+}
+
+impl DeviceIdentity {
+    fn config_id(&self) -> String {
+        match self {
+            Self::Hid {
+                interface_path,
+                device_index,
+            } => format!("hid:{device_index}:{interface_path}"),
+            Self::Bluetooth { device_id } => format!("bluetooth:{device_id}"),
+        }
+    }
+
+    fn display_name(&self, name: &str) -> String {
+        match self {
+            Self::Hid { device_index, .. } => format_device_name(name, Some(*device_index)),
+            Self::Bluetooth { .. } => name.to_owned(),
+        }
+    }
+}
+
+#[derive(Default)]
+struct DeviceNameCache {
+    names: HashMap<DeviceIdentity, String>,
+}
+
+impl DeviceNameCache {
+    fn get(&self, identity: &DeviceIdentity) -> Option<&str> {
+        self.names.get(identity).map(String::as_str)
+    }
+
+    fn resolve(
+        &mut self,
+        identity: DeviceIdentity,
+        fallback_name: &str,
+        query_name: impl FnOnce() -> Result<Option<String>, String>,
+    ) -> (String, Option<String>) {
+        if let Some(name) = self.names.get(&identity) {
+            return (name.clone(), None);
+        }
+
+        let (name, error) = match query_name() {
+            Ok(Some(name)) if !name.trim().is_empty() => (name.trim().to_owned(), None),
+            Ok(_) => (fallback_name.to_owned(), None),
+            Err(error) => (fallback_name.to_owned(), Some(error)),
+        };
+        self.names.insert(identity, name.clone());
+        (name, error)
+    }
+
+    fn forget(&mut self, identity: &DeviceIdentity) {
+        self.names.remove(identity);
+    }
 }
 
 struct DeviceNotifications {
@@ -54,7 +127,7 @@ struct DeviceNotifications {
 
 impl DeviceNotifications {
     fn from_config(config: AppConfig) -> Result<Self, Box<dyn Error>> {
-        NotificationEngine::from_config(config)?;
+        NotificationEngine::from_config(config.clone())?;
         Ok(Self {
             config,
             engines: HashMap::new(),
@@ -62,12 +135,17 @@ impl DeviceNotifications {
     }
 
     fn set_config(&mut self, config: AppConfig) -> Result<(), Box<dyn Error>> {
-        NotificationEngine::from_config(config)?;
+        NotificationEngine::from_config(config.clone())?;
         for engine in self.engines.values_mut() {
-            engine.set_config(config)?;
+            engine.set_config(config.clone())?;
         }
         self.config = config;
         Ok(())
+    }
+
+    fn retain_monitored_devices(&mut self, monitored_devices: &BTreeMap<String, bool>) {
+        self.engines
+            .retain(|identity, _| is_device_monitored(monitored_devices, &identity.config_id()));
     }
 
     fn update(
@@ -79,7 +157,7 @@ impl DeviceNotifications {
         let engine = self
             .engines
             .entry(identity)
-            .or_insert(NotificationEngine::from_config(self.config)?);
+            .or_insert(NotificationEngine::from_config(self.config.clone())?);
         Ok(engine.update(device_name, sample)?)
     }
 }
@@ -88,7 +166,13 @@ type PollResult = Result<(), String>;
 
 enum PollUpdate {
     Reading(DeviceReading),
+    DeviceName {
+        identity: DeviceIdentity,
+        name: String,
+        error: Option<String>,
+    },
     Warning(String),
+    Trace(String),
     Finished(PollResult),
 }
 
@@ -101,6 +185,54 @@ struct ConfigWatch {
 pub fn run() -> Result<(), Box<dyn Error>> {
     let started = Instant::now();
     let mut diagnostic_log = VecDeque::new();
+    let mut startup_state_warnings = Vec::new();
+    let (legacy_monitored_devices, legacy_settings_available) =
+        match load_legacy_monitored_devices() {
+            Ok(devices) => (devices, true),
+            Err(error) => {
+                startup_state_warnings.push(format!(
+                    "Could not read legacy monitored-device preferences: {error}"
+                ));
+                (BTreeMap::new(), false)
+            }
+        };
+    let mut monitor_state = match DeviceState::open_local() {
+        Ok(state) => Some(state),
+        Err(error) => {
+            startup_state_warnings.push(format!(
+                "Could not open local monitoring state; device choices cannot be changed this run: {error}"
+            ));
+            None
+        }
+    };
+    if let Some(state) = monitor_state.as_mut() {
+        if legacy_settings_available {
+            match state.import_legacy_monitored_devices(&legacy_monitored_devices) {
+                Ok(()) => {
+                    if let Err(error) = remove_legacy_monitored_devices() {
+                        startup_state_warnings.push(format!(
+                            "Could not remove migrated monitoring preferences from config: {error}"
+                        ));
+                    }
+                }
+                Err(error) => startup_state_warnings.push(format!(
+                    "Could not migrate monitored-device preferences to local state: {error}"
+                )),
+            }
+        }
+    }
+    let mut monitored_devices = match monitor_state.as_ref() {
+        Some(state) => match state.monitored_devices() {
+            Ok(devices) => devices,
+            Err(error) => {
+                startup_state_warnings.push(format!(
+                    "Could not load local monitored-device preferences; using legacy settings for this run: {error}"
+                ));
+                legacy_monitored_devices.clone()
+            }
+        },
+        None => legacy_monitored_devices,
+    };
     let (mut active_config, mut notification_config_error) = match AppConfig::load() {
         Ok(config) => (config, None),
         Err(error) => (AppConfig::default(), Some(error.to_string())),
@@ -113,9 +245,18 @@ pub fn run() -> Result<(), Box<dyn Error>> {
         LogLevel::Info,
         "Volty started",
     )?;
+    for warning in startup_state_warnings {
+        record_event(
+            &mut diagnostic_log,
+            &mut file_logger,
+            started,
+            LogLevel::Warn,
+            &warning,
+        )?;
+    }
     let mut tray = TrayController::new()?;
     tray.set_battery_color_map(active_config.battery_color_map)?;
-    tray.update_status("", "Searching for supported mouse", None)?;
+    tray.update_status("", "Searching for supported devices", None)?;
     let config_watch = watch_config_file()?;
 
     if let Some(message) = notification_config_error.as_deref() {
@@ -128,7 +269,7 @@ pub fn run() -> Result<(), Box<dyn Error>> {
         )?;
         tray.update_status("", &format!("Configuration error: {message}"), None)?;
     }
-    let mut notifications = DeviceNotifications::from_config(active_config)?;
+    let mut notifications = DeviceNotifications::from_config(active_config.clone())?;
     let device_state = match DeviceState::open_local() {
         Ok(state) => Some(state),
         Err(error) => {
@@ -159,7 +300,11 @@ pub fn run() -> Result<(), Box<dyn Error>> {
             )
         })?;
     let mut config_reload_due = None;
-    let mut pending_readings = Vec::new();
+    let mut pending_readings: Vec<DeviceReading> = Vec::new();
+    let mut latest_readings: HashMap<DeviceIdentity, DeviceReading> = HashMap::new();
+    let mut discovered_devices: HashMap<DeviceIdentity, String> = HashMap::new();
+    let mut readings_seen_this_poll: HashSet<DeviceIdentity> = HashSet::new();
+    let mut poll_had_warning = false;
 
     loop {
         if !process_windows_messages() {
@@ -194,7 +339,7 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                         LogLevel::Debug,
                         "Manual battery refresh requested",
                     )?;
-                    reload_notification_config(
+                    let config_changed = reload_notification_config(
                         &mut tray,
                         &mut notifications,
                         &mut notification_config_error,
@@ -204,6 +349,30 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                         &mut file_logger,
                         started,
                     )?;
+                    if config_changed {
+                        retain_monitored_readings(
+                            &mut latest_readings,
+                            &mut pending_readings,
+                            &monitored_devices,
+                        );
+                        update_monitored_device_menu(
+                            &mut tray,
+                            &discovered_devices,
+                            &monitored_devices,
+                            &mut diagnostic_log,
+                            &mut file_logger,
+                            started,
+                        )?;
+                        update_visible_devices(
+                            &mut tray,
+                            &latest_readings,
+                            &monitored_devices,
+                            notification_config_error.as_deref(),
+                            &mut diagnostic_log,
+                            &mut file_logger,
+                            started,
+                        )?;
+                    }
                     if commands_tx.send(PollCommand::Refresh).is_err() {
                         report_error(
                             &mut tray,
@@ -248,7 +417,7 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                     }
                 }
                 Ok(TrayAction::Diagnose) => {
-                    match generate_diagnostic_report(active_config, &diagnostic_log) {
+                    match generate_diagnostic_report(active_config.clone(), &diagnostic_log) {
                         Ok((path, report)) => {
                             let path_text = path.display().to_string();
                             match show_diagnose_window(&report) {
@@ -307,6 +476,91 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                         &error.to_string(),
                     )?,
                 },
+                Ok(TrayAction::SetDeviceMonitored {
+                    identity,
+                    monitored,
+                }) => {
+                    let was_monitored = is_device_monitored(&monitored_devices, &identity);
+                    if was_monitored == monitored {
+                        tray.set_device_monitored_checked(&identity, was_monitored);
+                        continue;
+                    }
+
+                    let save_result = match monitor_state.as_mut() {
+                        Some(state) => state.set_device_monitored(&identity, monitored),
+                        None => Err(io::Error::new(
+                            io::ErrorKind::NotConnected,
+                            "local SQLite monitoring state is unavailable",
+                        )
+                        .into()),
+                    };
+                    match save_result {
+                        Ok(()) => {
+                            monitored_devices.insert(identity.clone(), monitored);
+                            let refresh_failed =
+                                request_device_refresh(&commands_tx, monitored).is_err();
+                            notifications.retain_monitored_devices(&monitored_devices);
+                            let device_name = discovered_devices
+                                .iter()
+                                .find(|(device, _)| device.config_id() == identity)
+                                .map(|(_, name)| name.as_str())
+                                .unwrap_or("device");
+                            record_event(
+                                &mut diagnostic_log,
+                                &mut file_logger,
+                                started,
+                                LogLevel::Info,
+                                &format!(
+                                    "{} monitoring for {device_name}",
+                                    if monitored { "Enabled" } else { "Disabled" }
+                                ),
+                            )?;
+                            retain_monitored_readings(
+                                &mut latest_readings,
+                                &mut pending_readings,
+                                &monitored_devices,
+                            );
+                            update_monitored_device_menu(
+                                &mut tray,
+                                &discovered_devices,
+                                &monitored_devices,
+                                &mut diagnostic_log,
+                                &mut file_logger,
+                                started,
+                            )?;
+                            update_visible_devices(
+                                &mut tray,
+                                &latest_readings,
+                                &monitored_devices,
+                                notification_config_error.as_deref(),
+                                &mut diagnostic_log,
+                                &mut file_logger,
+                                started,
+                            )?;
+                            if refresh_failed {
+                                report_error(
+                                    &mut tray,
+                                    &mut diagnostic_log,
+                                    &mut file_logger,
+                                    started,
+                                    "Refresh error",
+                                    "device poller has stopped",
+                                )?;
+                            }
+                        }
+                        Err(error) => {
+                            tray.set_device_monitored_checked(&identity, was_monitored);
+                            report_error(
+                                &mut tray,
+                                &mut diagnostic_log,
+                                &mut file_logger,
+                                started,
+                                "Device monitoring state error",
+                                &error.to_string(),
+                            )?;
+                        }
+                    }
+                }
                 Ok(TrayAction::About) => {
                     if let Err(error) = show_about_window() {
                         report_error(
@@ -376,7 +630,7 @@ pub fn run() -> Result<(), Box<dyn Error>> {
 
         if config_reload_due.is_some_and(|due| Instant::now() >= due) {
             config_reload_due = None;
-            if reload_notification_config(
+            let config_changed = reload_notification_config(
                 &mut tray,
                 &mut notifications,
                 &mut notification_config_error,
@@ -385,8 +639,32 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                 &mut diagnostic_log,
                 &mut file_logger,
                 started,
-            )? && commands_tx.send(PollCommand::Refresh).is_err()
-            {
+            )?;
+            if config_changed {
+                retain_monitored_readings(
+                    &mut latest_readings,
+                    &mut pending_readings,
+                    &monitored_devices,
+                );
+                update_monitored_device_menu(
+                    &mut tray,
+                    &discovered_devices,
+                    &monitored_devices,
+                    &mut diagnostic_log,
+                    &mut file_logger,
+                    started,
+                )?;
+                update_visible_devices(
+                    &mut tray,
+                    &latest_readings,
+                    &monitored_devices,
+                    notification_config_error.as_deref(),
+                    &mut diagnostic_log,
+                    &mut file_logger,
+                    started,
+                )?;
+            }
+            if config_changed && commands_tx.send(PollCommand::Refresh).is_err() {
                 report_error(
                     &mut tray,
                     &mut diagnostic_log,
@@ -403,21 +681,114 @@ pub fn run() -> Result<(), Box<dyn Error>> {
         #[allow(clippy::while_let_loop)]
         loop {
             match results_rx.try_recv() {
-                Ok(PollUpdate::Reading(mut reading)) => {
-                    process_device_reading(
-                        &mut notifications,
-                        &mut reading,
+                Ok(PollUpdate::Reading(reading)) => {
+                    let identity = reading.identity.clone();
+                    discovered_devices
+                        .insert(identity.clone(), identity.display_name(&reading.name));
+                    readings_seen_this_poll.insert(identity.clone());
+                    if is_device_monitored(&monitored_devices, &identity.config_id()) {
+                        pending_readings.push(reading);
+                        update_tray_devices(
+                            &mut tray,
+                            &pending_readings,
+                            notification_config_error.as_deref(),
+                            &mut diagnostic_log,
+                            &mut file_logger,
+                            started,
+                        )?;
+                        let reading = pending_readings.last_mut().ok_or_else(|| {
+                            io::Error::other("pending battery reading disappeared")
+                        })?;
+                        process_device_reading(
+                            &mut notifications,
+                            reading,
+                            &mut diagnostic_log,
+                            &mut file_logger,
+                            started,
+                        )?;
+                        latest_readings.insert(identity, reading.clone());
+                        if reading.notification_error.is_some() {
+                            update_tray_devices(
+                                &mut tray,
+                                &pending_readings,
+                                notification_config_error.as_deref(),
+                                &mut diagnostic_log,
+                                &mut file_logger,
+                                started,
+                            )?;
+                        }
+                    }
+                    update_monitored_device_menu(
+                        &mut tray,
+                        &discovered_devices,
+                        &monitored_devices,
                         &mut diagnostic_log,
                         &mut file_logger,
                         started,
                     )?;
-                    pending_readings.push(reading);
                 }
-                Ok(PollUpdate::Warning(message)) => record_event(
+                Ok(PollUpdate::DeviceName {
+                    identity,
+                    name,
+                    error,
+                }) => {
+                    let device_name = identity.display_name(&name);
+                    let is_discovered = discovered_devices.contains_key(&identity);
+                    discovered_devices.insert(identity.clone(), device_name.clone());
+                    if let Some(reading) = pending_readings
+                        .iter_mut()
+                        .find(|reading| reading.identity == identity)
+                    {
+                        reading.name = name.clone();
+                    } else if !is_discovered {
+                        record_event(
+                            &mut diagnostic_log,
+                            &mut file_logger,
+                            started,
+                            LogLevel::Warn,
+                            &format!(
+                                "Received a device name without a pending battery reading for {device_name}"
+                            ),
+                        )?;
+                    }
+                    if let Some(reading) = latest_readings.get_mut(&identity) {
+                        reading.name = name;
+                    }
+                    update_monitored_device_menu(
+                        &mut tray,
+                        &discovered_devices,
+                        &monitored_devices,
+                        &mut diagnostic_log,
+                        &mut file_logger,
+                        started,
+                    )?;
+                    if let Some(error) = error {
+                        record_event(
+                            &mut diagnostic_log,
+                            &mut file_logger,
+                            started,
+                            LogLevel::Debug,
+                            &format!(
+                                "Protocol name discovery failed for {device_name}; using interface label: {error}"
+                            ),
+                        )?;
+                    }
+                }
+                Ok(PollUpdate::Warning(message)) => {
+                    poll_had_warning = true;
+                    record_event(
+                        &mut diagnostic_log,
+                        &mut file_logger,
+                        started,
+                        LogLevel::Warn,
+                        &message,
+                    )?;
+                }
+                Ok(PollUpdate::Trace(message)) => record_event(
                     &mut diagnostic_log,
                     &mut file_logger,
                     started,
-                    LogLevel::Warn,
+                    LogLevel::Trace,
                     &message,
                 )?,
                 Ok(PollUpdate::Finished(result)) => {
@@ -428,6 +799,22 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                         LogLevel::Trace,
                         "Received device polling result",
                     )?;
+                    if !poll_had_warning {
+                        discovered_devices
+                            .retain(|identity, _| readings_seen_this_poll.contains(identity));
+                        latest_readings
+                            .retain(|identity, _| readings_seen_this_poll.contains(identity));
+                        update_monitored_device_menu(
+                            &mut tray,
+                            &discovered_devices,
+                            &monitored_devices,
+                            &mut diagnostic_log,
+                            &mut file_logger,
+                            started,
+                        )?;
+                    }
+                    readings_seen_this_poll.clear();
+                    poll_had_warning = false;
                     apply_poll_result(
                         &mut tray,
                         std::mem::take(&mut pending_readings),
@@ -528,7 +915,7 @@ fn reload_notification_config(
         return Ok(false);
     }
 
-    if let Err(error) = notifications.set_config(config) {
+    if let Err(error) = notifications.set_config(config.clone()) {
         let message = error.to_string();
         if current_error.as_deref() != Some(&message) {
             report_error(
@@ -565,8 +952,8 @@ fn reload_notification_config(
         return Ok(false);
     }
     let config_changed = *active_config != config;
-    *active_config = config;
     file_logger.set_level(config.log_level);
+    *active_config = config;
     let recovered = current_error.take().is_some();
     if recovered || config_changed {
         record_event(
@@ -666,13 +1053,25 @@ fn poll_worker(
     retry_interval: Duration,
     mut device_state: Option<DeviceState>,
 ) {
+    let mut name_cache = DeviceNameCache::default();
     poll_worker_with_query(
         commands,
         results,
         poll_interval,
         retry_interval,
-        move |results| query_devices(results, &mut device_state),
+        move |results| query_devices(results, &mut device_state, &mut name_cache),
     );
+}
+
+fn request_device_refresh(
+    commands: &mpsc::Sender<PollCommand>,
+    monitored: bool,
+) -> Result<(), mpsc::SendError<PollCommand>> {
+    if monitored {
+        commands.send(PollCommand::Refresh)
+    } else {
+        Ok(())
+    }
 }
 
 fn poll_worker_with_query(
@@ -712,23 +1111,33 @@ fn poll_worker_with_query(
 fn query_devices(
     results: &mpsc::Sender<PollUpdate>,
     device_state: &mut Option<DeviceState>,
+    name_cache: &mut DeviceNameCache,
 ) -> PollResult {
     use volty_hid::{enumerate_hid_interfaces, resolve_mouse_model};
 
-    let interfaces = enumerate_hid_interfaces().map_err(|error| error.to_string())?;
-
     let mut errors = Vec::new();
+    let interfaces = match enumerate_hid_interfaces() {
+        Ok(interfaces) => interfaces,
+        Err(error) => {
+            errors.push(format!("HID discovery: {error}"));
+            Vec::new()
+        }
+    };
+    let mut pending_names = Vec::new();
+    let mut pending_name_ids = HashSet::new();
     let mut supported_interfaces = 0;
     let mut reading_count = 0;
     for interface in interfaces {
-        let Some(mouse) = resolve_mouse_model(&interface).map_err(|error| {
-            format!(
-                "Ambiguous backend match for HID interface {:04x}:{:04x}: {error}",
-                interface.vendor_id, interface.product_id
-            )
-        })?
-        else {
-            continue;
+        let mouse = match resolve_mouse_model(&interface) {
+            Ok(Some(mouse)) => mouse,
+            Ok(None) => continue,
+            Err(error) => {
+                errors.push(format!(
+                    "Ambiguous HID backend match for {:04x}:{:04x}: {error}",
+                    interface.vendor_id, interface.product_id
+                ));
+                continue;
+            }
         };
         supported_interfaces += 1;
         let protocol = mouse.protocol();
@@ -757,22 +1166,28 @@ fn query_devices(
         };
 
         for device_index in device_indices {
-            match protocol.query_device(&interface, device_index) {
-                Ok(reading) => {
-                    let (name, name_discovery_error) = match reading.name {
-                        Ok(Some(name)) if !name.trim().is_empty() => (name.trim().to_owned(), None),
-                        Ok(_) => (fallback_name.clone(), None),
-                        Err(error) => (fallback_name.clone(), Some(error.to_string())),
-                    };
-                    let reading = DeviceReading {
-                        identity: DeviceIdentity {
-                            interface_path: interface_path.clone(),
+            let identity = DeviceIdentity::Hid {
+                interface_path: interface_path.clone(),
+                device_index,
+            };
+            match protocol.query_battery(&interface, device_index) {
+                Ok(battery) => {
+                    let cached_name = name_cache.get(&identity).map(str::to_owned);
+                    let name = cached_name.clone().unwrap_or_else(|| fallback_name.clone());
+                    if cached_name.is_none() && pending_name_ids.insert(identity.clone()) {
+                        pending_names.push(PendingDeviceName {
+                            identity: identity.clone(),
+                            interface: interface.clone(),
+                            protocol,
+                            fallback_name: fallback_name.clone(),
                             device_index,
-                        },
+                        });
+                    }
+                    let reading = DeviceReading {
+                        identity,
                         name,
-                        name_discovery_error,
-                        device_index,
-                        battery: reading.battery,
+                        device_index: Some(device_index),
+                        battery,
                         notification_error: None,
                     };
                     results
@@ -791,26 +1206,93 @@ fn query_devices(
                             .map_err(|_| "device polling result receiver disconnected".to_owned())?;
                     }
                 }
-                Err(error) => errors.push(format!(
-                    "{fallback_name} via {} (slot {device_index}): {error}",
-                    protocol.name()
-                )),
+                Err(error) => {
+                    name_cache.forget(&identity);
+                    errors.push(format!(
+                        "{fallback_name} via {} (slot {device_index}): {error}",
+                        protocol.name()
+                    ));
+                }
             }
         }
     }
 
+    for pending in pending_names {
+        let (name, error) =
+            name_cache.resolve(pending.identity.clone(), &pending.fallback_name, || {
+                pending
+                    .protocol
+                    .query_device_name(&pending.interface, pending.device_index)
+                    .map_err(|error| error.to_string())
+            });
+        results
+            .send(PollUpdate::DeviceName {
+                identity: pending.identity,
+                name,
+                error,
+            })
+            .map_err(|_| "device polling result receiver disconnected".to_owned())?;
+    }
+
+    match volty_bluetooth::scan_connected_devices() {
+        Ok(scan) => {
+            results
+                .send(PollUpdate::Trace(format!(
+                    "Bluetooth discovery examined {} device entries and found {} readable battery value(s) with {} warning(s)",
+                    scan.devices_examined,
+                    scan.readings.len(),
+                    scan.warnings.len()
+                )))
+                .map_err(|_| "device polling result receiver disconnected".to_owned())?;
+            errors.extend(
+                scan.warnings
+                    .into_iter()
+                    .map(|warning| format!("Bluetooth battery read: {warning}")),
+            );
+            for reading in scan.readings {
+                let identity = DeviceIdentity::Bluetooth {
+                    device_id: reading.device_id,
+                };
+                let reading = DeviceReading {
+                    identity,
+                    name: reading.name,
+                    device_index: None,
+                    battery: reading.battery,
+                    notification_error: None,
+                };
+                results
+                    .send(PollUpdate::Reading(reading))
+                    .map_err(|_| "device polling result receiver disconnected".to_owned())?;
+                reading_count += 1;
+            }
+        }
+        Err(error) => errors.push(format!("Bluetooth discovery: {error}")),
+    }
+
     if reading_count > 0 {
+        if !errors.is_empty() {
+            results
+                .send(PollUpdate::Warning(format!(
+                    "Some battery readings failed: {}",
+                    errors.join("; ")
+                )))
+                .map_err(|_| "device polling result receiver disconnected".to_owned())?;
+        }
         return Ok(());
     }
 
-    if supported_interfaces == 0 {
-        return Err("No supported mouse found".to_owned());
+    if supported_interfaces == 0 && errors.is_empty() {
+        return Err(
+            "No readable battery found. Bluetooth support requires a Windows-reported battery property or the standard BLE Battery Service."
+                .to_owned(),
+        );
     }
 
-    Err(format!(
-        "Could not read a supported mouse battery: {}",
+    Err(if errors.is_empty() {
+        "No supported battery devices found".to_owned()
+    } else {
         errors.join("; ")
-    ))
+    })
 }
 
 fn apply_poll_result(
@@ -853,6 +1335,24 @@ fn apply_poll_result(
         )?;
     }
 
+    update_tray_devices(
+        tray,
+        &readings,
+        notification_config_error,
+        diagnostic_log,
+        file_logger,
+        started,
+    )
+}
+
+fn update_tray_devices(
+    tray: &mut TrayController,
+    readings: &[DeviceReading],
+    notification_config_error: Option<&str>,
+    diagnostic_log: &mut VecDeque<String>,
+    file_logger: &mut FileLogger,
+    started: Instant,
+) -> io::Result<()> {
     let mut device_statuses = Vec::with_capacity(readings.len());
     let mut lowest_percentage: Option<u8> = None;
     for reading in readings {
@@ -864,7 +1364,7 @@ fn apply_poll_result(
             (current, None) => current,
         };
         let mut status = battery_status_label(&reading.battery);
-        if let Some(error) = reading.notification_error {
+        if let Some(error) = &reading.notification_error {
             status.push_str("; notification error: ");
             status.push_str(&error);
         }
@@ -896,6 +1396,85 @@ fn apply_poll_result(
     Ok(())
 }
 
+fn update_monitored_device_menu(
+    tray: &mut TrayController,
+    devices: &HashMap<DeviceIdentity, String>,
+    monitored_devices: &BTreeMap<String, bool>,
+    diagnostic_log: &mut VecDeque<String>,
+    file_logger: &mut FileLogger,
+    started: Instant,
+) -> io::Result<()> {
+    let entries: Vec<_> = devices
+        .iter()
+        .map(|(identity, name)| {
+            let config_id = identity.config_id();
+            DeviceMonitorEntry {
+                monitored: is_device_monitored(monitored_devices, &config_id),
+                identity: config_id,
+                name: name.clone(),
+            }
+        })
+        .collect();
+    if let Err(error) = tray.update_monitored_devices(&entries) {
+        record_event(
+            diagnostic_log,
+            file_logger,
+            started,
+            LogLevel::Error,
+            &format!("Monitored-devices menu update error: {error}"),
+        )?;
+    }
+    Ok(())
+}
+
+fn update_visible_devices(
+    tray: &mut TrayController,
+    latest_readings: &HashMap<DeviceIdentity, DeviceReading>,
+    monitored_devices: &BTreeMap<String, bool>,
+    notification_config_error: Option<&str>,
+    diagnostic_log: &mut VecDeque<String>,
+    file_logger: &mut FileLogger,
+    started: Instant,
+) -> io::Result<()> {
+    let readings = monitored_readings(latest_readings, monitored_devices);
+    update_tray_devices(
+        tray,
+        &readings,
+        notification_config_error,
+        diagnostic_log,
+        file_logger,
+        started,
+    )
+}
+
+fn monitored_readings(
+    latest_readings: &HashMap<DeviceIdentity, DeviceReading>,
+    monitored_devices: &BTreeMap<String, bool>,
+) -> Vec<DeviceReading> {
+    let mut readings: Vec<_> = latest_readings
+        .iter()
+        .filter(|(identity, _)| is_device_monitored(monitored_devices, &identity.config_id()))
+        .map(|(_, reading)| reading.clone())
+        .collect();
+    readings.sort_by_key(|reading| reading.identity.config_id());
+    readings
+}
+
+fn retain_monitored_readings(
+    latest_readings: &mut HashMap<DeviceIdentity, DeviceReading>,
+    pending_readings: &mut Vec<DeviceReading>,
+    monitored_devices: &BTreeMap<String, bool>,
+) {
+    latest_readings
+        .retain(|identity, _| is_device_monitored(monitored_devices, &identity.config_id()));
+    pending_readings
+        .retain(|reading| is_device_monitored(monitored_devices, &reading.identity.config_id()));
+}
+
+fn is_device_monitored(monitored_devices: &BTreeMap<String, bool>, identity: &str) -> bool {
+    monitored_devices.get(identity).copied().unwrap_or(true)
+}
+
 fn process_device_reading(
     notifications: &mut DeviceNotifications,
     reading: &mut DeviceReading,
@@ -904,17 +1483,6 @@ fn process_device_reading(
     started: Instant,
 ) -> io::Result<()> {
     let device_name = format_device_name(&reading.name, reading.device_index);
-    if let Some(error) = reading.name_discovery_error.as_deref() {
-        record_event(
-            diagnostic_log,
-            file_logger,
-            started,
-            LogLevel::Debug,
-            &format!(
-                "Protocol name discovery failed for {device_name}; using interface label: {error}"
-            ),
-        )?;
-    }
     let percentage = reading.battery.level_percent;
     let status = battery_status_label(&reading.battery);
     record_event(
@@ -923,7 +1491,8 @@ fn process_device_reading(
         started,
         LogLevel::Debug,
         &format!(
-            "Battery read for {device_name}: {} ({status})",
+            "Battery read for {device_name} via {}: {} ({status})",
+            battery_source_label(reading.battery.source),
             percentage.map_or_else(|| "unknown".to_owned(), |value| format!("{value}%"))
         ),
     )?;
@@ -1009,11 +1578,11 @@ fn process_device_reading(
     Ok(())
 }
 
-fn format_device_name(name: &str, device_index: u8) -> String {
-    if device_index == 0xff {
-        format!("{name} (direct)")
-    } else {
-        format!("{name} (slot {device_index})")
+fn format_device_name(name: &str, device_index: Option<u8>) -> String {
+    match device_index {
+        None => name.to_owned(),
+        Some(0xff) => format!("{name} (direct)"),
+        Some(device_index) => format!("{name} (slot {device_index})"),
     }
 }
 
@@ -1046,6 +1615,15 @@ fn battery_status_label(battery: &BatteryStatus) -> String {
     match level {
         Some(level) => format!("{state} ({level})"),
         None => state.to_owned(),
+    }
+}
+
+fn battery_source_label(source: BatterySource) -> &'static str {
+    match source {
+        BatterySource::Unified => "HID++ Unified Battery",
+        BatterySource::LegacyBatteryStatus => "HID++ Battery Status",
+        BatterySource::BluetoothGatt => "Bluetooth GATT Battery Service",
+        BatterySource::BluetoothDeviceProperty => "Windows Bluetooth battery property",
     }
 }
 
@@ -1109,7 +1687,6 @@ mod tests {
         atomic::{AtomicUsize, Ordering},
         Arc,
     };
-
     #[test]
     fn coarse_full_level_does_not_mark_a_discharging_battery_as_full() {
         let battery = BatteryStatus {
@@ -1117,8 +1694,8 @@ mod tests {
             level: BatteryLevel::Full,
             raw_level: 8,
             state: BatteryState::Discharging,
-            raw_status: 0,
-            source: volty_hid::BatterySource::Unified,
+            raw_status: Some(0),
+            source: BatterySource::Unified,
         };
 
         assert!(!battery_is_full(&battery));
@@ -1160,6 +1737,42 @@ mod tests {
     }
 
     #[test]
+    fn re_enabling_device_requests_immediate_refresh_but_disabling_does_not() {
+        let (commands_tx, commands_rx) = mpsc::channel();
+        let (results_tx, results_rx) = mpsc::channel();
+        let query_count = Arc::new(AtomicUsize::new(0));
+        let worker_query_count = Arc::clone(&query_count);
+        let worker = thread::spawn(move || {
+            poll_worker_with_query(
+                commands_rx,
+                results_tx,
+                Duration::from_secs(60),
+                Duration::from_secs(60),
+                move |_| {
+                    worker_query_count.fetch_add(1, Ordering::Relaxed);
+                    Ok(())
+                },
+            );
+        });
+
+        assert!(matches!(
+            results_rx.recv_timeout(Duration::from_secs(5)).unwrap(),
+            PollUpdate::Finished(Ok(()))
+        ));
+        request_device_refresh(&commands_tx, true).unwrap();
+        assert!(matches!(
+            results_rx.recv_timeout(Duration::from_secs(5)).unwrap(),
+            PollUpdate::Finished(Ok(()))
+        ));
+        request_device_refresh(&commands_tx, false).unwrap();
+        thread::sleep(Duration::from_millis(50));
+        assert_eq!(query_count.load(Ordering::Relaxed), 2);
+
+        commands_tx.send(PollCommand::Quit).unwrap();
+        worker.join().unwrap();
+    }
+
+    #[test]
     fn poll_worker_forwards_readings_before_the_query_finishes() {
         let (commands_tx, commands_rx) = mpsc::channel();
         let (results_tx, results_rx) = mpsc::channel();
@@ -1173,6 +1786,16 @@ mod tests {
                 move |results| {
                     assert!(results.send(PollUpdate::Reading(test_reading())).is_ok());
                     finish_query_rx.recv().unwrap();
+                    assert!(results
+                        .send(PollUpdate::DeviceName {
+                            identity: DeviceIdentity::Hid {
+                                interface_path: "test".to_owned(),
+                                device_index: 1,
+                            },
+                            name: "Resolved name".to_owned(),
+                            error: None,
+                        })
+                        .is_ok());
                     Ok(())
                 },
             );
@@ -1185,6 +1808,10 @@ mod tests {
         finish_query_tx.send(()).unwrap();
         assert!(matches!(
             results_rx.recv_timeout(Duration::from_secs(5)).unwrap(),
+            PollUpdate::DeviceName { .. }
+        ));
+        assert!(matches!(
+            results_rx.recv_timeout(Duration::from_secs(5)).unwrap(),
             PollUpdate::Finished(Ok(()))
         ));
         commands_tx.send(PollCommand::Quit).unwrap();
@@ -1193,22 +1820,191 @@ mod tests {
 
     fn test_reading() -> DeviceReading {
         DeviceReading {
-            identity: DeviceIdentity {
+            identity: DeviceIdentity::Hid {
                 interface_path: "test".to_owned(),
                 device_index: 1,
             },
             name: "Test device".to_owned(),
-            name_discovery_error: None,
-            device_index: 1,
+            device_index: Some(1),
             battery: BatteryStatus {
                 level_percent: Some(20),
                 level: BatteryLevel::Low,
                 raw_level: 2,
                 state: BatteryState::Discharging,
-                raw_status: 0,
-                source: volty_hid::BatterySource::Unified,
+                raw_status: Some(0),
+                source: BatterySource::Unified,
             },
             notification_error: None,
         }
+    }
+
+    #[test]
+    fn device_names_are_requested_once_until_the_device_disconnects() {
+        let identity = DeviceIdentity::Hid {
+            interface_path: "receiver".to_owned(),
+            device_index: 1,
+        };
+        let mut cache = DeviceNameCache::default();
+        let mut query_count = 0;
+
+        let first = cache.resolve(identity.clone(), "Interface label", || {
+            query_count += 1;
+            Ok(Some("  Mouse Name  ".to_owned()))
+        });
+        let second = cache.resolve(identity.clone(), "Changed interface label", || {
+            query_count += 1;
+            Ok(Some("Unexpected second name".to_owned()))
+        });
+
+        assert_eq!(first, ("Mouse Name".to_owned(), None));
+        assert_eq!(second, ("Mouse Name".to_owned(), None));
+        assert_eq!(query_count, 1);
+
+        cache.forget(&identity);
+        let after_disconnect = cache.resolve(identity, "New interface label", || {
+            query_count += 1;
+            Ok(Some("Replacement mouse".to_owned()))
+        });
+
+        assert_eq!(after_disconnect, ("Replacement mouse".to_owned(), None));
+        assert_eq!(query_count, 2);
+    }
+
+    #[test]
+    fn failed_device_name_lookup_is_cached_until_disconnect() {
+        let identity = DeviceIdentity::Hid {
+            interface_path: "receiver".to_owned(),
+            device_index: 2,
+        };
+        let mut cache = DeviceNameCache::default();
+        let mut query_count = 0;
+
+        let first = cache.resolve(identity.clone(), "Interface label", || {
+            query_count += 1;
+            Err("name request timed out".to_owned())
+        });
+        let second = cache.resolve(identity, "Changed interface label", || {
+            query_count += 1;
+            Ok(Some("Unexpected retry".to_owned()))
+        });
+
+        assert_eq!(
+            first,
+            (
+                "Interface label".to_owned(),
+                Some("name request timed out".to_owned())
+            )
+        );
+        assert_eq!(second, ("Interface label".to_owned(), None));
+        assert_eq!(query_count, 1);
+    }
+
+    #[test]
+    fn bluetooth_device_names_are_not_formatted_as_hid_slots() {
+        let identity = DeviceIdentity::Bluetooth {
+            device_id: "opaque-device-id".to_owned(),
+        };
+
+        assert_eq!(
+            identity.display_name("Baseus Bass BS2 Lite"),
+            "Baseus Bass BS2 Lite"
+        );
+        assert_eq!(
+            format_device_name("Receiver mouse", Some(3)),
+            "Receiver mouse (slot 3)"
+        );
+    }
+
+    #[test]
+    fn bluetooth_identity_does_not_collide_with_hid_identity() {
+        let identities = std::collections::HashSet::from([
+            DeviceIdentity::Hid {
+                interface_path: "same-opaque-id".to_owned(),
+                device_index: 1,
+            },
+            DeviceIdentity::Bluetooth {
+                device_id: "same-opaque-id".to_owned(),
+            },
+        ]);
+
+        assert_eq!(identities.len(), 2);
+    }
+
+    #[test]
+    fn device_monitor_identity_is_stable_and_source_specific() {
+        let hid = DeviceIdentity::Hid {
+            interface_path: "receiver-path".to_owned(),
+            device_index: 1,
+        };
+        let bluetooth = DeviceIdentity::Bluetooth {
+            device_id: "receiver-path".to_owned(),
+        };
+
+        assert_eq!(hid.config_id(), "hid:1:receiver-path");
+        assert_eq!(bluetooth.config_id(), "bluetooth:receiver-path");
+        assert_ne!(hid.config_id(), bluetooth.config_id());
+        assert_eq!(hid.config_id(), hid.clone().config_id());
+    }
+
+    #[test]
+    fn unmonitored_devices_are_excluded_from_visible_readings() {
+        let included = test_reading();
+        let mut excluded = test_reading();
+        excluded.identity = DeviceIdentity::Bluetooth {
+            device_id: "bluetooth-device".to_owned(),
+        };
+        excluded.name = "Excluded device".to_owned();
+
+        let excluded_identity = excluded.identity.clone();
+        let included_identity = included.identity.clone();
+        let latest_readings = HashMap::from([
+            (included_identity.clone(), included),
+            (excluded_identity.clone(), excluded),
+        ]);
+        let monitored_devices = BTreeMap::from([(excluded_identity.config_id(), false)]);
+
+        let visible = monitored_readings(&latest_readings, &monitored_devices);
+        assert_eq!(visible.len(), 1);
+        assert_eq!(
+            visible[0].identity.config_id(),
+            included_identity.config_id()
+        );
+    }
+
+    #[test]
+    fn disabled_devices_drop_notification_tracking_state() {
+        let monitored = DeviceIdentity::Hid {
+            interface_path: "monitored".to_owned(),
+            device_index: 1,
+        };
+        let unmonitored = DeviceIdentity::Bluetooth {
+            device_id: "unmonitored".to_owned(),
+        };
+        let mut notifications = DeviceNotifications::from_config(AppConfig::default()).unwrap();
+        notifications.engines.insert(
+            monitored.clone(),
+            NotificationEngine::from_config(AppConfig::default()).unwrap(),
+        );
+        notifications.engines.insert(
+            unmonitored.clone(),
+            NotificationEngine::from_config(AppConfig::default()).unwrap(),
+        );
+        let monitored_devices = BTreeMap::from([(unmonitored.config_id(), false)]);
+
+        notifications.retain_monitored_devices(&monitored_devices);
+        assert!(notifications.engines.contains_key(&monitored));
+        assert!(!notifications.engines.contains_key(&unmonitored));
+    }
+
+    #[test]
+    fn bluetooth_battery_source_is_explicit_in_diagnostics() {
+        assert_eq!(
+            battery_source_label(BatterySource::BluetoothGatt),
+            "Bluetooth GATT Battery Service"
+        );
+        assert_eq!(
+            battery_source_label(BatterySource::BluetoothDeviceProperty),
+            "Windows Bluetooth battery property"
+        );
     }
 }

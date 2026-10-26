@@ -48,11 +48,11 @@ The workspace has two user-facing paths today:
 | Path | What it does | Current scope |
 | --- | --- | --- |
 | Tray polling | Queries a battery through the built-in API, then updates the icon and notifications. | Logitech HID++ Unified Battery (`0x1004`) and legacy Battery Status (`0x1000`). |
-| HID profile CLI | Validates and runs an explicitly selected command profile, returning raw frames and decoded output. | HID++ 2.0 only; diagnostic/test path, not used by the tray. |
+| HID diagnostics CLI | Inspects interfaces and HID++ feature mappings for on-demand diagnostics. | HID++ 2.0 diagnostics; separate from tray polling. |
 
-The tray does not load TOML profiles. A profile that successfully reads a
-battery value is useful evidence, but it does not automatically add that
-device or protocol to tray polling.
+On-demand diagnostics do not select a tray backend or add device support.
+Tray polling is selected only by the model catalog and its registered
+protocol backends.
 
 ## Protocol and mouse extension points
 
@@ -62,8 +62,9 @@ The HID crate separates interface-to-device matching from protocol behavior:
   Override `matches` when the default protocol-level interface match is too
   broad.
 - `BatteryProtocol` supplies its name, interface matcher, ordered
-  `device_indices`, and `query_battery`, which owns device discovery,
-  transport, response decoding, and conversion to `BatteryStatus`.
+  `device_indices`, and `query_battery`, which owns transport, response
+  decoding, and conversion to `BatteryStatus`. Optional `query_device_name`
+  metadata is a separate operation and must not delay a battery reading.
 - `SUPPORTED_MICE` is the single dispatch catalog used to select a model and
   its backend.
 
@@ -74,7 +75,7 @@ model, and multiple matches produce an ambiguity error rather than letting
 catalog order decide. `MouseModel::matches` defaults to the selected backend's
 `supports_interface` method. The uniquely selected model supplies the backend
 used for the query; Volty does not try every protocol or choose a backend
-from a profile.
+from diagnostic input.
 
 Today the only registered model is the Logitech HID++ 2.0 mouse. Its backend
 matches vendor ID `0x046d` and usage page `0xff00`. After selection, runtime
@@ -91,6 +92,12 @@ successful device-index order per HID interface in
 later polls. This cache only changes discovery order: unreadable or missing
 state falls back to the full index scan, and successful readings remain usable
 while the rest of discovery continues.
+
+Protocol names are queried only after the battery scan has delivered its
+readings. Each interface/device-index name (including a missing name or lookup
+failure) is cached for the active connection, so repeated polls do not issue
+name requests. A failed battery query invalidates that entry to allow a
+replacement device in the same receiver slot to be named.
 
 To get a device into tray polling:
 
@@ -121,34 +128,15 @@ percentage is available, and charging/full notification state.
 `logitech_hidpp.rs` is currently the only protocol backend. The tray consumes
 the protocol and model traits rather than selecting a vendor directly.
 
-## How profiles fit
+## How HID diagnostics fit
 
-A profile is a declarative command description, not a device driver. The
-current TOML schema describes HID++ operations, including a logical feature
-ID, operation, function, report format, request parameters, timeout, access
-class, and response decoder. The executor resolves a logical feature ID to
-the device's runtime index when it runs; that index is never a profile
-constant.
-
-The command path is:
-
-```text
-TOML file -> strict validation -> command executor -> selected protocol
-          -> correlated response -> decoder -> result and raw frames
-```
-
-Profiles are selected explicitly for the diagnostic CLI, either by built-in
-profile ID or custom file path, along with a device/interface selection. They
-do not identify a mouse model, dispatch the tray to a protocol backend, or
-tell the tray which command to run. The current profile commands and runner are
-HID++ 2.0-specific: `volty hid run` opens an HID++ session, so profile files
-do not select a protocol. Supporting diagnostic commands for a different
-protocol would require protocol-specific command types and a matching
-transport, not just a profile field.
+The `volty hid` CLI provides on-demand HID++ inspection and diagnostics. It is
+separate from the tray poller: diagnostic commands do not identify a mouse
+model, register a backend, or change which battery query the tray runs.
 
 See [Adding a Logitech mouse](./adding-mice.md) for the current backend's
-worked example: interface selection, feature discovery, read-only profile
-testing, and the Rust changes required for a new battery encoding.
+worked example: interface selection, feature discovery, tray validation, and
+the Rust changes required for a new battery encoding.
 
 ## Adding another HID battery source
 
@@ -163,12 +151,12 @@ For a new device, keep these responsibilities explicit:
    level codes.
 3. **Add or reuse a protocol adapter.** The adapter owns framing, timeouts,
    response matching, and protocol errors. If the device uses a different
-   protocol, a profile file alone cannot provide that transport.
+   protocol, implement its transport rather than relying on diagnostic input.
 4. **Normalize the result.** Convert the response to the shared battery model
    while retaining unknown/sentinel values instead of guessing.
 5. **Connect it to the tray deliberately.** Add a `MouseModel` to
-   `SUPPORTED_MICE` that selects the backend. A successful diagnostic profile
-   run alone does not add tray support.
+   `SUPPORTED_MICE` that selects the backend. A successful standalone
+   diagnostic query alone does not add tray support.
 6. **Test both layers.** Unit-test parsing with recorded frames, then validate
    with read-only hardware queries and the actual tray path.
 
@@ -177,40 +165,10 @@ there is not yet a generic parser for standard HID battery reports; adding
 another HID device requires implementing its discovery and report/protocol
 adapter before it can be monitored by the tray.
 
-## Built-in and custom profiles
+## Validation
 
-The `volty-hid` crate includes built-in protocol profiles from
-[`crates/volty-hid/protocols/`](../crates/volty-hid/protocols/). Its build
-script embeds every `.toml` file in that directory tree into the executable,
-so releases need no sidecar profile files. A profile's built-in ID is its
-relative path without the `.toml` extension; for example,
-[`logitech-hidpp/unified-battery`](../crates/volty-hid/protocols/logitech-hidpp/unified-battery.toml).
-Run `volty hid profiles` to list IDs, then use the `builtin:` prefix to select
-one:
-
-```powershell
-.\volty.exe hid profiles
-.\volty.exe hid run --profile builtin:logitech-hidpp/unified-battery --command battery-status --device-index 0x01
-```
-
-Custom profiles remain supported and are read from the specified path at
-runtime. They use the same validated TOML schema and do not need to be copied
-into the executable:
-
-```powershell
-.\volty.exe hid run --profile .\battery.toml --command battery-status --device-index 0x01
-```
-
-The README's [HID diagnostics section](../README.md#hid-diagnostics) explains
-how to list and run built-in profiles. Built-in and custom profiles are
-explicit diagnostic CLI inputs only: the tray does not load them, and they do
-not select or register its backend. Tray support is selected through
-`SUPPORTED_MICE` in code.
-
-## Validation boundaries
-
-Profile validation, frame construction, response correlation, and decoders
-can be tested without hardware. A read-only profile run verifies that a
-specific command works on a selected interface and device. Tray support must
-then be tested through its own polling path; a successful profile run alone
-does not prove that the tray consumes that command.
+Frame construction, response correlation, and battery decoders can be tested
+without hardware. On-demand diagnostics can verify an interface or feature
+mapping, but tray support must be tested through its own polling path; a
+successful standalone diagnostic query does not prove that the tray consumes
+that reading.

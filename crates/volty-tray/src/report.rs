@@ -109,7 +109,10 @@ fn render_diagnostic_report(
     }
     writeln!(
         report,
-        "\n[HID interfaces visible to hidapi: {}]\n\
+        "\n[Battery sources]\n\
+         Logitech HID++ 2.0 and Bluetooth devices exposing a Windows battery property or the standard GATT Battery Service are supported.\n\
+         Bluetooth device IDs and addresses are not included; Bluetooth read results and errors appear in the recent log.\n\
+         \n[HID interfaces visible to hidapi: {}]\n\
          Device paths and serial numbers are not included.\n\
          Review device names and log messages before sharing. Nothing is uploaded automatically.",
         devices.len()
@@ -189,6 +192,8 @@ mod tests {
         assert!(report.contains(
             "Tray color map: red <= 15% (#d23030), yellow <= 30% (#ebbe23), green > 30% (#2daa4b)"
         ));
+        assert!(report.contains("[Battery sources]"));
+        assert!(report.contains("Bluetooth device IDs and addresses are not included"));
         assert!(report.contains("[+1s] Battery poll succeeded"));
         assert!(report.contains("Bus: Bluetooth"));
         assert!(report.contains("Vendor ID: 0x1234"));

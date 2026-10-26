@@ -1,5 +1,7 @@
 [workspace]
 members = [
+    "crates/volty-battery",
+    "crates/volty-bluetooth",
     "crates/volty-hid",
     "crates/volty-tray",
 ]
