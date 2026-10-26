@@ -1,10 +1,10 @@
 //! Small, UI-free helpers for Logitech HID++ 2.0 devices.
 //!
 //! Frame construction and battery response parsing work without native
-//! dependencies. Enable the `hidapi` feature to enumerate Logitech USB HID
-//! interfaces and query a paired device. A receiver may expose several paired
-//! devices, so [`query_battery`] requires the HID++ device index separately
-//! from the USB device selection.
+//! dependencies. Enable the `hidapi` feature to enumerate all visible HID
+//! interfaces or to query Logitech HID++ devices. A receiver may expose
+//! several paired devices, so [`query_battery`] requires the HID++ device index
+//! separately from the USB device selection.
 
 mod battery;
 mod protocol;
@@ -17,6 +17,47 @@ mod hid {
     use super::*;
     use hidapi::{DeviceInfo, HidApi, HidDevice};
     use std::ffi::CString;
+
+    /// Generic metadata for a HID interface, excluding its path and serial number.
+    #[derive(Clone, Debug)]
+    pub struct HidDeviceInfo {
+        pub vendor_id: u16,
+        pub product_id: u16,
+        pub release_number: u16,
+        pub usage_page: Option<u16>,
+        pub usage: Option<u16>,
+        pub interface_number: i32,
+        pub bus_type: String,
+        pub manufacturer_string: Option<String>,
+        pub product_string: Option<String>,
+    }
+
+    impl HidDeviceInfo {
+        fn from_hidapi(info: &DeviceInfo) -> Self {
+            #[cfg(windows)]
+            let (usage_page, usage) = (Some(info.usage_page()), Some(info.usage()));
+            #[cfg(not(windows))]
+            let (usage_page, usage) = (None, None);
+
+            Self {
+                vendor_id: info.vendor_id(),
+                product_id: info.product_id(),
+                release_number: info.release_number(),
+                usage_page,
+                usage,
+                interface_number: info.interface_number(),
+                bus_type: format!("{:?}", info.bus_type()),
+                manufacturer_string: info.manufacturer_string().map(str::to_owned),
+                product_string: info.product_string().map(str::to_owned),
+            }
+        }
+    }
+
+    /// Enumerate all HID interfaces visible to hidapi, regardless of vendor or bus.
+    pub fn enumerate_hid_devices() -> Result<Vec<HidDeviceInfo>, HidppError> {
+        let api = HidApi::new().map_err(HidppError::HidApi)?;
+        Ok(api.device_list().map(HidDeviceInfo::from_hidapi).collect())
+    }
 
     /// A Logitech HID interface and its identifiers.
     #[derive(Clone, Debug)]
@@ -59,33 +100,11 @@ mod hid {
         let api = HidApi::new().map_err(HidppError::HidApi)?;
         let mut devices = Vec::new();
         for device in api.device_list() {
-            log_hid_interface(device);
             if device.vendor_id() == LOGITECH_VENDOR_ID && is_hidpp_interface(device) {
                 devices.push(LogitechDeviceInfo::from_hidapi(device));
             }
         }
         Ok(devices)
-    }
-
-    fn log_hid_interface(info: &DeviceInfo) {
-        #[cfg(windows)]
-        println!(
-            "VID={:04x} PID={:04x} usage_page={:04x} usage={:04x}",
-            info.vendor_id(),
-            info.product_id(),
-            info.usage_page(),
-            info.usage()
-        );
-        #[cfg(not(windows))]
-        println!(
-            "VID={:04x} PID={:04x} usage_page=unavailable usage=unavailable",
-            info.vendor_id(),
-            info.product_id()
-        );
-        println!(
-            "HID interface={} input_report_length=unavailable output_report_length=unavailable feature_report_length=unavailable (not exposed by hidapi DeviceInfo)",
-            info.interface_number()
-        );
     }
 
     #[cfg(windows)]
@@ -240,7 +259,10 @@ mod hid {
 }
 
 #[cfg(feature = "hidapi")]
-pub use hid::{enumerate_logitech_devices, query_battery, LogitechDeviceInfo};
+pub use hid::{
+    enumerate_hid_devices, enumerate_logitech_devices, query_battery, HidDeviceInfo,
+    LogitechDeviceInfo,
+};
 
 #[cfg(test)]
 mod tests {

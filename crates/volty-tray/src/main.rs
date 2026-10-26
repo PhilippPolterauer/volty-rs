@@ -1,7 +1,10 @@
 #[cfg(windows)]
 mod app;
+mod config;
 #[cfg(windows)]
 mod notify;
+#[cfg(windows)]
+mod report;
 #[cfg(windows)]
 mod tray;
 

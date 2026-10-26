@@ -1,10 +1,6 @@
 # Volty (`volty-rs`)
 
 <p align="center">
-  <img src="assets/banner.png" alt="Volty Banner" width="600"/>
-</p>
-
-<p align="center">
   <strong>A zero-bloat, native Windows system-tray battery monitor for Logitech Lightspeed mice written in pure Rust.</strong>
 </p>
 
@@ -66,6 +62,7 @@ volty-rs/
 │       ├── src/
 │       │   ├── main.rs        # Single-instance guard
 │       │   ├── app.rs         # Polling state machine and worker
+│       │   ├── config.rs      # Per-user TOML settings
 │       │   ├── tray.rs        # Dynamic icon generation & context menu
 │       │   └── notify.rs      # Windows toast dispatcher
 │       └── Cargo.toml
@@ -86,11 +83,26 @@ cargo run --release --package volty-tray
 ```
 
 The first battery query is made at startup; subsequent polling occurs every two
-minutes. Use the tray menu to refresh or quit.
+minutes. Use the tray menu to refresh, open configuration, enable startup, or
+quit. The **About Volty** submenu shows the app version and links to the project
+on GitHub, where you can star it or report an issue.
 
-Low-battery alerts default to 20% and fire once per discharge cycle. To change
-the threshold, edit `%APPDATA%\Volty\config.ini` and set
-`low_battery_threshold=20` to a value from 1 to 100.
+Low-battery alerts default to 20% and fire once per discharge cycle. Select
+**Open Configuration** in the tray menu to create or open
+`%APPDATA%\Volty\config.toml` in your default editor (Notepad is used if no
+editor is associated with `.toml` files). Set
+`low_battery_threshold = 20` to a value from 1 to 100. Existing
+settings are stored per-user and do not require administrator privileges.
+Volty watches the file for changes, and **Refresh Now** also reloads it.
+Invalid settings are reported while the last valid threshold stays active.
+
+Choose **Generate Debug Report** in the tray menu to create and open a local
+host report containing OS/architecture details and all HID interfaces visible
+to hidapi, regardless of manufacturer or bus type. It includes device IDs,
+usage information, and available manufacturer/product names, but omits device
+paths, serial numbers, and user or computer names. Volty does not upload the
+report; you can review it before sharing it. Reports are saved under
+`%APPDATA%\Volty\reports`.
 
 ## Building and testing
 
@@ -102,10 +114,19 @@ cargo build --release --package volty-tray
 cargo test --workspace
 ```
 
+## Releases
+
+Push a version tag such as `v0.1.0` to run the Windows release workflow. It
+tests the workspace, verifies the tag against the `volty-tray` package version,
+and publishes a standalone `x86_64-pc-windows-msvc` executable with a SHA-256
+checksum to the GitHub Release. No installer or sidecar runtime files are
+required.
+
 Protocol-frame unit tests use mock byte buffers and do not require a connected
 mouse. Device communication and tray behavior should be verified on Windows
 with compatible Logitech Lightspeed hardware.
 
 ## License
 
-The workspace packages declare the MIT license.
+The tray application is MIT-licensed. The HID crate is dual-licensed under MIT
+or Apache-2.0.

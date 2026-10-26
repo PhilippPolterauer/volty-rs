@@ -12,7 +12,7 @@ use std::{
 
 use image::{Rgba, RgbaImage};
 use tray_icon::{
-    menu::{CheckMenuItem, Menu, MenuEvent, MenuItem, PredefinedMenuItem},
+    menu::{CheckMenuItem, Menu, MenuEvent, MenuItem, PredefinedMenuItem, Submenu},
     Icon, TrayIcon, TrayIconBuilder,
 };
 
@@ -22,14 +22,20 @@ const BATTERY_RUN_KEY: &str = "Software\\Microsoft\\Windows\\CurrentVersion\\Run
 #[cfg(windows)]
 const APP_RUN_VALUE: &str = "Volty";
 const REFRESH_ID: &str = "volty.refresh";
+const CONFIGURATION_ID: &str = "volty.configuration";
+const DEBUG_REPORT_ID: &str = "volty.debug-report";
 const START_ON_BOOT_ID: &str = "volty.start-on-boot";
+const STAR_ON_GITHUB_ID: &str = "volty.star-on-github";
 const QUIT_ID: &str = "volty.quit";
 
 /// Actions that the application should handle after polling the controller.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TrayAction {
     RefreshNow,
-    StartOnBootChanged(bool),
+    OpenConfiguration,
+    GenerateDebugReport,
+    ToggleStartOnBoot,
+    OpenGitHub,
     Quit,
 }
 
@@ -74,8 +80,35 @@ impl TrayController {
         let status_item =
             MenuItem::with_id("volty.status", "Searching for Logitech device", false, None);
         let refresh_item = MenuItem::with_id(REFRESH_ID, "Refresh Now", true, None);
+        let configuration_item =
+            MenuItem::with_id(CONFIGURATION_ID, "Open Configuration", true, None);
+        let debug_report_item =
+            MenuItem::with_id(DEBUG_REPORT_ID, "Generate Debug Report", true, None);
         let start_on_boot_item =
             CheckMenuItem::with_id(START_ON_BOOT_ID, "Start on Boot", true, start_on_boot, None);
+        let about_menu = Submenu::new("About Volty", true);
+        let version_item =
+            MenuItem::new(format!("Volty {}", env!("CARGO_PKG_VERSION")), false, None);
+        let description_item = MenuItem::new("Lightweight Logitech battery monitor", false, None);
+        let star_item = MenuItem::with_id(
+            STAR_ON_GITHUB_ID,
+            "Enjoying Volty? Star on GitHub",
+            true,
+            None,
+        );
+        about_menu
+            .append(&version_item)
+            .map_err(|error| TrayError::new(format!("could not add About version: {error}")))?;
+        about_menu
+            .append(&description_item)
+            .map_err(|error| TrayError::new(format!("could not add About description: {error}")))?;
+        about_menu
+            .append(&PredefinedMenuItem::separator())
+            .map_err(|error| TrayError::new(format!("could not add About separator: {error}")))?;
+        about_menu.append(&star_item).map_err(|error| {
+            TrayError::new(format!("could not add GitHub star action: {error}"))
+        })?;
+
         let quit_item = MenuItem::with_id(QUIT_ID, "Quit", true, None);
         let menu = Menu::new();
         menu.append(&status_item)
@@ -84,9 +117,21 @@ impl TrayController {
             .map_err(|error| TrayError::new(format!("could not add tray separator: {error}")))?;
         menu.append(&refresh_item)
             .map_err(|error| TrayError::new(format!("could not add refresh action: {error}")))?;
+        menu.append(&configuration_item).map_err(|error| {
+            TrayError::new(format!("could not add configuration action: {error}"))
+        })?;
+        menu.append(&debug_report_item).map_err(|error| {
+            TrayError::new(format!("could not add debug report action: {error}"))
+        })?;
         menu.append(&start_on_boot_item).map_err(|error| {
             TrayError::new(format!("could not add start-on-boot action: {error}"))
         })?;
+        menu.append(&PredefinedMenuItem::separator())
+            .map_err(|error| TrayError::new(format!("could not add tray separator: {error}")))?;
+        menu.append(&about_menu)
+            .map_err(|error| TrayError::new(format!("could not add About menu: {error}")))?;
+        menu.append(&PredefinedMenuItem::separator())
+            .map_err(|error| TrayError::new(format!("could not add tray separator: {error}")))?;
         menu.append(&quit_item)
             .map_err(|error| TrayError::new(format!("could not add quit action: {error}")))?;
 
@@ -186,15 +231,24 @@ impl TrayController {
                     .send(TrayAction::RefreshNow)
                     .map_err(|_| TrayError::new("tray action receiver has been dropped"))?;
                 handled += 1;
-            } else if id == START_ON_BOOT_ID {
-                let enabled = !self.start_on_boot_item.is_checked();
-                if let Err(error) = set_start_on_boot_enabled(enabled) {
-                    self.start_on_boot_item.set_checked(!enabled);
-                    return Err(error);
-                }
-                self.start_on_boot_item.set_checked(enabled);
+            } else if id == CONFIGURATION_ID {
                 self.actions_tx
-                    .send(TrayAction::StartOnBootChanged(enabled))
+                    .send(TrayAction::OpenConfiguration)
+                    .map_err(|_| TrayError::new("tray action receiver has been dropped"))?;
+                handled += 1;
+            } else if id == DEBUG_REPORT_ID {
+                self.actions_tx
+                    .send(TrayAction::GenerateDebugReport)
+                    .map_err(|_| TrayError::new("tray action receiver has been dropped"))?;
+                handled += 1;
+            } else if id == START_ON_BOOT_ID {
+                self.actions_tx
+                    .send(TrayAction::ToggleStartOnBoot)
+                    .map_err(|_| TrayError::new("tray action receiver has been dropped"))?;
+                handled += 1;
+            } else if id == STAR_ON_GITHUB_ID {
+                self.actions_tx
+                    .send(TrayAction::OpenGitHub)
                     .map_err(|_| TrayError::new("tray action receiver has been dropped"))?;
                 handled += 1;
             } else if id == QUIT_ID {
@@ -210,6 +264,10 @@ impl TrayController {
     /// Gets the next app action, if one has been queued.
     pub fn try_recv_action(&self) -> Result<TrayAction, TryRecvError> {
         self.actions_rx.try_recv()
+    }
+
+    pub fn set_start_on_boot_checked(&self, checked: bool) {
+        self.start_on_boot_item.set_checked(checked);
     }
 }
 
@@ -438,11 +496,17 @@ pub fn set_start_on_boot_enabled(enabled: bool) -> Result<(), TrayError> {
                     TrayError::new(format!("could not enable Windows startup: {error}"))
                 })?;
         } else {
-            let run_key = current_user
+            let run_key = match current_user
                 .open_subkey_with_flags(BATTERY_RUN_KEY, winreg::enums::KEY_SET_VALUE)
-                .map_err(|error| {
-                    TrayError::new(format!("could not disable Windows startup: {error}"))
-                })?;
+            {
+                Ok(key) => key,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+                Err(error) => {
+                    return Err(TrayError::new(format!(
+                        "could not disable Windows startup: {error}"
+                    )))
+                }
+            };
             match run_key.delete_value(APP_RUN_VALUE) {
                 Ok(()) => {}
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
