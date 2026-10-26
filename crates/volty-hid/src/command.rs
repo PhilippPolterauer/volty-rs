@@ -574,7 +574,6 @@ mod tests {
                 [profile]
                 schema_version = 1
                 name = "trace"
-                protocol = "hidpp20"
 
                 [commands.root]
                 description = "Look up the root feature"
@@ -630,7 +629,6 @@ mod tests {
             [profile]
             schema_version = 1
             name = "root"
-            protocol = "hidpp20"
             [commands.lookup]
             description = "Look up Root logical feature"
             access = "read_only"
@@ -832,7 +830,6 @@ mod tests {
                 [profile]
                 schema_version = 1
                 name = "short"
-                protocol = "hidpp20"
                 [commands.read]
                 description = "Short report"
                 access = "read_only"

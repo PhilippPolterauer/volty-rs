@@ -125,10 +125,23 @@ diagnostic command descriptions only: the tray does not load them or use them
 for backend selection. The current profile runner supports HID++ 2.0 only.
 
 Adding a device that shares an existing wire protocol requires a specific
-`MouseModel` matcher and a catalog entry. A new wire protocol additionally
-requires a `BatteryProtocol` implementation that normalizes readings to
-`BatteryStatus`. Neither a profile file nor a protocol implementation alone
-registers a device for tray polling. See
+`MouseModel` matcher and a catalog entry. `MouseModel` supplies the family
+name, backend, and interface match (`matches` can override the default backend
+match). Add it to `SUPPORTED_MICE`; that is the only tray dispatch catalog.
+
+A new wire protocol needs a new `BatteryProtocol`; a new encoding on an
+existing protocol can extend that backend. Its `supports_interface`
+identifies candidate interfaces, `device_indices` returns addresses to try,
+and `query_battery` performs discovery/transport/decoding and returns a
+normalized `BatteryStatus`. Set `level_percent` only when the device really
+reports a percentage. Add or update a `MouseModel` and register it in
+`SUPPORTED_MICE` when the interface needs a new or more specific match. The
+existing tray code consumes `BatteryStatus`, so a new backend does not need a
+tray/UI trait or a protocol-specific icon.
+
+If an existing model already matches the interface and its backend already
+reads the device's battery feature, no new trait implementation is needed.
+A profile file alone never registers tray support. See
 [Generic HID battery-level support](./docs/hid-battery-support.md) for the
 extension flow and current limitations.
 

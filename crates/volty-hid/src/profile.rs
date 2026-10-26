@@ -9,13 +9,7 @@ use crate::FrameFormat;
 pub struct Profile {
     pub schema_version: u32,
     pub name: String,
-    pub protocol: Protocol,
     pub commands: BTreeMap<String, Command>,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum Protocol {
-    Hidpp20,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -135,7 +129,7 @@ impl Profile {
         reject_unknown(root, &["profile", "commands"], "<document>")?;
 
         let profile = required_table(root, "profile", "<document>")?;
-        reject_unknown(profile, &["schema_version", "name", "protocol"], "profile")?;
+        reject_unknown(profile, &["schema_version", "name"], "profile")?;
 
         let schema_version = required_integer(profile, "schema_version", "profile")?;
         if schema_version != 1 {
@@ -152,16 +146,6 @@ impl Profile {
                 "must not be empty or whitespace",
             ));
         }
-
-        let protocol = match required_string(profile, "protocol", "profile")?.as_str() {
-            "hidpp20" => Protocol::Hidpp20,
-            other => {
-                return Err(ProfileError::new(
-                    "profile.protocol",
-                    format!("unsupported protocol {other:?}; expected \"hidpp20\""),
-                ))
-            }
-        };
 
         let command_values = required_table(root, "commands", "<document>")?;
         if command_values.is_empty() {
@@ -189,7 +173,6 @@ impl Profile {
         Ok(Self {
             schema_version: 1,
             name,
-            protocol,
             commands,
         })
     }
@@ -706,7 +689,6 @@ mod tests {
         [profile]
         schema_version = 1
         name = "battery"
-        protocol = "hidpp20"
 
         [commands.status]
         description = "Read battery status"
@@ -787,6 +769,13 @@ mod tests {
             (
                 VALID_PROFILE.replace("feature_id = 4100", r#"feature_id = "4100""#),
                 "commands.status.feature_id",
+            ),
+            (
+                VALID_PROFILE.replace(
+                    "name = \"battery\"",
+                    "name = \"battery\"\n        protocol = \"hidpp20\"",
+                ),
+                "profile.protocol",
             ),
             (
                 VALID_PROFILE.replace("description = ", "extra = 1\n        description = "),

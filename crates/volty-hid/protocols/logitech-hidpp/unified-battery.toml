@@ -1,7 +1,6 @@
 [profile]
 schema_version = 1
 name = "battery-diagnostics"
-protocol = "hidpp20"
 
 [commands.battery-status]
 description = "Read Unified Battery status"

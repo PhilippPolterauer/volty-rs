@@ -56,11 +56,14 @@ device or protocol to tray polling.
 
 ## Protocol and mouse extension points
 
-The HID crate separates protocol behavior from mouse-family matching:
+The HID crate separates interface-to-device matching from protocol behavior:
 
-- `BatteryProtocol` describes interface matching, protocol-specific device
-  addresses, and a query that returns the normalized `BatteryStatus`.
-- `MouseModel` names a supported mouse family and selects its protocol.
+- `MouseModel` supplies a family name and returns its `BatteryProtocol`.
+  Override `matches` when the default protocol-level interface match is too
+  broad.
+- `BatteryProtocol` supplies its name, interface matcher, ordered
+  `device_indices`, and `query_battery`, which owns device discovery,
+  transport, response decoding, and conversion to `BatteryStatus`.
 - `SUPPORTED_MICE` is the single dispatch catalog used to select a model and
   its backend.
 
@@ -80,22 +83,31 @@ feature is available. The tray returns the first successful battery reading.
 A matching interface is therefore a candidate, not proof that it reports a
 supported battery.
 
-To support another device:
+To get a device into tray polling:
 
-1. If it speaks the existing protocol, add a `MouseModel` for its family and
-   have it return the existing `BatteryProtocol`. Override `matches` when the
-   default protocol-level interface check is too broad.
-2. If it speaks a different protocol, implement a new `BatteryProtocol`
-   (including interface matching, device addresses, transport, and battery
-   decoding), then add a `MouseModel` that returns it.
-3. Add each new model to `SUPPORTED_MICE`; this is the dispatch catalog, so a
-   protocol implementation without a model entry is not selectable by the
-   tray.
-4. Keep model matchers mutually exclusive for every interface. If multiple
+1. If the existing matcher selects it and the existing backend already
+   decodes its battery feature, no new trait implementation is needed.
+2. If the wire protocol is already supported but the device/family needs its
+   own interface match, implement `MouseModel`. Return the existing backend
+   from `protocol()` and add the model to `SUPPORTED_MICE`.
+3. If a new battery feature or encoding uses an existing wire protocol,
+   extend that backend's `query_battery` and decoding path. Add or update a
+   `MouseModel` only if the interface does not already resolve to that backend.
+4. For a new wire protocol, implement `BatteryProtocol`: identify compatible
+   interfaces, list addresses to try, perform the protocol-specific query,
+   and return a normalized `BatteryStatus`. Then implement `MouseModel` to
+   select that backend and register the model in `SUPPORTED_MICE`.
+5. Keep model matchers mutually exclusive for every interface. If multiple
    models match, resolution fails with an ambiguity error rather than choosing
    a backend based on catalog order.
-5. Normalize readings to `BatteryStatus` and test both the interface-to-model
-   mapping and the protocol's response handling.
+6. Only `level_percent` should drive the numeric tray icon and percentage
+   notifications. Leave it `None` when the device reports only a raw level or
+   unknown value; the normalized battery state is still available for status
+   text.
+
+No additional tray/UI trait is required: once `query_battery` returns a valid
+`BatteryStatus`, the existing app updates the status text, icon when a true
+percentage is available, and charging/full notification state.
 
 `logitech_hidpp.rs` is currently the only protocol backend. The tray consumes
 the protocol and model traits rather than selecting a vendor directly.
@@ -119,11 +131,11 @@ TOML file -> strict validation -> command executor -> selected protocol
 Profiles are selected explicitly for the diagnostic CLI, either by built-in
 profile ID or custom file path, along with a device/interface selection. They
 do not identify a mouse model, dispatch the tray to a protocol backend, or
-tell the tray which command to run. The current profile schema accepts only
-`protocol = "hidpp20"`, and `volty hid run` opens an HID++ session; this field
-is not dynamic backend selection. A cross-protocol profile runner would need
-protocol-specific command types and transports rather than assuming all HID
-devices speak HID++.
+tell the tray which command to run. The current profile commands and runner are
+HID++ 2.0-specific: `volty hid run` opens an HID++ session, so profile files
+do not select a protocol. Supporting diagnostic commands for a different
+protocol would require protocol-specific command types and a matching
+transport, not just a profile field.
 
 See [Adding a Logitech mouse](./adding-mice.md) for the current backend's
 worked example: interface selection, feature discovery, read-only profile
