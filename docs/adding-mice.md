@@ -39,6 +39,11 @@ HID++ device index:
 - `0xFF` addresses a directly connected device or receiver endpoint.
 - `1`–`6` address paired-device slots behind a receiver.
 
+The tray backend currently selects only usage page `0xFF00` with usage
+`0x0002`, which carries the long HID++ reports it sends. It skips usage
+`0x0001`, the short-report collection, rather than sending long reports to an
+interface that does not support them.
+
 Discover the features for the mouse's device index (replace the example PID,
 usage, and index with the values for your setup):
 

@@ -1122,8 +1122,12 @@ fn query_devices(
             Ok(None) => {
                 results
                     .send(PollUpdate::Trace(format!(
-                        "HID discovery skipped an unsupported interface (VID=0x{:04x}, PID=0x{:04x}, usage_page={:?}): no supported HID protocol matched its interface metadata",
-                        interface.vendor_id, interface.product_id, interface.usage_page
+                        "HID discovery skipped an unsupported interface (VID=0x{:04x}, PID=0x{:04x}, usage_page={:?}, usage={:?}, interface={}): no supported HID protocol matched its interface metadata",
+                        interface.vendor_id,
+                        interface.product_id,
+                        interface.usage_page,
+                        interface.usage,
+                        interface.interface_number
                     )))
                     .map_err(|_| "device polling result receiver disconnected".to_owned())?;
                 continue;
@@ -1146,12 +1150,14 @@ fn query_devices(
             .unwrap_or_else(|| mouse.name().to_owned());
         results
             .send(PollUpdate::Trace(format!(
-                "HID discovery matched {fallback_name:?} to {} using {} (VID=0x{:04x}, PID=0x{:04x}, usage_page={:?})",
+                "HID discovery matched {fallback_name:?} to {} using {} (VID=0x{:04x}, PID=0x{:04x}, usage_page={:?}, usage={:?}, interface={})",
                 mouse.name(),
                 protocol.name(),
                 interface.vendor_id,
                 interface.product_id,
-                interface.usage_page
+                interface.usage_page,
+                interface.usage,
+                interface.interface_number
             )))
             .map_err(|_| "device polling result receiver disconnected".to_owned())?;
         let interface_path = interface.path.to_string_lossy().into_owned();

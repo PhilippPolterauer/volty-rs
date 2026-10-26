@@ -15,6 +15,7 @@ impl BatteryProtocol for LogitechHidpp20 {
     fn supports_interface(&self, interface: &HidInterfaceInfo) -> bool {
         interface.vendor_id == LOGITECH_VENDOR_ID
             && interface.usage_page == Some(LOGITECH_HIDPP_USAGE_PAGE)
+            && interface.usage == Some(LOGITECH_HIDPP_LONG_USAGE)
     }
 
     fn device_indices(&self) -> &'static [u8] {
@@ -88,6 +89,7 @@ pub const FEATURE_DEVICE_NAME: u16 = 0x0005;
 pub const FEATURE_BATTERY_STATUS: u16 = 0x1000;
 pub const FEATURE_UNIFIED_BATTERY: u16 = 0x1004;
 pub const LOGITECH_HIDPP_USAGE_PAGE: u16 = 0xff00;
+pub const LOGITECH_HIDPP_LONG_USAGE: u16 = 0x0002;
 pub const FUNCTION_GET_FEATURE: u8 = 0x00;
 pub const FUNCTION_GET_FEATURE_SET_COUNT: u8 = 0x00;
 pub const FUNCTION_GET_FEATURE_SET_ID: u8 = 0x01;

@@ -29,15 +29,57 @@ const APP_RUN_VALUE: &str = "Volty";
 const APP_SETTINGS_KEY: &str = "Software\\Volty";
 #[cfg(windows)]
 const STARTUP_PROMPT_VALUE: &str = "StartupPrompted";
-const DISCOVER_ID: &str = "volty.discover";
-const CONFIGURATION_ID: &str = "volty.configuration";
-const LOG_FILE_ID: &str = "volty.open-log-file";
-const DIAGNOSE_ID: &str = "volty.diagnose";
-const START_ON_BOOT_ID: &str = "volty.start-on-boot";
-const MONITORED_DEVICES_ID: &str = "volty.monitored-devices";
-const MONITORED_DEVICE_ITEM_PREFIX: &str = "volty.monitored-device";
-const ABOUT_ID: &str = "volty.about";
-const QUIT_ID: &str = "volty.quit";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MenuItemId {
+    Status,
+    Discover,
+    Configuration,
+    LogFile,
+    Diagnose,
+    StartOnBoot,
+    MonitoredDevices,
+    MonitoredDevice(u64),
+    About,
+    Quit,
+}
+
+impl MenuItemId {
+    fn as_id(self) -> String {
+        match self {
+            Self::Status => "volty.status".to_owned(),
+            Self::Discover => "volty.discover".to_owned(),
+            Self::Configuration => "volty.configuration".to_owned(),
+            Self::LogFile => "volty.open-log-file".to_owned(),
+            Self::Diagnose => "volty.diagnose".to_owned(),
+            Self::StartOnBoot => "volty.start-on-boot".to_owned(),
+            Self::MonitoredDevices => "volty.monitored-devices".to_owned(),
+            Self::MonitoredDevice(sequence) => {
+                format!("volty.monitored-device.{sequence}")
+            }
+            Self::About => "volty.about".to_owned(),
+            Self::Quit => "volty.quit".to_owned(),
+        }
+    }
+
+    fn parse(id: &str) -> Option<Self> {
+        match id {
+            "volty.status" => Some(Self::Status),
+            "volty.discover" => Some(Self::Discover),
+            "volty.configuration" => Some(Self::Configuration),
+            "volty.open-log-file" => Some(Self::LogFile),
+            "volty.diagnose" => Some(Self::Diagnose),
+            "volty.start-on-boot" => Some(Self::StartOnBoot),
+            "volty.monitored-devices" => Some(Self::MonitoredDevices),
+            "volty.about" => Some(Self::About),
+            "volty.quit" => Some(Self::Quit),
+            _ => id
+                .strip_prefix("volty.monitored-device.")
+                .and_then(|sequence| sequence.parse().ok())
+                .map(Self::MonitoredDevice),
+        }
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeviceMonitorEntry {
@@ -47,7 +89,7 @@ pub struct DeviceMonitorEntry {
 }
 
 struct MonitoredDeviceMenuItem {
-    menu_id: String,
+    menu_id: MenuItemId,
     identity: String,
     item: CheckMenuItem,
 }
@@ -110,21 +152,43 @@ impl TrayController {
     pub fn new() -> Result<Self, TrayError> {
         let start_on_boot = start_on_boot_for_first_run()?;
         let status_item = MenuItem::with_id(
-            "volty.status",
+            MenuItemId::Status.as_id(),
             "Searching for supported devices",
             false,
             None,
         );
-        let discover_item = MenuItem::with_id(DISCOVER_ID, "Discover Devices Now", true, None);
-        let configuration_item =
-            MenuItem::with_id(CONFIGURATION_ID, "Open Configuration", true, None);
-        let open_log_item = MenuItem::with_id(LOG_FILE_ID, "Open Log File", true, None);
-        let diagnose_item =
-            MenuItem::with_id(DIAGNOSE_ID, "Diagnose / Report an Issue", true, None);
-        let start_on_boot_item =
-            CheckMenuItem::with_id(START_ON_BOOT_ID, "Start on Boot", true, start_on_boot, None);
-        let monitored_devices_menu =
-            Submenu::with_id(MONITORED_DEVICES_ID, "Monitored Devices", true);
+        let discover_item = MenuItem::with_id(
+            MenuItemId::Discover.as_id(),
+            "Discover Devices Now",
+            true,
+            None,
+        );
+        let configuration_item = MenuItem::with_id(
+            MenuItemId::Configuration.as_id(),
+            "Open Configuration",
+            true,
+            None,
+        );
+        let open_log_item =
+            MenuItem::with_id(MenuItemId::LogFile.as_id(), "Open Log File", true, None);
+        let diagnose_item = MenuItem::with_id(
+            MenuItemId::Diagnose.as_id(),
+            "Diagnose / Report an Issue",
+            true,
+            None,
+        );
+        let start_on_boot_item = CheckMenuItem::with_id(
+            MenuItemId::StartOnBoot.as_id(),
+            "Start on Boot",
+            true,
+            start_on_boot,
+            None,
+        );
+        let monitored_devices_menu = Submenu::with_id(
+            MenuItemId::MonitoredDevices.as_id(),
+            "Monitored Devices",
+            true,
+        );
         let monitored_devices_empty_item =
             MenuItem::new("No supported devices discovered", false, None);
         monitored_devices_menu
@@ -134,8 +198,8 @@ impl TrayController {
                     "could not add empty monitored-devices status: {error}"
                 ))
             })?;
-        let about_item = MenuItem::with_id(ABOUT_ID, "About Volty", true, None);
-        let quit_item = MenuItem::with_id(QUIT_ID, "Quit", true, None);
+        let about_item = MenuItem::with_id(MenuItemId::About.as_id(), "About Volty", true, None);
+        let quit_item = MenuItem::with_id(MenuItemId::Quit.as_id(), "Quit", true, None);
         let menu = Menu::new();
         menu.append(&status_item)
             .map_err(|error| TrayError::new(format!("could not add tray status: {error}")))?;
@@ -312,8 +376,9 @@ impl TrayController {
             self.next_monitored_device_menu_id = sequence
                 .checked_add(1)
                 .ok_or_else(|| TrayError::new("monitored-device menu ID space exhausted"))?;
-            let menu_id = format!("{MONITORED_DEVICE_ITEM_PREFIX}.{sequence}");
-            let item = CheckMenuItem::with_id(&menu_id, &device.name, true, device.monitored, None);
+            let menu_id = MenuItemId::MonitoredDevice(sequence);
+            let item =
+                CheckMenuItem::with_id(menu_id.as_id(), &device.name, true, device.monitored, None);
             self.monitored_devices_menu.append(&item).map_err(|error| {
                 TrayError::new(format!("could not add monitored device: {error}"))
             })?;
@@ -388,54 +453,67 @@ impl TrayController {
                 }
             };
 
-            let id = event.id.0.as_str();
-            if id == DISCOVER_ID {
-                self.actions_tx
-                    .send(TrayAction::DiscoverDevicesNow)
-                    .map_err(|_| TrayError::new("tray action receiver has been dropped"))?;
-                handled += 1;
-            } else if id == CONFIGURATION_ID {
-                self.actions_tx
-                    .send(TrayAction::OpenConfiguration)
-                    .map_err(|_| TrayError::new("tray action receiver has been dropped"))?;
-                handled += 1;
-            } else if id == LOG_FILE_ID {
-                self.actions_tx
-                    .send(TrayAction::OpenLogFile)
-                    .map_err(|_| TrayError::new("tray action receiver has been dropped"))?;
-                handled += 1;
-            } else if id == DIAGNOSE_ID {
-                self.actions_tx
-                    .send(TrayAction::Diagnose)
-                    .map_err(|_| TrayError::new("tray action receiver has been dropped"))?;
-                handled += 1;
-            } else if id == START_ON_BOOT_ID {
-                self.actions_tx
-                    .send(TrayAction::ToggleStartOnBoot)
-                    .map_err(|_| TrayError::new("tray action receiver has been dropped"))?;
-                handled += 1;
-            } else if let Some(entry) = self
-                .monitored_device_items
-                .iter()
-                .find(|entry| entry.menu_id == id)
-            {
-                self.actions_tx
-                    .send(TrayAction::SetDeviceMonitored {
-                        identity: entry.identity.clone(),
-                        monitored: entry.item.is_checked(),
-                    })
-                    .map_err(|_| TrayError::new("tray action receiver has been dropped"))?;
-                handled += 1;
-            } else if id == ABOUT_ID {
-                self.actions_tx
-                    .send(TrayAction::About)
-                    .map_err(|_| TrayError::new("tray action receiver has been dropped"))?;
-                handled += 1;
-            } else if id == QUIT_ID {
-                self.actions_tx
-                    .send(TrayAction::Quit)
-                    .map_err(|_| TrayError::new("tray action receiver has been dropped"))?;
-                handled += 1;
+            let id = MenuItemId::parse(event.id.0.as_str());
+            match id {
+                Some(MenuItemId::Discover) => {
+                    self.actions_tx
+                        .send(TrayAction::DiscoverDevicesNow)
+                        .map_err(|_| TrayError::new("tray action receiver has been dropped"))?;
+                    handled += 1;
+                }
+                Some(MenuItemId::Configuration) => {
+                    self.actions_tx
+                        .send(TrayAction::OpenConfiguration)
+                        .map_err(|_| TrayError::new("tray action receiver has been dropped"))?;
+                    handled += 1;
+                }
+                Some(MenuItemId::LogFile) => {
+                    self.actions_tx
+                        .send(TrayAction::OpenLogFile)
+                        .map_err(|_| TrayError::new("tray action receiver has been dropped"))?;
+                    handled += 1;
+                }
+                Some(MenuItemId::Diagnose) => {
+                    self.actions_tx
+                        .send(TrayAction::Diagnose)
+                        .map_err(|_| TrayError::new("tray action receiver has been dropped"))?;
+                    handled += 1;
+                }
+                Some(MenuItemId::StartOnBoot) => {
+                    self.actions_tx
+                        .send(TrayAction::ToggleStartOnBoot)
+                        .map_err(|_| TrayError::new("tray action receiver has been dropped"))?;
+                    handled += 1;
+                }
+                Some(menu_id @ MenuItemId::MonitoredDevice(_)) => {
+                    let Some(entry) = self
+                        .monitored_device_items
+                        .iter()
+                        .find(|entry| entry.menu_id == menu_id)
+                    else {
+                        continue;
+                    };
+                    self.actions_tx
+                        .send(TrayAction::SetDeviceMonitored {
+                            identity: entry.identity.clone(),
+                            monitored: entry.item.is_checked(),
+                        })
+                        .map_err(|_| TrayError::new("tray action receiver has been dropped"))?;
+                    handled += 1;
+                }
+                Some(MenuItemId::About) => {
+                    self.actions_tx
+                        .send(TrayAction::About)
+                        .map_err(|_| TrayError::new("tray action receiver has been dropped"))?;
+                    handled += 1;
+                }
+                Some(MenuItemId::Quit) => {
+                    self.actions_tx
+                        .send(TrayAction::Quit)
+                        .map_err(|_| TrayError::new("tray action receiver has been dropped"))?;
+                    handled += 1;
+                }
+                Some(MenuItemId::Status | MenuItemId::MonitoredDevices) | None => {}
             }
         }
         Ok(handled)
@@ -1009,6 +1087,28 @@ mod tests {
         let shortened = shorten_status(&long);
         assert_eq!(shortened.chars().count(), MAX_STATUS_CHARS);
         assert!(shortened.ends_with('…'));
+    }
+
+    #[test]
+    fn menu_item_ids_round_trip() {
+        for id in [
+            MenuItemId::Status,
+            MenuItemId::Discover,
+            MenuItemId::Configuration,
+            MenuItemId::LogFile,
+            MenuItemId::Diagnose,
+            MenuItemId::StartOnBoot,
+            MenuItemId::MonitoredDevices,
+            MenuItemId::MonitoredDevice(42),
+            MenuItemId::About,
+            MenuItemId::Quit,
+        ] {
+            assert_eq!(MenuItemId::parse(&id.as_id()), Some(id));
+        }
+        assert_eq!(
+            MenuItemId::parse("volty.monitored-device.not-a-number"),
+            None
+        );
     }
 
     #[test]

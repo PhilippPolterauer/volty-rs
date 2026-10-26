@@ -203,6 +203,13 @@ mod tests {
         assert_eq!(mouse.protocol().name(), "Logitech HID++ 2.0");
         assert_eq!(SUPPORTED_MICE.len(), 1);
 
+        let short_report_interface = HidInterfaceInfo {
+            usage: Some(0x0001),
+            ..matched
+        };
+        assert!(resolve_mouse_model(&short_report_interface)
+            .unwrap()
+            .is_none());
         assert!(resolve_mouse_model(&interface(0x1234)).unwrap().is_none());
     }
 }

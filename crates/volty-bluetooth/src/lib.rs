@@ -95,7 +95,9 @@ pub fn scan_battery_devices() -> Result<BluetoothScan, BluetoothError> {
 /// Bluetooth battery discovery is available only on Windows.
 #[cfg(not(windows))]
 pub fn scan_battery_devices() -> Result<BluetoothScan, BluetoothError> {
-    Err(error("Bluetooth battery reads are supported only on Windows"))
+    Err(error(
+        "Bluetooth battery reads are supported only on Windows",
+    ))
 }
 
 #[cfg(test)]
