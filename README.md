@@ -54,6 +54,8 @@ Standard Windows battery APIs (like ACPI) only report system battery status for 
 volty-rs/
 ├── crates/
 │   ├── volty-hid/             # Zero-UI, zero-Win32 protocol crate
+│   │   ├── protocols/         # TOML profiles embedded into the executable
+│   │   ├── build.rs           # Generates the embedded profile registry
 │   │   ├── src/
 │   │   │   ├── lib.rs         # Public API and optional HID device access
 │   │   │   ├── protocol.rs    # Extensible protocol and mouse-model traits
@@ -79,11 +81,12 @@ volty-rs/
 └── Cargo.toml                 # Workspace manifest
 ```
 
-The HID crate defines `BatteryProtocol` and `MouseModel` traits and keeps
-registered protocols and mouse families separate. Logitech HID++ 2.0 is the
-first and currently only registered protocol; its mouse-family matcher uses
-that backend, which discovers battery features at runtime. Adding a backend
-does not require changing battery presentation or tray polling. Generic HID
+The HID crate defines `BatteryProtocol` and `MouseModel` traits. The
+`SUPPORTED_MICE` catalog maps matching device interfaces to their battery
+backend; ambiguous matches are rejected instead of relying on registration
+order. Logitech HID++ 2.0 is currently the only registered backend, and its
+runtime feature discovery confirms battery support. Adding a backend does not
+require changing battery presentation or tray polling. Generic HID
 battery-report discovery and other vendors are not implemented yet. The tray
 does not load command profiles. See
 [Generic HID battery-level support](./docs/hid-battery-support.md) for the
@@ -152,19 +155,19 @@ automatically. **Copy Log** copies the report to the clipboard, while
 The `volty` executable also has explicit, on-demand HID++ diagnostics. These
 commands run before the tray app's single-instance check; launching `volty`
 without a `hid` subcommand still starts the normal tray app.
-For the Python/hidapi probe that inspired this workflow, see
-[the Logitech HID++ diagnostic notes](./docs/logitech.md).
 For the first worked backend example—verifying a Logitech mouse or adding
 support for a different HID++ battery feature—see
 [Adding a Logitech mouse](./docs/adding-mice.md).
-For the generic HID battery-monitoring goal, architecture, and profile
-packaging options, see
+For the generic HID battery-monitoring goal, architecture, and built-in or
+custom profiles, see
 [Generic HID battery-level support](./docs/hid-battery-support.md).
 
 ```powershell
 volty hid inspect
 volty hid inspect --vid 0x046d --pid 0xc547 --usage-page 0xff00 --usage 0x0002
 volty hid features --vid 0x046d --pid 0xc547 --usage-page 0xff00 --usage 0x0002 --device-index 0x01
+volty hid profiles
+volty hid run --profile builtin:logitech-hidpp/unified-battery --command battery-status --device-index 0x01
 volty hid run --profile .\battery.toml --command battery-status --device-index 0x01 --vid 0x046d --pid 0xc547 --usage-page 0xff00 --usage 0x0002
 volty hid raw --device-index 0x01 --feature-index 0x06 --function-index 1 --report-type long --params 00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00 --allow-state-changing --vid 0x046d --pid 0xc547 --usage-page 0xff00 --usage 0x0002
 ```
@@ -186,35 +189,16 @@ must not be copied into a profile. On one tested receiver, logical Battery
 feature `0x1004` resolved to runtime index `0x06`, version `0x03`, and the
 status decoder reported 78%; that mapping is an observation, not a constant.
 
-Profiles are TOML. For example, this read-only Unified Battery command uses
-logical feature ID `0x1004`; the engine resolves the runtime index at execution
-time:
+The built-in read-only Unified Battery profile uses logical feature ID
+`0x1004`; the engine resolves its runtime index for each device. It is embedded
+in the executable, so no profile file needs to be copied or saved. Use
+`volty hid profiles` to list embedded profiles. Custom TOML profiles can still
+be loaded with `--profile PATH`.
 
-```toml
-[profile]
-schema_version = 1
-name = "battery-diagnostics"
-protocol = "hidpp20"
-
-[commands.battery-status]
-description = "Read Unified Battery status"
-access = "read_only"
-operation = "feature_call"
-feature_id = 0x1004
-function_index = 1
-report = "long"
-request_params = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
-timeout_ms = 2000
-decoder = "unified_battery_status"
-```
-
-This profile is included at
-[`crates/volty-hid/examples/unified-battery.toml`](./crates/volty-hid/examples/unified-battery.toml).
-Run it with `volty hid run --profile .\crates\volty-hid\examples\unified-battery.toml --command battery-status --device-index 0x01` and an interface selector if needed. The command reports
-the typed decoded result and all raw request/response frames, including feature
-lookup traffic; a successful write without a matching response is not reported
-as a successful command. State-changing profile commands are rejected unless
-`--allow-state-changing` is explicitly provided.
+Profile runs report decoded output and all raw request/response frames,
+including feature lookup traffic; a successful write without a matching
+response is not reported as a successful command. State-changing profile
+commands are rejected unless `--allow-state-changing` is explicitly provided.
 
 `raw` accepts only exact HID++ report payload sizes: 3 parameter bytes for a
 short report or 16 for a long report. It requires

@@ -600,14 +600,20 @@ fn poll_worker(
 }
 
 fn query_devices() -> PollResult {
-    use volty_hid::{enumerate_hid_interfaces, find_supported_mouse};
+    use volty_hid::{enumerate_hid_interfaces, resolve_mouse_model};
 
     let interfaces = enumerate_hid_interfaces().map_err(|error| error.to_string())?;
 
     let mut errors = Vec::new();
     let mut supported_interfaces = 0;
     for interface in interfaces {
-        let Some(mouse) = find_supported_mouse(&interface) else {
+        let Some(mouse) = resolve_mouse_model(&interface).map_err(|error| {
+            format!(
+                "Ambiguous backend match for HID interface {:04x}:{:04x}: {error}",
+                interface.vendor_id, interface.product_id
+            )
+        })?
+        else {
             continue;
         };
         supported_interfaces += 1;

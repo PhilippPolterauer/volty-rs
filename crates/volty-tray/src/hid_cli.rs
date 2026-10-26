@@ -52,6 +52,7 @@ pub fn run(args: &[String]) -> Result<(), CliError> {
     match command {
         "inspect" => inspect(options),
         "features" => features(options),
+        "profiles" => list_profiles(options),
         "run" => run_profile(options),
         "raw" => raw(options),
         _ => Err(error(format!(
@@ -61,7 +62,7 @@ pub fn run(args: &[String]) -> Result<(), CliError> {
 }
 
 #[cfg(windows)]
-const HID_USAGE: &str = "Usage: volty hid <inspect|features|run|raw> [options]\n\
+const HID_USAGE: &str = "Usage: volty hid <inspect|features|profiles|run|raw> [options]\n\
 Run `volty hid <command> --help` for command options.";
 
 #[cfg(windows)]
@@ -89,10 +90,14 @@ Discovers logical feature IDs and their runtime indexes for a paired HID++ devic
   --interface NUMBER           HID interface number\n\
   --path PATH                  Exact hidapi path",
         ),
+        "profiles" => Some(
+            "Usage: volty hid profiles\n\
+Lists the built-in command profiles embedded in this executable.",
+        ),
         "run" => Some(
-            "Usage: volty hid run --profile FILE --command NAME --device-index NUMBER [interface selector] [--allow-state-changing]\n\
-Loads a TOML command profile, validates it, and executes the named command.\n\
-  --profile FILE               TOML profile path\n\
+            "Usage: volty hid run --profile NAME|FILE --command NAME --device-index NUMBER [interface selector] [--allow-state-changing]\n\
+Loads a built-in or custom TOML profile, validates it, and executes the named command.\n\
+  --profile NAME|FILE          Built-in ID (builtin:NAME) or custom TOML path\n\
   --command NAME               Command name from the profile\n\
   --device-index NUMBER        HID++ device index (not the USB interface number)\n\
   --allow-state-changing       Authorize a profile command marked state-changing\n\
@@ -464,6 +469,23 @@ fn features(options: Options) -> Result<(), CliError> {
 }
 
 #[cfg(windows)]
+fn list_profiles(options: Options) -> Result<(), CliError> {
+    reject_state_flag(&options)?;
+    check_options(&options, &[])?;
+
+    let names: Vec<_> = volty_hid::builtin_profile_names().collect();
+    if names.is_empty() {
+        println!("No built-in profiles are available.");
+    } else {
+        println!("Built-in profiles:");
+        for name in names {
+            println!("  {name}");
+        }
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
 fn run_profile(options: Options) -> Result<(), CliError> {
     check_options(
         &options,
@@ -482,11 +504,29 @@ fn run_profile(options: Options) -> Result<(), CliError> {
             "--path",
         ],
     )?;
-    let profile_path = required(&options, "--profile")?;
+    let profile_source = required(&options, "--profile")?;
     let command_name = required(&options, "--command")?;
     let device_index = device_index(&options)?;
-    let contents = std::fs::read_to_string(profile_path)
-        .map_err(|cause| error(format!("cannot read profile '{}': {cause}", profile_path)))?;
+    let contents = if let Some(name) = profile_source.strip_prefix("builtin:") {
+        let source = volty_hid::builtin_profile_source(name).ok_or_else(|| {
+            let available = volty_hid::builtin_profile_names()
+                .collect::<Vec<_>>()
+                .join(", ");
+            if available.is_empty() {
+                error(format!(
+                    "unknown built-in profile '{name}'; no built-in profiles are available"
+                ))
+            } else {
+                error(format!(
+                    "unknown built-in profile '{name}'; available profiles: {available}"
+                ))
+            }
+        })?;
+        source.to_owned()
+    } else {
+        std::fs::read_to_string(profile_source)
+            .map_err(|cause| error(format!("cannot read profile '{}': {cause}", profile_source)))?
+    };
     let profile = volty_hid::CommandProfile::from_toml(&contents)
         .map_err(|cause| error(format!("invalid TOML profile: {cause}")))?;
     if options.allow_state_changing {

@@ -58,13 +58,18 @@ device.
 
 ## 2. Test Unified Battery with the read-only profile
 
-The included profile tests Unified Battery (`0x1004`, function 1) and decodes
-its status:
+The read-only profile example in the
+[README's HID diagnostics section](../README.md#hid-diagnostics) tests Unified
+Battery (`0x1004`, function 1). Volty includes this profile in the executable;
+list built-in profiles and run it by ID:
 
 ```powershell
-cargo run --release --package volty-tray -- hid run --profile .\crates\volty-hid\examples\unified-battery.toml --command battery-status --device-index 0x01 --vid 0x046d --pid 0xc547 --usage-page 0xff00 --usage 0x0002
+cargo run --release --package volty-tray -- hid profiles
+cargo run --release --package volty-tray -- hid run --profile builtin:logitech-hidpp/unified-battery --command battery-status --device-index 0x01 --vid 0x046d --pid 0xc547 --usage-page 0xff00 --usage 0x0002
 ```
 
+The same TOML profile can also be saved to a custom file and passed as a path
+with `--profile .\battery.toml`.
 Use the correct device index and interface selectors from step 1. A successful
 run prints the decoded result and raw request/response frames. The profile
 engine resolves the feature's runtime index when it runs the command.
@@ -103,8 +108,10 @@ To make a non-standard battery feature available in the tray:
    implementation module and implement `BatteryProtocol`. Do not put a second
    vendor's framing in `logitech_hidpp.rs`.
 2. Implement `MouseModel` for the mouse family, returning the appropriate
-   protocol. Add both implementations to the explicit protocol and mouse
-   registries in `crates/volty-hid/src/protocol.rs`.
+   protocol. Add the model to `SUPPORTED_MICE` in
+   `crates/volty-hid/src/protocol.rs`; this is the dispatch catalog. There is
+   no separate protocol registry. Keep matchers specific because overlapping
+   matches are reported as ambiguous and are not polled.
 3. For another Logitech HID++ feature, keep feature discovery and request
    handling within the HID++ backend, then parse its response into the shared
    `BatteryStatus` representation in

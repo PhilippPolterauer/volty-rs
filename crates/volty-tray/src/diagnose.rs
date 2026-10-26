@@ -10,19 +10,23 @@ use windows_sys::Win32::{
         DataExchange::{CloseClipboard, EmptyClipboard, OpenClipboard, SetClipboardData},
         LibraryLoader::GetModuleHandleW,
         Memory::{GlobalAlloc, GlobalLock, GlobalUnlock, GMEM_MOVEABLE},
+        SystemServices::SS_ETCHEDHORZ,
     },
     UI::{
         Shell::ShellExecuteW,
         WindowsAndMessaging::{
-            CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetMessageW,
-            GetWindowLongPtrW, PostQuitMessage, RegisterClassW, SetWindowLongPtrW, SetWindowTextW,
-            ShowWindow, TranslateMessage, BS_PUSHBUTTON, CREATESTRUCTW, CW_USEDEFAULT,
-            ES_AUTOVSCROLL, ES_MULTILINE, ES_NOHIDESEL, ES_READONLY, GWLP_USERDATA, MSG,
-            SW_SHOWNORMAL, WM_CLOSE, WM_COMMAND, WM_DESTROY, WM_NCCREATE, WNDCLASSW, WS_CHILD,
-            WS_EX_CLIENTEDGE, WS_OVERLAPPEDWINDOW, WS_TABSTOP, WS_VISIBLE, WS_VSCROLL,
+            CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetClientRect,
+            GetMessageW, GetWindowLongPtrW, MoveWindow, PostQuitMessage, RegisterClassW,
+            SetWindowLongPtrW, SetWindowTextW, ShowWindow, TranslateMessage, BS_PUSHBUTTON,
+            CREATESTRUCTW, CW_USEDEFAULT, ES_AUTOVSCROLL, ES_MULTILINE, ES_NOHIDESEL, ES_READONLY,
+            GWLP_USERDATA, MINMAXINFO, MSG, SW_SHOWNORMAL, WM_CLOSE, WM_COMMAND, WM_CTLCOLOREDIT,
+            WM_CTLCOLORSTATIC, WM_DESTROY, WM_GETMINMAXINFO, WM_NCCREATE, WM_SIZE, WNDCLASSW,
+            WS_CHILD, WS_EX_CLIENTEDGE, WS_OVERLAPPEDWINDOW, WS_TABSTOP, WS_VISIBLE, WS_VSCROLL,
         },
     },
 };
+
+use crate::native_ui::{edit_control_color, set_control_font, static_control_color, FontSet};
 
 const WINDOW_CLASS: &str = "VoltyDiagnoseWindow";
 const COPY_LOG_ID: usize = 1001;
@@ -33,8 +37,13 @@ const ISSUE_URL: &str = "https://github.com/PhilippPolterauer/volty-rs/issues/ne
 
 struct DiagnoseWindow {
     report: Vec<u16>,
+    report_view: HWND,
     status: HWND,
+    copy_button: HWND,
+    issue_button: HWND,
+    close_button: HWND,
     create_complete: bool,
+    fonts: FontSet,
 }
 
 pub fn show_diagnose_window(report: &str) -> Result<(), Box<dyn Error>> {
@@ -63,10 +72,16 @@ pub fn show_diagnose_window(report: &str) -> Result<(), Box<dyn Error>> {
         return Err(io::Error::last_os_error().into());
     }
 
+    let fonts = FontSet::new()?;
     let mut state = Box::new(DiagnoseWindow {
         report: to_wide(report),
+        report_view: ptr::null_mut(),
         status: ptr::null_mut(),
+        copy_button: ptr::null_mut(),
+        issue_button: ptr::null_mut(),
+        close_button: ptr::null_mut(),
         create_complete: false,
+        fonts,
     });
     let window = unsafe {
         CreateWindowExW(
@@ -76,8 +91,8 @@ pub fn show_diagnose_window(report: &str) -> Result<(), Box<dyn Error>> {
             WS_OVERLAPPEDWINDOW,
             CW_USEDEFAULT,
             CW_USEDEFAULT,
-            800,
-            600,
+            960,
+            720,
             ptr::null_mut(),
             ptr::null_mut(),
             instance,
@@ -125,23 +140,61 @@ unsafe fn create_controls(
     let static_class = to_wide("STATIC");
     let edit_class = to_wide("EDIT");
     let button_class = to_wide("BUTTON");
-    let log_label = to_wide("Diagnostic log — review before sharing");
+    let heading_text = to_wide("Diagnostic report");
+    let description_text = to_wide("Review the report before sharing.");
     let status_text = to_wide("Nothing is uploaded automatically.");
     let copy_text = to_wide("Copy Log");
     let issue_text = to_wide("Open Issue");
     let close_text = to_wide("Close");
 
+    let heading = create_child(
+        window,
+        instance,
+        &static_class,
+        &heading_text,
+        0,
+        WS_CHILD | WS_VISIBLE,
+        24,
+        20,
+        820,
+        38,
+        0,
+    );
+    if heading.is_null() {
+        return Err(io::Error::last_os_error().into());
+    }
+    set_control_font(heading, state.fonts.heading);
+
+    let description = create_child(
+        window,
+        instance,
+        &static_class,
+        &description_text,
+        0,
+        WS_CHILD | WS_VISIBLE,
+        26,
+        64,
+        820,
+        24,
+        0,
+    );
+    if description.is_null() {
+        return Err(io::Error::last_os_error().into());
+    }
+    set_control_font(description, state.fonts.body);
+
+    let separator_text = to_wide("");
     if create_child(
         window,
         instance,
         &static_class,
-        &log_label,
+        &separator_text,
         0,
-        WS_CHILD | WS_VISIBLE,
-        12,
-        10,
-        760,
+        WS_CHILD | WS_VISIBLE | SS_ETCHEDHORZ,
         24,
+        96,
+        900,
+        2,
         0,
     )
     .is_null()
@@ -157,23 +210,23 @@ unsafe fn create_controls(
         | ES_READONLY as u32
         | ES_AUTOVSCROLL as u32
         | ES_NOHIDESEL as u32;
-    if create_child(
+    state.report_view = create_child(
         window,
         instance,
         &edit_class,
         &state.report,
         WS_EX_CLIENTEDGE,
         edit_style,
-        12,
-        36,
-        760,
-        450,
+        24,
+        108,
+        900,
+        500,
         0,
-    )
-    .is_null()
-    {
+    );
+    if state.report_view.is_null() {
         return Err(io::Error::last_os_error().into());
     }
+    set_control_font(state.report_view, state.fonts.monospace);
 
     state.status = create_child(
         window,
@@ -182,21 +235,29 @@ unsafe fn create_controls(
         &status_text,
         0,
         WS_CHILD | WS_VISIBLE,
-        12,
-        496,
-        450,
+        24,
+        636,
+        420,
         28,
         0,
     );
     if state.status.is_null() {
         return Err(io::Error::last_os_error().into());
     }
+    set_control_font(state.status, state.fonts.body);
 
-    for (id, text, x) in [
-        (COPY_LOG_ID, &copy_text, 450),
-        (OPEN_ISSUE_ID, &issue_text, 555),
-        (CLOSE_ID, &close_text, 675),
+    for (id, text) in [
+        (COPY_LOG_ID, &copy_text),
+        (OPEN_ISSUE_ID, &issue_text),
+        (CLOSE_ID, &close_text),
     ] {
+        let width = if id == OPEN_ISSUE_ID {
+            126
+        } else if id == CLOSE_ID {
+            92
+        } else {
+            110
+        };
         let button = create_child(
             window,
             instance,
@@ -204,23 +265,25 @@ unsafe fn create_controls(
             text,
             0,
             WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON as u32,
-            x,
-            496,
-            if id == OPEN_ISSUE_ID {
-                110
-            } else if id == CLOSE_ID {
-                90
-            } else {
-                100
-            },
-            30,
+            0,
+            0,
+            width,
+            36,
             id,
         );
         if button.is_null() {
             return Err(io::Error::last_os_error().into());
         }
+        set_control_font(button, state.fonts.body);
+        match id {
+            COPY_LOG_ID => state.copy_button = button,
+            OPEN_ISSUE_ID => state.issue_button = button,
+            CLOSE_ID => state.close_button = button,
+            _ => unreachable!(),
+        }
     }
 
+    layout_controls(window, state)?;
     Ok(())
 }
 
@@ -265,6 +328,24 @@ unsafe extern "system" fn window_proc(
     }
 
     match message {
+        WM_CTLCOLORSTATIC => static_control_color(wparam),
+        WM_CTLCOLOREDIT => edit_control_color(wparam),
+        WM_GETMINMAXINFO => {
+            let limits = &mut *(lparam as *mut MINMAXINFO);
+            limits.ptMinTrackSize.x = 720;
+            limits.ptMinTrackSize.y = 560;
+            0
+        }
+        WM_SIZE => {
+            let state_ptr = GetWindowLongPtrW(window, GWLP_USERDATA) as *mut DiagnoseWindow;
+            if !state_ptr.is_null() && !(*state_ptr).report_view.is_null() {
+                if let Err(error) = layout_controls(window, &*state_ptr) {
+                    let status = to_wide(&format!("Could not resize the report view: {error}"));
+                    SetWindowTextW((*state_ptr).status, status.as_ptr());
+                }
+            }
+            0
+        }
         WM_COMMAND => {
             let id = (wparam & 0xffff) as usize;
             let state_ptr = GetWindowLongPtrW(window, GWLP_USERDATA) as *mut DiagnoseWindow;
@@ -306,6 +387,50 @@ unsafe extern "system" fn window_proc(
         }
         _ => DefWindowProcW(window, message, wparam, lparam),
     }
+}
+
+unsafe fn layout_controls(window: HWND, state: &DiagnoseWindow) -> Result<(), io::Error> {
+    let mut client = mem::zeroed();
+    if GetClientRect(window, &mut client) == 0 {
+        return Err(io::Error::last_os_error());
+    }
+
+    let width = client.right - client.left;
+    let height = client.bottom - client.top;
+    let margin = 24;
+    let footer_y = height - 58;
+    let report_y = 108;
+    let report_height = (footer_y - report_y - 20).max(100);
+
+    let close_width = 92;
+    let issue_width = 126;
+    let copy_width = 110;
+    let gap = 12;
+    let right = width - margin;
+    let close_x = right - close_width;
+    let issue_x = close_x - gap - issue_width;
+    let copy_x = issue_x - gap - copy_width;
+    let status_width = (copy_x - gap - margin).max(100);
+
+    for (control, x, y, control_width, control_height) in [
+        (
+            state.report_view,
+            margin,
+            report_y,
+            width - margin * 2,
+            report_height,
+        ),
+        (state.status, margin, footer_y + 4, status_width, 28),
+        (state.copy_button, copy_x, footer_y, copy_width, 36),
+        (state.issue_button, issue_x, footer_y, issue_width, 36),
+        (state.close_button, close_x, footer_y, close_width, 36),
+    ] {
+        if MoveWindow(control, x, y, control_width, control_height, 1) == 0 {
+            return Err(io::Error::last_os_error());
+        }
+    }
+
+    Ok(())
 }
 
 unsafe fn copy_to_clipboard(window: HWND, report: &[u16]) -> Result<(), io::Error> {

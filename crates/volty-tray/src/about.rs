@@ -5,18 +5,21 @@ use windows_sys::Win32::{
         GetLastError, ERROR_CLASS_ALREADY_EXISTS, HINSTANCE, HWND, LPARAM, LRESULT, WPARAM,
     },
     Graphics::Gdi::{GetSysColorBrush, COLOR_WINDOW},
-    System::LibraryLoader::GetModuleHandleW,
+    System::{LibraryLoader::GetModuleHandleW, SystemServices::SS_ETCHEDHORZ},
     UI::{
         Shell::ShellExecuteW,
         WindowsAndMessaging::{
             CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetMessageW,
             GetWindowLongPtrW, PostQuitMessage, RegisterClassW, SetWindowLongPtrW, SetWindowTextW,
             ShowWindow, TranslateMessage, BS_PUSHBUTTON, CREATESTRUCTW, CW_USEDEFAULT,
-            GWLP_USERDATA, MSG, SW_SHOWNORMAL, WM_CLOSE, WM_COMMAND, WM_DESTROY, WM_NCCREATE,
-            WNDCLASSW, WS_CAPTION, WS_CHILD, WS_OVERLAPPED, WS_SYSMENU, WS_TABSTOP, WS_VISIBLE,
+            GWLP_USERDATA, MSG, SW_SHOWNORMAL, WM_CLOSE, WM_COMMAND, WM_CTLCOLORSTATIC, WM_DESTROY,
+            WM_NCCREATE, WNDCLASSW, WS_CAPTION, WS_CHILD, WS_OVERLAPPED, WS_SYSMENU, WS_TABSTOP,
+            WS_VISIBLE,
         },
     },
 };
+
+use crate::native_ui::{set_control_font, static_control_color, FontSet};
 
 const WINDOW_CLASS: &str = "VoltyAboutWindow";
 const STAR_ON_GITHUB_ID: usize = 1001;
@@ -26,6 +29,7 @@ const GITHUB_URL: &str = "https://github.com/PhilippPolterauer/volty-rs";
 struct AboutWindow {
     status: HWND,
     create_complete: bool,
+    fonts: FontSet,
 }
 
 pub fn show_about_window() -> Result<(), Box<dyn Error>> {
@@ -54,9 +58,11 @@ pub fn show_about_window() -> Result<(), Box<dyn Error>> {
         return Err(io::Error::last_os_error().into());
     }
 
+    let fonts = FontSet::new()?;
     let mut state = Box::new(AboutWindow {
         status: ptr::null_mut(),
         create_complete: false,
+        fonts,
     });
     let window = unsafe {
         CreateWindowExW(
@@ -66,8 +72,8 @@ pub fn show_about_window() -> Result<(), Box<dyn Error>> {
             WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU,
             CW_USEDEFAULT,
             CW_USEDEFAULT,
-            390,
-            195,
+            500,
+            300,
             ptr::null_mut(),
             ptr::null_mut(),
             instance,
@@ -113,29 +119,80 @@ unsafe fn create_controls(
 ) -> Result<(), Box<dyn Error>> {
     let static_class = to_wide("STATIC");
     let button_class = to_wide("BUTTON");
-    let version = to_wide(&format!("Volty {}", env!("CARGO_PKG_VERSION")));
-    let description = to_wide("Lightweight Logitech battery monitor");
+    let heading_text = to_wide("Volty");
+    let version_text = to_wide(&format!("VERSION {}", env!("CARGO_PKG_VERSION")));
+    let description_text = to_wide("Lightweight Logitech battery monitor");
     let status_text = to_wide("");
     let star_text = to_wide("Star on GitHub");
     let close_text = to_wide("Close");
 
-    for (text, y) in [(&version, 18), (&description, 48)] {
-        if create_child(
-            window,
-            instance,
-            &static_class,
-            text,
-            WS_CHILD | WS_VISIBLE,
-            16,
-            y,
-            340,
-            24,
-            0,
-        )
-        .is_null()
-        {
-            return Err(io::Error::last_os_error().into());
-        }
+    let heading = create_child(
+        window,
+        instance,
+        &static_class,
+        &heading_text,
+        WS_CHILD | WS_VISIBLE,
+        28,
+        20,
+        420,
+        38,
+        0,
+    );
+    if heading.is_null() {
+        return Err(io::Error::last_os_error().into());
+    }
+    set_control_font(heading, state.fonts.heading);
+
+    let version = create_child(
+        window,
+        instance,
+        &static_class,
+        &version_text,
+        WS_CHILD | WS_VISIBLE,
+        30,
+        63,
+        420,
+        22,
+        0,
+    );
+    if version.is_null() {
+        return Err(io::Error::last_os_error().into());
+    }
+    set_control_font(version, state.fonts.body);
+
+    let description = create_child(
+        window,
+        instance,
+        &static_class,
+        &description_text,
+        WS_CHILD | WS_VISIBLE,
+        30,
+        99,
+        420,
+        24,
+        0,
+    );
+    if description.is_null() {
+        return Err(io::Error::last_os_error().into());
+    }
+    set_control_font(description, state.fonts.body);
+
+    let separator_text = to_wide("");
+    if create_child(
+        window,
+        instance,
+        &static_class,
+        &separator_text,
+        WS_CHILD | WS_VISIBLE | SS_ETCHEDHORZ,
+        24,
+        165,
+        436,
+        2,
+        0,
+    )
+    .is_null()
+    {
+        return Err(io::Error::last_os_error().into());
     }
 
     state.status = create_child(
@@ -144,19 +201,20 @@ unsafe fn create_controls(
         &static_class,
         &status_text,
         WS_CHILD | WS_VISIBLE,
-        16,
-        82,
-        340,
-        24,
+        30,
+        132,
+        420,
+        22,
         0,
     );
     if state.status.is_null() {
         return Err(io::Error::last_os_error().into());
     }
+    set_control_font(state.status, state.fonts.body);
 
     for (id, text, x, width) in [
-        (STAR_ON_GITHUB_ID, &star_text, 16, 145),
-        (CLOSE_ID, &close_text, 276, 80),
+        (STAR_ON_GITHUB_ID, &star_text, 24, 160),
+        (CLOSE_ID, &close_text, 376, 84),
     ] {
         let button = create_child(
             window,
@@ -165,14 +223,15 @@ unsafe fn create_controls(
             text,
             WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON as u32,
             x,
-            118,
+            198,
             width,
-            30,
+            36,
             id,
         );
         if button.is_null() {
             return Err(io::Error::last_os_error().into());
         }
+        set_control_font(button, state.fonts.body);
     }
 
     Ok(())
@@ -218,6 +277,7 @@ unsafe extern "system" fn window_proc(
     }
 
     match message {
+        WM_CTLCOLORSTATIC => static_control_color(wparam),
         WM_COMMAND => {
             let id = (wparam & 0xffff) as usize;
             match id {

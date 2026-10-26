@@ -300,11 +300,12 @@ fn shorten_status(status: &str) -> String {
 }
 
 /// Renders an RGBA numeric icon. Supported sizes are 16 and 32 pixels square.
-pub fn numeric_battery_rgba(percentage: u8, size: u32) -> Result<Vec<u8>, TrayError> {
+#[cfg(test)]
+fn numeric_battery_rgba(percentage: u8, size: u32) -> Result<Vec<u8>, TrayError> {
     numeric_battery_rgba_with_color_map(percentage, size, BatteryColorMap::default())
 }
 
-pub fn numeric_battery_rgba_with_color_map(
+fn numeric_battery_rgba_with_color_map(
     percentage: u8,
     size: u32,
     battery_color_map: BatteryColorMap,
@@ -314,7 +315,8 @@ pub fn numeric_battery_rgba_with_color_map(
 }
 
 /// Produces a numeric battery icon at 16×16 or 32×32 pixels.
-pub fn numeric_battery_icon_at_size(percentage: u8, size: u32) -> Result<Icon, TrayError> {
+#[cfg(test)]
+fn numeric_battery_icon_at_size(percentage: u8, size: u32) -> Result<Icon, TrayError> {
     let rgba = numeric_battery_rgba(percentage, size)?;
     Icon::from_rgba(rgba, size, size)
         .map_err(|error| TrayError::new(format!("could not create battery icon: {error}")))

@@ -17,11 +17,16 @@ the intended product or documentation.
 HID peripheral
      |
      v
-Interface discovery and protocol selection
+Enumerate HID interfaces
      |
-     +-- Generic HID battery reports (future backend)
+     v
+Resolve each interface against SUPPORTED_MICE
+     | no match: no model selected
+     | multiple matches: ambiguity error
+     | exactly one match
      |
-     +-- Logitech HID++ 2.0 (current backend)
+     v
+Selected model's protocol backend
      |
      v
 Protocol-specific query and decoder
@@ -56,16 +61,44 @@ The HID crate separates protocol behavior from mouse-family matching:
 - `BatteryProtocol` describes interface matching, protocol-specific device
   addresses, and a query that returns the normalized `BatteryStatus`.
 - `MouseModel` names a supported mouse family and selects its protocol.
-- `SUPPORTED_PROTOCOLS` and `SUPPORTED_MICE` are the explicit registries used
-  to discover implementations.
+- `SUPPORTED_MICE` is the single dispatch catalog used to select a model and
+  its backend.
 
-`logitech_hidpp.rs` is the first and currently only protocol backend. Its
-family matcher recognizes Logitech HID++ interfaces; runtime feature
-discovery then confirms whether a device exposes one of the supported battery
-features. Additional protocols should add their own implementation module and
-registry entry, while additional mouse families can reuse an existing
-protocol. The tray consumes these traits rather than selecting a vendor
-directly.
+During tray polling, Volty enumerates HID interfaces and calls
+`find_supported_mouse` for each one. The resolver checks the models in
+`SUPPORTED_MICE`: no match selects no model, exactly one match selects that
+model, and multiple matches produce an ambiguity error rather than letting
+catalog order decide. `MouseModel::matches` defaults to the selected backend's
+`supports_interface` method. The uniquely selected model supplies the backend
+used for the query; Volty does not try every protocol or choose a backend
+from a profile.
+
+Today the only registered model is the Logitech HID++ 2.0 mouse. Its backend
+matches vendor ID `0x046d` and usage page `0xff00`. After selection, runtime
+feature discovery and battery decoding determine whether a supported battery
+feature is available. The tray returns the first successful battery reading.
+A matching interface is therefore a candidate, not proof that it reports a
+supported battery.
+
+To support another device:
+
+1. If it speaks the existing protocol, add a `MouseModel` for its family and
+   have it return the existing `BatteryProtocol`. Override `matches` when the
+   default protocol-level interface check is too broad.
+2. If it speaks a different protocol, implement a new `BatteryProtocol`
+   (including interface matching, device addresses, transport, and battery
+   decoding), then add a `MouseModel` that returns it.
+3. Add each new model to `SUPPORTED_MICE`; this is the dispatch catalog, so a
+   protocol implementation without a model entry is not selectable by the
+   tray.
+4. Keep model matchers mutually exclusive for every interface. If multiple
+   models match, resolution fails with an ambiguity error rather than choosing
+   a backend based on catalog order.
+5. Normalize readings to `BatteryStatus` and test both the interface-to-model
+   mapping and the protocol's response handling.
+
+`logitech_hidpp.rs` is currently the only protocol backend. The tray consumes
+the protocol and model traits rather than selecting a vendor directly.
 
 ## How profiles fit
 
@@ -83,11 +116,14 @@ TOML file -> strict validation -> command executor -> selected protocol
           -> correlated response -> decoder -> result and raw frames
 ```
 
-Profiles currently require an explicit file path and device/interface
-selection. They do not identify a model, choose a protocol backend, or tell
-the tray which profile to run. A future cross-protocol profile format would
-need protocol-specific command types and adapters rather than assuming that
-all HID devices speak HID++.
+Profiles are selected explicitly for the diagnostic CLI, either by built-in
+profile ID or custom file path, along with a device/interface selection. They
+do not identify a mouse model, dispatch the tray to a protocol backend, or
+tell the tray which command to run. The current profile schema accepts only
+`protocol = "hidpp20"`, and `volty hid run` opens an HID++ session; this field
+is not dynamic backend selection. A cross-protocol profile runner would need
+protocol-specific command types and transports rather than assuming all HID
+devices speak HID++.
 
 See [Adding a Logitech mouse](./adding-mice.md) for the current backend's
 worked example: interface selection, feature discovery, read-only profile
@@ -109,9 +145,9 @@ For a new device, keep these responsibilities explicit:
    protocol, a profile file alone cannot provide that transport.
 4. **Normalize the result.** Convert the response to the shared battery model
    while retaining unknown/sentinel values instead of guessing.
-5. **Connect it to the tray deliberately.** Add the battery query to the
-   built-in polling path, or implement a reviewed, read-only profile registry
-   and matching policy. The CLI profile runner is not that registry.
+5. **Connect it to the tray deliberately.** Add a `MouseModel` to
+   `SUPPORTED_MICE` that selects the backend. A successful diagnostic profile
+   run alone does not add tray support.
 6. **Test both layers.** Unit-test parsing with recorded frames, then validate
    with read-only hardware queries and the actual tray path.
 
@@ -120,44 +156,35 @@ there is not yet a generic parser for standard HID battery reports; adding
 another HID device requires implementing its discovery and report/protocol
 adapter before it can be monitored by the tray.
 
-## Shipping profile files with the executable
+## Built-in and custom profiles
 
-`volty hid run --profile FILE` reads the TOML file from that path at runtime.
-The sample profile is in the repository at
-[`crates/volty-hid/examples/unified-battery.toml`](../crates/volty-hid/examples/unified-battery.toml).
-The current [release workflow](../.github/workflows/release.yml) publishes
-only `volty.exe` and its SHA-256 checksum; it does **not** ship profile files.
-
-There are two packaging approaches:
-
-| Approach | Result | Cost |
-| --- | --- | --- |
-| Embed profiles in the executable | One standalone executable; profiles are compiled into the binary and selected by a built-in name. | Requires a rebuild and release to add or update a profile, plus CLI support for built-in names. |
-| Ship a sidecar profile directory | An archive contains the executable and a `profiles\` tree; the CLI is given the profile path. | Profiles can be changed independently, but the release workflow must package the tree and the CLI currently requires an explicit path. |
-
-For adding device profiles without recompiling, use the sidecar approach. A
-future release archive could have this layout:
-
-```text
-Volty/
-  volty.exe
-  profiles/
-    hidpp/
-      unified-battery.toml
-```
-
-With today's CLI, the command would name the file explicitly:
+The `volty-hid` crate includes built-in protocol profiles from
+[`crates/volty-hid/protocols/`](../crates/volty-hid/protocols/). Its build
+script embeds every `.toml` file in that directory tree into the executable,
+so releases need no sidecar profile files. A profile's built-in ID is its
+relative path without the `.toml` extension; for example,
+[`logitech-hidpp/unified-battery`](../crates/volty-hid/protocols/logitech-hidpp/unified-battery.toml).
+Run `volty hid profiles` to list IDs, then use the `builtin:` prefix to select
+one:
 
 ```powershell
-.\volty.exe hid run --profile .\profiles\hidpp\unified-battery.toml --command battery-status --device-index 0x01
+.\volty.exe hid profiles
+.\volty.exe hid run --profile builtin:logitech-hidpp/unified-battery --command battery-status --device-index 0x01
 ```
 
-This layout does not make profiles auto-discoverable and does not change tray
-polling. To let the tray use sidecar profiles, Volty would additionally need
-a validated registry, device/protocol matching metadata, and a constrained
-read-only battery-command interface. It should not execute every profile
-found beside the executable; state-changing commands must remain explicitly
-authorized for interactive diagnostics.
+Custom profiles remain supported and are read from the specified path at
+runtime. They use the same validated TOML schema and do not need to be copied
+into the executable:
+
+```powershell
+.\volty.exe hid run --profile .\battery.toml --command battery-status --device-index 0x01
+```
+
+The README's [HID diagnostics section](../README.md#hid-diagnostics) explains
+how to list and run built-in profiles. Built-in and custom profiles are
+explicit diagnostic CLI inputs only: the tray does not load them, and they do
+not select or register its backend. Tray support is selected through
+`SUPPORTED_MICE` in code.
 
 ## Validation boundaries
 

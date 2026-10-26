@@ -9,6 +9,8 @@ mod hid_cli;
 #[cfg(windows)]
 mod logging;
 #[cfg(windows)]
+mod native_ui;
+#[cfg(windows)]
 mod notify;
 #[cfg(windows)]
 mod report;

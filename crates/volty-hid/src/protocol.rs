@@ -1,8 +1,9 @@
 use crate::{BatteryStatus, HidInterfaceInfo};
 use std::error::Error;
+use std::fmt;
 
 /// An error returned by a protocol-specific battery query.
-pub type ProtocolError = Box<dyn Error + Send + Sync + 'static>;
+pub type ProtocolError = Box<dyn Error + Send + Sync>;
 
 /// A transport/protocol implementation that can produce normalized battery readings.
 pub trait BatteryProtocol: Sync {
@@ -31,25 +32,98 @@ pub trait MouseModel: Sync {
     }
 }
 
-/// Find the registered mouse family for an enumerated HID interface.
-pub fn find_supported_mouse(interface: &HidInterfaceInfo) -> Option<&'static dyn MouseModel> {
-    SUPPORTED_MICE
+/// An interface matches more than one registered mouse model.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct AmbiguousMouseModel {
+    /// Names of all matching models, in catalog order.
+    pub matching_model_names: Vec<&'static str>,
+}
+
+impl fmt::Display for AmbiguousMouseModel {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "multiple mouse models match this HID interface: {}",
+            self.matching_model_names.join(", ")
+        )
+    }
+}
+
+impl Error for AmbiguousMouseModel {}
+
+/// Resolve an enumerated HID interface to its unique registered mouse model.
+///
+/// Returns `Ok(None)` when no model matches and an error when multiple models
+/// match the interface.
+pub fn resolve_mouse_model(
+    interface: &HidInterfaceInfo,
+) -> Result<Option<&'static dyn MouseModel>, AmbiguousMouseModel> {
+    resolve_mouse_model_from(SUPPORTED_MICE, interface)
+}
+
+fn resolve_mouse_model_from(
+    catalog: &[&'static dyn MouseModel],
+    interface: &HidInterfaceInfo,
+) -> Result<Option<&'static dyn MouseModel>, AmbiguousMouseModel> {
+    let mut matches = catalog
         .iter()
         .copied()
-        .find(|mouse| mouse.matches(interface))
+        .filter(|mouse| mouse.matches(interface));
+
+    let Some(first) = matches.next() else {
+        return Ok(None);
+    };
+
+    let Some(second) = matches.next() else {
+        return Ok(Some(first));
+    };
+
+    let mut matching_model_names = vec![first.name(), second.name()];
+    matching_model_names.extend(matches.map(|mouse| mouse.name()));
+    Err(AmbiguousMouseModel {
+        matching_model_names,
+    })
 }
 
 /// Mouse families currently known to Volty.
 pub static SUPPORTED_MICE: &[&dyn MouseModel] = &[&crate::logitech_hidpp::LOGITECH_HIDPP_MOUSE];
 
-/// Protocol implementations currently registered with Volty.
-pub static SUPPORTED_PROTOCOLS: &[&dyn BatteryProtocol] =
-    &[&crate::logitech_hidpp::LOGITECH_HIDPP_20];
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::ffi::CString;
+
+    struct TestMouseModel {
+        name: &'static str,
+        vendor_id: u16,
+    }
+
+    impl MouseModel for TestMouseModel {
+        fn name(&self) -> &'static str {
+            self.name
+        }
+
+        fn protocol(&self) -> &'static dyn BatteryProtocol {
+            &crate::logitech_hidpp::LOGITECH_HIDPP_20
+        }
+
+        fn matches(&self, interface: &HidInterfaceInfo) -> bool {
+            self.vendor_id == interface.vendor_id
+        }
+    }
+
+    static TEST_MOUSE_A: TestMouseModel = TestMouseModel {
+        name: "Test Mouse A",
+        vendor_id: 0x1234,
+    };
+    static TEST_MOUSE_B: TestMouseModel = TestMouseModel {
+        name: "Test Mouse B",
+        vendor_id: 0x5678,
+    };
+    static TEST_MOUSE_C: TestMouseModel = TestMouseModel {
+        name: "Test Mouse C",
+        vendor_id: 0x1234,
+    };
 
     fn interface(vendor_id: u16) -> HidInterfaceInfo {
         HidInterfaceInfo {
@@ -67,14 +141,47 @@ mod tests {
     }
 
     #[test]
-    fn registry_matches_only_the_registered_logitech_hidpp_family() {
+    fn resolver_returns_none_when_no_catalog_model_matches() {
+        let catalog: &[&'static dyn MouseModel] = &[&TEST_MOUSE_A];
+        assert!(resolve_mouse_model_from(catalog, &interface(0x9999))
+            .unwrap()
+            .is_none());
+    }
+
+    #[test]
+    fn resolver_returns_the_unique_matching_model() {
+        let catalog: &[&'static dyn MouseModel] = &[&TEST_MOUSE_A, &TEST_MOUSE_B];
+        let matched = resolve_mouse_model_from(catalog, &interface(0x1234))
+            .unwrap()
+            .unwrap();
+        assert_eq!(matched.name(), "Test Mouse A");
+    }
+
+    #[test]
+    fn resolver_reports_all_ambiguous_matches() {
+        let catalog: &[&'static dyn MouseModel] = &[&TEST_MOUSE_A, &TEST_MOUSE_C];
+        let error = match resolve_mouse_model_from(catalog, &interface(0x1234)) {
+            Err(error) => error,
+            Ok(_) => panic!("expected an ambiguous model resolution"),
+        };
+        assert_eq!(
+            error.matching_model_names,
+            vec!["Test Mouse A", "Test Mouse C"]
+        );
+        assert_eq!(
+            error.to_string(),
+            "multiple mouse models match this HID interface: Test Mouse A, Test Mouse C"
+        );
+    }
+
+    #[test]
+    fn registry_resolves_the_registered_logitech_hidpp_family() {
         let matched = interface(0x046d);
-        let mouse = find_supported_mouse(&matched).unwrap();
+        let mouse = resolve_mouse_model(&matched).unwrap().unwrap();
         assert_eq!(mouse.name(), "Logitech HID++ mouse");
         assert_eq!(mouse.protocol().name(), "Logitech HID++ 2.0");
-        assert_eq!(SUPPORTED_PROTOCOLS.len(), 1);
         assert_eq!(SUPPORTED_MICE.len(), 1);
 
-        assert!(find_supported_mouse(&interface(0x1234)).is_none());
+        assert!(resolve_mouse_model(&interface(0x1234)).unwrap().is_none());
     }
 }

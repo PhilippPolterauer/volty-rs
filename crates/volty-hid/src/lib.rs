@@ -4,18 +4,20 @@
 //! dependencies. Enable `hidapi` for interface enumeration and sessions.
 
 mod battery;
+mod builtin_protocols;
 mod command;
 mod logitech_hidpp;
 mod profile;
 mod protocol;
 
 pub use battery::*;
+pub use builtin_protocols::{builtin_profile_names, builtin_profile_source};
 pub use command::*;
 pub use logitech_hidpp::*;
 pub use profile::*;
 pub use protocol::{
-    find_supported_mouse, BatteryProtocol, MouseModel, ProtocolError, SUPPORTED_MICE,
-    SUPPORTED_PROTOCOLS,
+    resolve_mouse_model, AmbiguousMouseModel, BatteryProtocol, MouseModel, ProtocolError,
+    SUPPORTED_MICE,
 };
 
 #[cfg(feature = "hidapi")]
@@ -148,7 +150,6 @@ pub fn select_hid_interface_from(
 mod hid {
     use super::*;
     use hidapi::{DeviceInfo, HidApi, HidDevice};
-    use std::ffi::CString;
     use std::time::Duration;
 
     /// Generic metadata for a HID interface, excluding its path and serial number.
@@ -177,54 +178,6 @@ mod hid {
                 bus_type: info.bus_type.clone(),
                 manufacturer_string: info.manufacturer_string.clone(),
                 product_string: info.product_string.clone(),
-            }
-        }
-    }
-
-    /// A Logitech HID interface and its identifiers.
-    #[derive(Clone)]
-    pub struct LogitechDeviceInfo {
-        pub vendor_id: u16,
-        pub product_id: u16,
-        pub usage_page: u16,
-        pub usage: u16,
-        pub interface_number: i32,
-        pub product_string: Option<String>,
-        pub serial_number: Option<String>,
-        path: CString,
-    }
-
-    impl fmt::Debug for LogitechDeviceInfo {
-        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-            f.debug_struct("LogitechDeviceInfo")
-                .field("vendor_id", &self.vendor_id)
-                .field("product_id", &self.product_id)
-                .field("usage_page", &self.usage_page)
-                .field("usage", &self.usage)
-                .field("interface_number", &self.interface_number)
-                .field("product_string", &self.product_string)
-                .field("serial_number", &"<redacted>")
-                .field("path", &"<redacted>")
-                .finish()
-        }
-    }
-
-    impl LogitechDeviceInfo {
-        fn from_hidapi(info: &DeviceInfo) -> Self {
-            #[cfg(windows)]
-            let (usage_page, usage) = (info.usage_page(), info.usage());
-            #[cfg(not(windows))]
-            let (usage_page, usage) = (0, 0);
-
-            Self {
-                vendor_id: info.vendor_id(),
-                product_id: info.product_id(),
-                usage_page,
-                usage,
-                interface_number: info.interface_number(),
-                product_string: info.product_string().map(str::to_owned),
-                serial_number: info.serial_number().map(str::to_owned),
-                path: info.path().to_owned(),
             }
         }
     }
@@ -374,63 +327,6 @@ mod hid {
                 .map(HidDeviceInfo::from_interface)
                 .collect()
         })
-    }
-
-    /// Enumerate Logitech interfaces without assuming a particular usage value.
-    pub fn enumerate_logitech_devices() -> Result<Vec<LogitechDeviceInfo>, HidppError> {
-        let api = HidApi::new().map_err(HidppError::HidApi)?;
-        let mut devices: Vec<_> = api
-            .device_list()
-            .filter(|device| device.vendor_id() == LOGITECH_VENDOR_ID && is_hidpp_interface(device))
-            .map(LogitechDeviceInfo::from_hidapi)
-            .collect();
-        devices.sort_by(|left, right| {
-            (
-                left.product_id,
-                left.interface_number,
-                left.usage_page,
-                left.usage,
-                left.path.as_c_str(),
-            )
-                .cmp(&(
-                    right.product_id,
-                    right.interface_number,
-                    right.usage_page,
-                    right.usage,
-                    right.path.as_c_str(),
-                ))
-        });
-        Ok(devices)
-    }
-
-    #[cfg(windows)]
-    fn is_hidpp_interface(info: &DeviceInfo) -> bool {
-        info.usage_page() == LOGITECH_HIDPP_USAGE_PAGE
-    }
-
-    #[cfg(not(windows))]
-    fn is_hidpp_interface(_info: &DeviceInfo) -> bool {
-        true
-    }
-
-    /// Query unified battery first, falling back to legacy Battery Status.
-    pub fn query_battery(
-        info: &LogitechDeviceInfo,
-        device_index: u8,
-    ) -> Result<BatteryStatus, HidppError> {
-        let session_info = HidInterfaceInfo {
-            vendor_id: info.vendor_id,
-            product_id: info.product_id,
-            release_number: 0,
-            usage_page: Some(info.usage_page),
-            usage: Some(info.usage),
-            interface_number: info.interface_number,
-            bus_type: String::new(),
-            manufacturer_string: None,
-            product_string: info.product_string.clone(),
-            path: info.path.clone(),
-        };
-        query_battery_interface(&session_info, device_index)
     }
 
     pub(crate) fn query_battery_interface(
@@ -624,8 +520,8 @@ fn verify_response(request: &HidppFrame, response: &HidppFrame) -> Result<(), Hi
 
 #[cfg(feature = "hidapi")]
 pub use hid::{
-    enumerate_hid_devices, enumerate_hid_interfaces, enumerate_logitech_devices, query_battery,
-    select_hid_interface, HidDeviceInfo, HidppSession, LogitechDeviceInfo,
+    enumerate_hid_devices, enumerate_hid_interfaces, select_hid_interface, HidDeviceInfo,
+    HidppSession,
 };
 
 #[cfg(feature = "hidapi")]

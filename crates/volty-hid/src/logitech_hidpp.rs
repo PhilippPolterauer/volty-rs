@@ -23,17 +23,16 @@ impl BatteryProtocol for LogitechHidpp20 {
 
     fn query_battery(
         &self,
-        interface: &HidInterfaceInfo,
-        device_index: u8,
+        _interface: &HidInterfaceInfo,
+        _device_index: u8,
     ) -> Result<BatteryStatus, ProtocolError> {
         #[cfg(feature = "hidapi")]
         {
-            crate::query_battery_interface(interface, device_index)
+            crate::query_battery_interface(_interface, _device_index)
                 .map_err(|error| Box::new(error) as ProtocolError)
         }
         #[cfg(not(feature = "hidapi"))]
         {
-            let _ = (interface, device_index);
             Err(Box::new(std::io::Error::new(
                 std::io::ErrorKind::Unsupported,
                 "Logitech HID++ battery queries require the `hidapi` feature",

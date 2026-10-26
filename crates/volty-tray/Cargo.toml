@@ -12,6 +12,9 @@ path = "src/main.rs"
 [dependencies]
 toml = "0.8"
 
+[build-dependencies]
+winres = "0.1"
+
 [target.'cfg(windows)'.dependencies]
 volty-hid = { path = "../volty-hid", features = ["hidapi"] }
 tray-icon = "0.14"
@@ -23,6 +26,7 @@ windows-sys = { version = "0.59", features = [
     "Win32_Graphics_Gdi",
     "Win32_Security",
     "Win32_System_Threading",
+    "Win32_System_SystemServices",
     "Win32_System_DataExchange",
     "Win32_System_LibraryLoader",
     "Win32_System_Memory",
