@@ -79,9 +79,9 @@ default and can be configured or disabled in Volty's configuration file.
 ![Volty low-battery notification](./docs/notification.png)
 
 Right-click the tray icon to refresh device readings, open configuration or
-logs, view diagnostics, enable **Start on Boot**, see **About Volty**, or quit
-the app. **Start on Boot** toggles startup for the current Windows user and
-does not require administrator privileges.
+logs, view diagnostics, enable **Start on Boot**, see **About Volty**, reset
+Volty, or quit the app. **Start on Boot** toggles startup for the current
+Windows user and does not require administrator privileges.
 
 ![Volty tray menu](./docs/context.png)
 
@@ -89,6 +89,12 @@ Configuration and logs are stored in `%APPDATA%\Volty`. Choose
 **Open Configuration** or **Open Log File** in the tray menu to access them.
 For troubleshooting, choose **Diagnose / Report an Issue**; review the report
 before sharing it. Nothing is uploaded automatically.
+**Reset Volty** asks for confirmation before deleting
+`%APPDATA%\Volty\config.toml` and
+`%LOCALAPPDATA%\Volty\device-state.sqlite3`. It also disables **Start on Boot**
+and clears the first-run startup prompt preference, then reinitializes Volty in
+place with fresh defaults. The startup prompt appears again the next time
+Volty launches; logs are retained.
 
 ---
 
@@ -119,7 +125,7 @@ volty-rs/
 │       │   ├── hid_cli.rs     # On-demand HID++ interface/feature diagnostics
 │       │   ├── app.rs         # Polling state machine and worker
 │       │   ├── config.rs      # Per-user TOML settings
-│       │   ├── state.rs       # Local SQLite discovery cache
+│       │   ├── state.rs       # Local SQLite device and notification runtime state
 │       │   ├── tray.rs        # Dynamic icon generation & context menu
 │       │   ├── about.rs       # About window
 │       │   ├── diagnose.rs    # Native diagnostic window and clipboard actions
@@ -218,6 +224,9 @@ SQLite on startup and removed after a successful migration. The menu also lets
 you refresh, open configuration, enable startup, or quit. **About Volty** opens
 a small native window with the app version and a button to visit the project on
 GitHub.
+The database also remembers which devices have already received a low-battery
+alert in their current discharge cycle, preventing repeat alerts after a
+restart; a charging or full reading clears that runtime state.
 
 Low-battery alerts default to 20% and fire once per discharge cycle. Select
 **Open Configuration** in the tray menu to create or open

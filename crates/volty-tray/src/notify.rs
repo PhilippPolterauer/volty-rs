@@ -71,6 +71,10 @@ impl NotificationEngine {
         })
     }
 
+    pub(crate) fn restore_discharge_notification(&mut self, notified: bool) {
+        self.notified_this_discharge = notified;
+    }
+
     /// Returns the active alert threshold.
     #[cfg(test)]
     pub fn threshold_percent(&self) -> u8 {
@@ -206,6 +210,26 @@ mod tests {
             NotificationOutcome::CycleReset
         );
         assert!(engine.consume_discharge_alert(10));
+    }
+
+    #[test]
+    fn restored_discharge_latch_suppresses_duplicate_alerts() {
+        let mut engine = NotificationEngine::from_config(AppConfig::default()).unwrap();
+        engine.restore_discharge_notification(true);
+        assert_eq!(
+            engine
+                .update_with(
+                    "Test device",
+                    BatterySample {
+                        percentage: 10,
+                        charging: false,
+                        full: false,
+                    },
+                    |_, _| panic!("a restored alert must not be dispatched again"),
+                )
+                .unwrap(),
+            NotificationOutcome::AlreadyNotified
+        );
     }
 
     #[test]

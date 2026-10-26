@@ -38,6 +38,7 @@ enum MenuItemId {
     LogFile,
     Diagnose,
     StartOnBoot,
+    ResetVolty,
     MonitoredDevices,
     MonitoredDevice(u64),
     About,
@@ -53,6 +54,7 @@ impl MenuItemId {
             Self::LogFile => "volty.open-log-file".to_owned(),
             Self::Diagnose => "volty.diagnose".to_owned(),
             Self::StartOnBoot => "volty.start-on-boot".to_owned(),
+            Self::ResetVolty => "volty.reset".to_owned(),
             Self::MonitoredDevices => "volty.monitored-devices".to_owned(),
             Self::MonitoredDevice(sequence) => {
                 format!("volty.monitored-device.{sequence}")
@@ -70,6 +72,7 @@ impl MenuItemId {
             "volty.open-log-file" => Some(Self::LogFile),
             "volty.diagnose" => Some(Self::Diagnose),
             "volty.start-on-boot" => Some(Self::StartOnBoot),
+            "volty.reset" => Some(Self::ResetVolty),
             "volty.monitored-devices" => Some(Self::MonitoredDevices),
             "volty.about" => Some(Self::About),
             "volty.quit" => Some(Self::Quit),
@@ -102,6 +105,7 @@ pub enum TrayAction {
     OpenLogFile,
     Diagnose,
     ToggleStartOnBoot,
+    ResetVolty,
     SetDeviceMonitored { identity: String, monitored: bool },
     About,
     Quit,
@@ -199,6 +203,8 @@ impl TrayController {
                 ))
             })?;
         let about_item = MenuItem::with_id(MenuItemId::About.as_id(), "About Volty", true, None);
+        let reset_item =
+            MenuItem::with_id(MenuItemId::ResetVolty.as_id(), "Reset Volty...", true, None);
         let quit_item = MenuItem::with_id(MenuItemId::Quit.as_id(), "Quit", true, None);
         let menu = Menu::new();
         menu.append(&status_item)
@@ -227,6 +233,10 @@ impl TrayController {
             .map_err(|error| TrayError::new(format!("could not add tray separator: {error}")))?;
         menu.append(&about_item)
             .map_err(|error| TrayError::new(format!("could not add About action: {error}")))?;
+        menu.append(&PredefinedMenuItem::separator())
+            .map_err(|error| TrayError::new(format!("could not add tray separator: {error}")))?;
+        menu.append(&reset_item)
+            .map_err(|error| TrayError::new(format!("could not add reset action: {error}")))?;
         menu.append(&PredefinedMenuItem::separator())
             .map_err(|error| TrayError::new(format!("could not add tray separator: {error}")))?;
         menu.append(&quit_item)
@@ -271,6 +281,12 @@ impl TrayController {
         percentage: Option<u8>,
     ) -> Result<(), TrayError> {
         self.update_status_with_icon_size(device_name, status, percentage, ICON_SIZE)
+    }
+
+    pub fn reset_status(&mut self, status: &str) -> Result<(), TrayError> {
+        self.percentage = None;
+        let status = shorten_status(status);
+        self.update_display(&status, &status, None, ICON_SIZE, &[])
     }
 
     /// Updates the tray status while rendering its icon at 16×16 or 32×32.
@@ -504,6 +520,12 @@ impl TrayController {
                 Some(MenuItemId::About) => {
                     self.actions_tx
                         .send(TrayAction::About)
+                        .map_err(|_| TrayError::new("tray action receiver has been dropped"))?;
+                    handled += 1;
+                }
+                Some(MenuItemId::ResetVolty) => {
+                    self.actions_tx
+                        .send(TrayAction::ResetVolty)
                         .map_err(|_| TrayError::new("tray action receiver has been dropped"))?;
                     handled += 1;
                 }
@@ -1014,8 +1036,69 @@ fn set_startup_prompt_shown() -> Result<(), TrayError> {
 }
 
 #[cfg(windows)]
+fn clear_startup_prompt_shown() -> Result<(), TrayError> {
+    use winreg::{enums::HKEY_CURRENT_USER, RegKey};
+
+    let current_user = RegKey::predef(HKEY_CURRENT_USER);
+    let key =
+        match current_user.open_subkey_with_flags(APP_SETTINGS_KEY, winreg::enums::KEY_SET_VALUE) {
+            Ok(key) => key,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(error) => {
+                return Err(TrayError::new(format!(
+                    "could not reset first-run startup preference: {error}"
+                )))
+            }
+        };
+    match key.delete_value(STARTUP_PROMPT_VALUE) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(TrayError::new(format!(
+            "could not reset first-run startup preference: {error}"
+        ))),
+    }
+}
+
+#[cfg(windows)]
 fn to_wide(value: &str) -> Vec<u16> {
     value.encode_utf16().chain(Some(0)).collect()
+}
+
+pub fn confirm_reset(
+    configuration_file: &std::path::Path,
+    local_state_file: &std::path::Path,
+) -> Result<bool, TrayError> {
+    let text = to_wide(&format!(
+        "This permanently deletes Volty's configuration and local device state, disables Windows startup, and resets the first-run startup prompt:\n\n\
+         Configuration: {}\n\
+         Local state: {}\n\n\
+         Volty will reset and continue running with fresh defaults.\n\n\
+         Continue?",
+        configuration_file.display(),
+        local_state_file.display()
+    ));
+    let title = to_wide("Reset Volty?");
+    let response = unsafe {
+        windows_sys::Win32::UI::WindowsAndMessaging::MessageBoxW(
+            std::ptr::null_mut(),
+            text.as_ptr(),
+            title.as_ptr(),
+            windows_sys::Win32::UI::WindowsAndMessaging::MB_DEFBUTTON2
+                | windows_sys::Win32::UI::WindowsAndMessaging::MB_ICONWARNING
+                | windows_sys::Win32::UI::WindowsAndMessaging::MB_YESNO,
+        )
+    };
+    match response {
+        windows_sys::Win32::UI::WindowsAndMessaging::IDYES => Ok(true),
+        windows_sys::Win32::UI::WindowsAndMessaging::IDNO => Ok(false),
+        0 => Err(TrayError::new(format!(
+            "could not show reset confirmation: {}",
+            std::io::Error::last_os_error()
+        ))),
+        _ => Err(TrayError::new(format!(
+            "reset confirmation returned unexpected response {response}"
+        ))),
+    }
 }
 
 /// Enables or disables Windows startup using the current executable's Run entry.
@@ -1071,6 +1154,25 @@ pub fn set_start_on_boot_enabled(enabled: bool) -> Result<(), TrayError> {
     }
 }
 
+#[cfg(windows)]
+pub fn reset_startup_preferences() -> Result<(), TrayError> {
+    let mut errors = Vec::new();
+    if let Err(error) = set_start_on_boot_enabled(false) {
+        errors.push(error.to_string());
+    }
+    if let Err(error) = clear_startup_prompt_shown() {
+        errors.push(error.to_string());
+    }
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(TrayError::new(format!(
+            "could not reset Windows startup preferences: {}",
+            errors.join("; ")
+        )))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1098,6 +1200,7 @@ mod tests {
             MenuItemId::LogFile,
             MenuItemId::Diagnose,
             MenuItemId::StartOnBoot,
+            MenuItemId::ResetVolty,
             MenuItemId::MonitoredDevices,
             MenuItemId::MonitoredDevice(42),
             MenuItemId::About,

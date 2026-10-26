@@ -4,7 +4,7 @@ use std::{
 };
 
 use windows::{
-    core::{Interface, RuntimeType, HSTRING},
+    core::{Interface, RuntimeType, HSTRING, PCWSTR},
     Devices::{
         Bluetooth::{
             BluetoothCacheMode, BluetoothConnectionStatus, BluetoothDevice, BluetoothLEDevice,
@@ -16,7 +16,21 @@ use windows::{
     },
     Foundation::IPropertyValue,
     Storage::Streams::DataReader,
-    Win32::System::WinRT::{RoInitialize, RoUninitialize, RO_INIT_MULTITHREADED},
+    Win32::{
+        Devices::{
+            DeviceAndDriverInstallation::{
+                SetupDiDestroyDeviceInfoList, SetupDiEnumDeviceInfo, SetupDiGetClassDevsW,
+                SetupDiGetDeviceInstanceIdW, SetupDiGetDevicePropertyW, DIGCF_ALLCLASSES,
+                DIGCF_PRESENT, HDEVINFO, SP_DEVINFO_DATA,
+            },
+            Properties::{
+                DEVPKEY_Device_FriendlyName, DEVPKEY_Device_Parent, DEVPROPTYPE, DEVPROP_TYPE_BYTE,
+                DEVPROP_TYPE_STRING,
+            },
+        },
+        Foundation::{DEVPROPKEY, ERROR_INSUFFICIENT_BUFFER, ERROR_NOT_FOUND, ERROR_NO_MORE_ITEMS},
+        System::WinRT::{RoInitialize, RoUninitialize, RO_INIT_MULTITHREADED},
+    },
 };
 use windows_future::{AsyncOperationCompletedHandler, IAsyncOperation};
 
@@ -29,6 +43,10 @@ use crate::{
 const OPERATION_TIMEOUT: Duration = Duration::from_secs(5);
 const PAIRED_BLE_SCAN_BUDGET: Duration = Duration::from_secs(30);
 const WINDOWS_BATTERY_LIFE_PROPERTY: &str = "System.Devices.BatteryLife";
+const BATTERY_LIFE_PROPERTY_KEY: DEVPROPKEY = DEVPROPKEY {
+    fmtid: windows::core::GUID::from_u128(0x49cd1f76_5626_4b17_a4e8_18b4aa1a2213),
+    pid: 10,
+};
 
 struct WinRtApartment;
 
@@ -55,6 +73,12 @@ pub(super) fn scan_battery_devices() -> Result<BluetoothScan, BluetoothError> {
             .warnings
             .push(format!("Windows Bluetooth battery property: {error}")),
     }
+    match scan_setupapi_battery_property() {
+        Ok(property_scan) => merge_scan(&mut scan, property_scan),
+        Err(error) => scan
+            .warnings
+            .push(format!("Windows Bluetooth device-property scan: {error}")),
+    }
     match scan_paired_ble_devices() {
         Ok(ble_scan) => merge_scan(&mut scan, ble_scan),
         Err(error) => scan
@@ -66,7 +90,15 @@ pub(super) fn scan_battery_devices() -> Result<BluetoothScan, BluetoothError> {
 
 fn merge_scan(target: &mut BluetoothScan, mut source: BluetoothScan) {
     target.devices_examined += source.devices_examined;
-    target.readings.append(&mut source.readings);
+    for reading in source.readings.drain(..) {
+        if !target
+            .readings
+            .iter()
+            .any(|existing| existing.device_id == reading.device_id)
+        {
+            target.readings.push(reading);
+        }
+    }
     target.discovery_events.append(&mut source.discovery_events);
     target.warnings.append(&mut source.warnings);
 }
@@ -165,6 +197,251 @@ fn read_windows_battery_life(info: &DeviceInformation) -> Result<Option<u8>, Blu
         .GetUInt8()
         .map_err(|error| windows_error("could not decode Bluetooth battery property", error))?;
     decode_windows_battery_life(level)
+}
+
+fn scan_setupapi_battery_property() -> Result<BluetoothScan, BluetoothError> {
+    let device_info_set = unsafe {
+        SetupDiGetClassDevsW(None, PCWSTR::null(), None, DIGCF_ALLCLASSES | DIGCF_PRESENT)
+    }
+    .map_err(|error| windows_error("could not enumerate present PnP devices", error))?;
+    let device_info_set = DeviceInfoSet(device_info_set);
+    let mut scan = BluetoothScan::default();
+    let mut bluetooth_nodes_examined = 0;
+    let mut battery_properties_found = 0;
+    let mut index = 0;
+    loop {
+        let mut info = SP_DEVINFO_DATA::default();
+        info.cbSize = std::mem::size_of::<SP_DEVINFO_DATA>() as u32;
+        match unsafe { SetupDiEnumDeviceInfo(device_info_set.0, index, &mut info) } {
+            Ok(()) => {}
+            Err(error) if windows_error_code(&error) == ERROR_NO_MORE_ITEMS.0 => break,
+            Err(error) => {
+                return Err(windows_error(
+                    "could not enumerate present PnP devices",
+                    error,
+                ))
+            }
+        }
+        index += 1;
+
+        let instance_id = match read_device_instance_id(device_info_set.0, &info) {
+            Ok(instance_id) => instance_id,
+            Err(error) => {
+                scan.warnings.push(error.to_string());
+                continue;
+            }
+        };
+        match is_bluetooth_device_node(device_info_set.0, &info, &instance_id) {
+            Ok(true) => {}
+            Ok(false) => continue,
+            Err(error) => {
+                scan.warnings.push(error.to_string());
+                continue;
+            }
+        }
+        bluetooth_nodes_examined += 1;
+        scan.devices_examined += 1;
+        let battery_property = match read_device_property(
+            device_info_set.0,
+            &info,
+            &BATTERY_LIFE_PROPERTY_KEY,
+            "could not read Windows Bluetooth battery property",
+        ) {
+            Ok(property) => property,
+            Err(error) => {
+                scan.warnings.push(error.to_string());
+                continue;
+            }
+        };
+        let Some((property_type, bytes)) = battery_property else {
+            continue;
+        };
+        battery_properties_found += 1;
+        if property_type != DEVPROP_TYPE_BYTE || bytes.len() != 1 {
+            scan.warnings.push(format!(
+                "Windows Bluetooth battery property has an unexpected type or size (type={}, bytes={})",
+                property_type.0,
+                bytes.len()
+            ));
+            continue;
+        }
+        let name = match read_device_property(
+            device_info_set.0,
+            &info,
+            &DEVPKEY_Device_FriendlyName,
+            "could not read Bluetooth device name",
+        ) {
+            Ok(Some((property_type, bytes))) if property_type == DEVPROP_TYPE_STRING => {
+                decode_device_property_string(&bytes)
+            }
+            Ok(_) => FALLBACK_DEVICE_NAME.to_owned(),
+            Err(error) => {
+                scan.warnings.push(error.to_string());
+                FALLBACK_DEVICE_NAME.to_owned()
+            }
+        };
+        match decode_windows_battery_life(bytes[0]) {
+            Ok(Some(level)) => {
+                scan.discovery_events.push(format!(
+                    "{name:?}: read battery level from the Windows PnP {WINDOWS_BATTERY_LIFE_PROPERTY} property"
+                ));
+                scan.readings.push(BluetoothBatteryReading {
+                    device_id: instance_id,
+                    name,
+                    battery: battery_status(
+                        level,
+                        volty_battery::BatterySource::BluetoothDeviceProperty,
+                    ),
+                });
+            }
+            Ok(None) => scan.discovery_events.push(format!(
+                "{name:?}: Windows PnP {WINDOWS_BATTERY_LIFE_PROPERTY} property reports an unknown battery level"
+            )),
+            Err(error) => scan.warnings.push(format!("{name}: {error}")),
+        }
+    }
+    if bluetooth_nodes_examined > 0 {
+        scan.discovery_events.push(format!(
+            "SetupAPI examined {bluetooth_nodes_examined} Bluetooth device node(s) and found {battery_properties_found} {WINDOWS_BATTERY_LIFE_PROPERTY} property value(s)"
+        ));
+    }
+    Ok(scan)
+}
+
+struct DeviceInfoSet(HDEVINFO);
+
+impl Drop for DeviceInfoSet {
+    fn drop(&mut self) {
+        let _ = unsafe { SetupDiDestroyDeviceInfoList(self.0) };
+    }
+}
+
+fn read_device_instance_id(
+    device_info_set: HDEVINFO,
+    info: &SP_DEVINFO_DATA,
+) -> Result<String, BluetoothError> {
+    let mut required_size = 0;
+    match unsafe {
+        SetupDiGetDeviceInstanceIdW(device_info_set, info, None, Some(&mut required_size))
+    } {
+        Ok(()) => {}
+        Err(error) if windows_error_code(&error) == ERROR_INSUFFICIENT_BUFFER.0 => {}
+        Err(error) => {
+            return Err(windows_error("could not read PnP device identity", error));
+        }
+    }
+    if required_size == 0 {
+        return Err(error("PnP device identity had an empty size"));
+    }
+    let mut buffer = vec![0u16; required_size as usize];
+    unsafe {
+        SetupDiGetDeviceInstanceIdW(
+            device_info_set,
+            info,
+            Some(&mut buffer),
+            Some(&mut required_size),
+        )
+    }
+    .map_err(|error| windows_error("could not read PnP device identity", error))?;
+    Ok(String::from_utf16_lossy(&buffer)
+        .trim_end_matches('\0')
+        .to_owned())
+}
+
+fn is_bluetooth_device_node(
+    device_info_set: HDEVINFO,
+    info: &SP_DEVINFO_DATA,
+    instance_id: &str,
+) -> Result<bool, BluetoothError> {
+    if has_bluetooth_enumerator(instance_id) {
+        return Ok(true);
+    }
+    if !instance_id
+        .split('\\')
+        .next()
+        .is_some_and(|enumerator| enumerator.eq_ignore_ascii_case("SWD"))
+    {
+        return Ok(false);
+    }
+    match read_device_property(
+        device_info_set,
+        info,
+        &DEVPKEY_Device_Parent,
+        "could not read PnP device parent",
+    )? {
+        Some((property_type, bytes)) if property_type == DEVPROP_TYPE_STRING => Ok(
+            has_bluetooth_enumerator(&decode_device_property_string(&bytes)),
+        ),
+        Some(_) => Err(error("PnP device parent property had an unexpected type")),
+        None => Ok(false),
+    }
+}
+
+fn has_bluetooth_enumerator(instance_id: &str) -> bool {
+    instance_id
+        .split('\\')
+        .next()
+        .is_some_and(|enumerator| enumerator.to_ascii_uppercase().starts_with("BTH"))
+}
+
+fn read_device_property(
+    device_info_set: HDEVINFO,
+    info: &SP_DEVINFO_DATA,
+    key: &DEVPROPKEY,
+    context: &str,
+) -> Result<Option<(DEVPROPTYPE, Vec<u8>)>, BluetoothError> {
+    let mut property_type = DEVPROPTYPE::default();
+    let mut required_size = 0;
+    match unsafe {
+        SetupDiGetDevicePropertyW(
+            device_info_set,
+            info,
+            key,
+            &mut property_type,
+            None,
+            Some(&mut required_size),
+            0,
+        )
+    } {
+        Ok(()) => return Ok(Some((property_type, Vec::new()))),
+        Err(error) if windows_error_code(&error) == ERROR_NOT_FOUND.0 => return Ok(None),
+        Err(error) if windows_error_code(&error) == ERROR_INSUFFICIENT_BUFFER.0 => {}
+        Err(error) => return Err(windows_error(context, error)),
+    }
+    if required_size == 0 || required_size > 65_536 {
+        return Err(error(format!(
+            "{context}: Windows returned an invalid property size ({required_size} bytes)"
+        )));
+    }
+    let mut bytes = vec![0; required_size as usize];
+    unsafe {
+        SetupDiGetDevicePropertyW(
+            device_info_set,
+            info,
+            key,
+            &mut property_type,
+            Some(&mut bytes),
+            Some(&mut required_size),
+            0,
+        )
+    }
+    .map_err(|error| windows_error(context, error))?;
+    bytes.truncate(required_size as usize);
+    Ok(Some((property_type, bytes)))
+}
+
+fn decode_device_property_string(bytes: &[u8]) -> String {
+    let wide: Vec<_> = bytes
+        .chunks_exact(2)
+        .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
+        .collect();
+    String::from_utf16_lossy(&wide)
+        .trim_end_matches('\0')
+        .to_owned()
+}
+
+fn windows_error_code(error: &windows::core::Error) -> u32 {
+    error.code().0 as u32 & 0xffff
 }
 
 fn scan_paired_ble_devices() -> Result<BluetoothScan, BluetoothError> {

@@ -13,15 +13,7 @@ pub struct DeviceState {
 
 impl DeviceState {
     pub fn open_local() -> Result<Self, Box<dyn std::error::Error>> {
-        let local_app_data = env::var_os("LOCALAPPDATA").ok_or_else(|| {
-            io::Error::new(
-                io::ErrorKind::NotFound,
-                "could not determine the local application data folder",
-            )
-        })?;
-        let path = PathBuf::from(local_app_data)
-            .join("Volty")
-            .join("device-state.sqlite3");
+        let path = local_state_path()?;
         Self::open(&path).map_err(|error| {
             io::Error::other(format!(
                 "could not open discovery state file {}: {error}",
@@ -52,6 +44,9 @@ impl DeviceState {
             CREATE TABLE IF NOT EXISTS monitored_devices (
                 identity TEXT PRIMARY KEY,
                 monitored INTEGER NOT NULL CHECK (monitored IN (0, 1))
+            ) WITHOUT ROWID;
+            CREATE TABLE IF NOT EXISTS notified_discharge_cycles (
+                identity TEXT PRIMARY KEY
             ) WITHOUT ROWID;",
         )?;
         Ok(Self { connection })
@@ -148,6 +143,40 @@ impl DeviceState {
         Ok(())
     }
 
+    pub fn notified_discharge_cycles(&self) -> Result<HashSet<String>, Box<dyn std::error::Error>> {
+        let mut statement = self
+            .connection
+            .prepare("SELECT identity FROM notified_discharge_cycles")?;
+        let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
+        Ok(rows.collect::<Result<HashSet<_>, _>>()?)
+    }
+
+    pub fn set_discharge_notification_sent(
+        &mut self,
+        identity: &str,
+        sent: bool,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        if identity.is_empty() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "device identity must not be empty",
+            )
+            .into());
+        }
+        if sent {
+            self.connection.execute(
+                "INSERT OR IGNORE INTO notified_discharge_cycles (identity) VALUES (?1)",
+                [identity],
+            )?;
+        } else {
+            self.connection.execute(
+                "DELETE FROM notified_discharge_cycles WHERE identity = ?1",
+                [identity],
+            )?;
+        }
+        Ok(())
+    }
+
     pub fn import_legacy_monitored_devices(
         &mut self,
         devices: &BTreeMap<String, bool>,
@@ -165,6 +194,18 @@ impl DeviceState {
         transaction.commit()?;
         Ok(())
     }
+}
+
+pub fn local_state_path() -> Result<PathBuf, io::Error> {
+    let local_app_data = env::var_os("LOCALAPPDATA").ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::NotFound,
+            "could not determine the local application data folder",
+        )
+    })?;
+    Ok(PathBuf::from(local_app_data)
+        .join("Volty")
+        .join("device-state.sqlite3"))
 }
 
 #[cfg(test)]
@@ -254,6 +295,39 @@ mod tests {
             state.monitored_devices().unwrap(),
             BTreeMap::from([("device-a".to_owned(), true), ("device-b".to_owned(), true),])
         );
+        drop(state);
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn discharge_notification_latches_are_persisted_until_the_cycle_resets() {
+        let path = std::env::temp_dir().join(format!(
+            "volty-notification-state-{}-{}.sqlite3",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let identity = "bluetooth:device-a";
+
+        {
+            let mut state = DeviceState::open(&path).unwrap();
+            assert!(state.notified_discharge_cycles().unwrap().is_empty());
+            state
+                .set_discharge_notification_sent(identity, true)
+                .unwrap();
+        }
+
+        let mut state = DeviceState::open(&path).unwrap();
+        assert_eq!(
+            state.notified_discharge_cycles().unwrap(),
+            HashSet::from([identity.to_owned()])
+        );
+        state
+            .set_discharge_notification_sent(identity, false)
+            .unwrap();
+        assert!(state.notified_discharge_cycles().unwrap().is_empty());
         drop(state);
         fs::remove_file(path).unwrap();
     }

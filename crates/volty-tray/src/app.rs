@@ -1,7 +1,7 @@
 use std::{
-    collections::{BTreeMap, HashMap, HashSet, VecDeque},
+    collections::{hash_map::Entry, BTreeMap, HashMap, HashSet, VecDeque},
     error::Error,
-    io,
+    fs, io,
     path::{Path, PathBuf},
     sync::mpsc::{self, Receiver, RecvTimeoutError, TryRecvError},
     thread,
@@ -21,10 +21,10 @@ use crate::{
     logging::FileLogger,
     notify::{BatterySample, NotificationEngine, NotificationOutcome},
     report::generate_diagnostic_report,
-    state::DeviceState,
+    state::{local_state_path, DeviceState},
     tray::{
-        set_start_on_boot_enabled, start_on_boot_enabled, DeviceMonitorEntry, TrayAction,
-        TrayController,
+        confirm_reset, reset_startup_preferences, set_start_on_boot_enabled, start_on_boot_enabled,
+        DeviceMonitorEntry, TrayAction, TrayController,
     },
 };
 
@@ -114,6 +114,8 @@ impl DeviceNameCache {
 struct DeviceNotifications {
     config: AppConfig,
     engines: HashMap<DeviceIdentity, NotificationEngine>,
+    persisted_alerts: HashSet<String>,
+    pending_alerts: HashMap<String, bool>,
 }
 
 impl DeviceNotifications {
@@ -122,7 +124,13 @@ impl DeviceNotifications {
         Ok(Self {
             config,
             engines: HashMap::new(),
+            persisted_alerts: HashSet::new(),
+            pending_alerts: HashMap::new(),
         })
+    }
+
+    fn restore_persisted_alerts(&mut self, alerts: HashSet<String>) {
+        self.persisted_alerts = alerts;
     }
 
     fn set_config(&mut self, config: AppConfig) -> Result<(), Box<dyn Error>> {
@@ -137,6 +145,17 @@ impl DeviceNotifications {
     fn retain_monitored_devices(&mut self, monitored_devices: &BTreeMap<String, bool>) {
         self.engines
             .retain(|identity, _| is_device_monitored(monitored_devices, &identity.config_id()));
+        let stale_alerts: HashSet<_> = self
+            .persisted_alerts
+            .iter()
+            .chain(self.pending_alerts.keys())
+            .filter(|identity| !is_device_monitored(monitored_devices, identity))
+            .cloned()
+            .collect();
+        for identity in stale_alerts {
+            self.persisted_alerts.remove(&identity);
+            self.pending_alerts.insert(identity, false);
+        }
     }
 
     fn update(
@@ -145,15 +164,53 @@ impl DeviceNotifications {
         device_name: &str,
         sample: BatterySample,
     ) -> Result<NotificationOutcome, Box<dyn Error>> {
-        let engine = self
-            .engines
-            .entry(identity)
-            .or_insert(NotificationEngine::from_config(self.config.clone())?);
-        Ok(engine.update(device_name, sample)?)
+        let identity_key = identity.config_id();
+        let previously_notified = self.persisted_alerts.contains(&identity_key);
+        let engine = match self.engines.entry(identity) {
+            Entry::Occupied(entry) => entry.into_mut(),
+            Entry::Vacant(entry) => {
+                let mut engine = NotificationEngine::from_config(self.config.clone())?;
+                engine.restore_discharge_notification(previously_notified);
+                entry.insert(engine)
+            }
+        };
+        let outcome = engine.update(device_name, sample)?;
+        match outcome {
+            NotificationOutcome::Notified => {
+                self.persisted_alerts.insert(identity_key.clone());
+                self.pending_alerts.insert(identity_key, true);
+            }
+            NotificationOutcome::CycleReset => {
+                self.persisted_alerts.remove(&identity_key);
+                self.pending_alerts.insert(identity_key, false);
+            }
+            _ => {}
+        }
+        Ok(outcome)
+    }
+
+    fn persist_pending_alerts(
+        &mut self,
+        state: Option<&mut DeviceState>,
+    ) -> Result<(), Box<dyn Error>> {
+        let Some(state) = state else {
+            self.pending_alerts.clear();
+            return Ok(());
+        };
+        for (identity, sent) in &self.pending_alerts {
+            state.set_discharge_notification_sent(identity, *sent)?;
+        }
+        self.pending_alerts.clear();
+        Ok(())
     }
 }
 
 type PollResult = Result<(), String>;
+type PollWorker = (
+    mpsc::Sender<PollCommand>,
+    Receiver<PollUpdate>,
+    thread::JoinHandle<()>,
+);
 
 enum PollUpdate {
     Reading(DeviceReading),
@@ -261,35 +318,34 @@ pub fn run() -> Result<(), Box<dyn Error>> {
         tray.update_status("", &format!("Configuration error: {message}"), None)?;
     }
     let mut notifications = DeviceNotifications::from_config(active_config.clone())?;
-    let device_state = match DeviceState::open_local() {
-        Ok(state) => Some(state),
-        Err(error) => {
-            record_event(
+    if let Some(state) = monitor_state.as_ref() {
+        match state.notified_discharge_cycles() {
+            Ok(alerts) => notifications.restore_persisted_alerts(alerts),
+            Err(error) => record_event(
                 &mut diagnostic_log,
                 &mut file_logger,
                 started,
                 LogLevel::Warn,
-                &format!("Discovery state disabled; using full device scans: {error}"),
-            )?;
-            None
+                &format!("Could not load persisted low-battery notification cycles: {error}"),
+            )?,
         }
-    };
-
-    let (commands_tx, commands_rx) = mpsc::channel();
-    let (results_tx, results_rx) = mpsc::channel();
-    let poll_interval = Duration::from_secs(active_config.poll_interval_seconds);
-    let retry_interval = Duration::from_secs(active_config.retry_interval_seconds);
-    thread::Builder::new()
-        .name("volty-device-poller".to_owned())
-        .spawn(move || {
-            poll_worker(
-                commands_rx,
-                results_tx,
-                poll_interval,
-                retry_interval,
-                device_state,
-            )
-        })?;
+    }
+    notifications.retain_monitored_devices(&monitored_devices);
+    if let Err(error) = notifications.persist_pending_alerts(monitor_state.as_mut()) {
+        record_event(
+            &mut diagnostic_log,
+            &mut file_logger,
+            started,
+            LogLevel::Warn,
+            &format!("Could not clear notification cycles for unmonitored devices: {error}"),
+        )?;
+    }
+    let (mut commands_tx, mut results_rx, mut poller) = spawn_poll_worker(
+        active_config,
+        &mut diagnostic_log,
+        &mut file_logger,
+        started,
+    )?;
     let mut config_reload_due = None;
     let mut pending_readings: Vec<DeviceReading> = Vec::new();
     let mut latest_readings: HashMap<DeviceIdentity, DeviceReading> = HashMap::new();
@@ -491,6 +547,18 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                             let refresh_failed =
                                 request_device_discovery(&commands_tx, monitored).is_err();
                             notifications.retain_monitored_devices(&monitored_devices);
+                            if let Err(error) =
+                                notifications.persist_pending_alerts(monitor_state.as_mut())
+                            {
+                                report_error(
+                                    &mut tray,
+                                    &mut diagnostic_log,
+                                    &mut file_logger,
+                                    started,
+                                    "Notification state error",
+                                    &error.to_string(),
+                                )?;
+                            }
                             let device_name = discovered_devices
                                 .iter()
                                 .find(|(device, _)| device.config_id() == identity)
@@ -561,6 +629,128 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                             started,
                             "About window error",
                             &error.to_string(),
+                        )?;
+                    }
+                }
+                Ok(TrayAction::ResetVolty) => {
+                    let configuration_file = config_path().ok_or_else(|| {
+                        io::Error::other("could not determine the user configuration folder")
+                    })?;
+                    let local_state_file = local_state_path()?;
+                    if !confirm_reset(&configuration_file, &local_state_file)? {
+                        continue;
+                    }
+
+                    record_event(
+                        &mut diagnostic_log,
+                        &mut file_logger,
+                        started,
+                        LogLevel::Info,
+                        "Volty reset confirmed; deleting configuration and local device state",
+                    )?;
+                    let mut startup_reset_errors = Vec::new();
+                    if let Err(error) = reset_startup_preferences() {
+                        startup_reset_errors.push(error.to_string());
+                    }
+                    match start_on_boot_enabled() {
+                        Ok(enabled) => tray.set_start_on_boot_checked(enabled),
+                        Err(error) => startup_reset_errors.push(error.to_string()),
+                    }
+                    let _ = commands_tx.send(PollCommand::Quit);
+                    poller.join().map_err(|_| {
+                        io::Error::other("device polling worker panicked during reset")
+                    })?;
+                    drop(monitor_state.take());
+                    remove_reset_files(&configuration_file, &local_state_file)?;
+                    diagnostic_log.clear();
+
+                    monitor_state = match DeviceState::open_local() {
+                        Ok(state) => Some(state),
+                        Err(error) => {
+                            report_error(
+                                &mut tray,
+                                &mut diagnostic_log,
+                                &mut file_logger,
+                                started,
+                                "Reset state error",
+                                &format!("Could not recreate local state; using full device scans: {error}"),
+                            )?;
+                            None
+                        }
+                    };
+                    monitored_devices = match monitor_state.as_ref() {
+                        Some(state) => {
+                            match state.monitored_devices() {
+                                Ok(devices) => devices,
+                                Err(error) => {
+                                    report_error(
+                                    &mut tray,
+                                    &mut diagnostic_log,
+                                    &mut file_logger,
+                                    started,
+                                    "Reset state error",
+                                    &format!("Could not reload local monitoring preferences: {error}"),
+                                )?;
+                                    BTreeMap::new()
+                                }
+                            }
+                        }
+                        None => BTreeMap::new(),
+                    };
+                    (active_config, notification_config_error) = match AppConfig::load() {
+                        Ok(config) => (config, None),
+                        Err(error) => (AppConfig::default(), Some(error.to_string())),
+                    };
+                    file_logger.set_level(active_config.log_level);
+                    notifications = DeviceNotifications::from_config(active_config)?;
+                    if let Some(error) = notification_config_error.as_deref() {
+                        record_event(
+                            &mut diagnostic_log,
+                            &mut file_logger,
+                            started,
+                            LogLevel::Error,
+                            &format!("Configuration error after reset: {error}"),
+                        )?;
+                    }
+
+                    pending_readings.clear();
+                    latest_readings.clear();
+                    discovered_devices.clear();
+                    readings_seen_this_poll.clear();
+                    poll_had_warning = false;
+                    config_reload_due = None;
+                    tray.set_battery_color_map(active_config.battery_color_map)?;
+                    let reset_status = notification_config_error
+                        .as_ref()
+                        .map(|error| format!("Configuration error: {error}"))
+                        .unwrap_or_else(|| "Searching for supported devices".to_owned());
+                    tray.reset_status(&reset_status)?;
+                    tray.update_monitored_devices(&[])?;
+
+                    let (new_commands_tx, new_results_rx, new_poller) = spawn_poll_worker(
+                        active_config,
+                        &mut diagnostic_log,
+                        &mut file_logger,
+                        started,
+                    )?;
+                    commands_tx = new_commands_tx;
+                    results_rx = new_results_rx;
+                    poller = new_poller;
+                    record_event(
+                        &mut diagnostic_log,
+                        &mut file_logger,
+                        started,
+                        LogLevel::Info,
+                        "Volty reset completed; fresh configuration and local state are active",
+                    )?;
+                    if !startup_reset_errors.is_empty() {
+                        report_error(
+                            &mut tray,
+                            &mut diagnostic_log,
+                            &mut file_logger,
+                            started,
+                            "Startup preference reset error",
+                            &startup_reset_errors.join("; "),
                         )?;
                     }
                 }
@@ -692,6 +882,7 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                         })?;
                         process_device_reading(
                             &mut notifications,
+                            monitor_state.as_mut(),
                             reading,
                             &mut diagnostic_log,
                             &mut file_logger,
@@ -1029,6 +1220,63 @@ fn shell_open(target: &std::ffi::OsStr) -> Result<(), isize> {
     } else {
         Ok(())
     }
+}
+
+fn remove_reset_files(configuration_file: &Path, local_state_file: &Path) -> io::Result<()> {
+    for (description, path) in [
+        ("local device state", local_state_file),
+        ("configuration", configuration_file),
+    ] {
+        if let Err(error) = fs::remove_file(path) {
+            if error.kind() != io::ErrorKind::NotFound {
+                return Err(io::Error::new(
+                    error.kind(),
+                    format!(
+                        "could not delete Volty {description} file {}: {error}",
+                        path.display()
+                    ),
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn spawn_poll_worker(
+    active_config: AppConfig,
+    diagnostic_log: &mut VecDeque<String>,
+    file_logger: &mut FileLogger,
+    started: Instant,
+) -> Result<PollWorker, Box<dyn Error>> {
+    let device_state = match DeviceState::open_local() {
+        Ok(state) => Some(state),
+        Err(error) => {
+            record_event(
+                diagnostic_log,
+                file_logger,
+                started,
+                LogLevel::Warn,
+                &format!("Discovery state disabled; using full device scans: {error}"),
+            )?;
+            None
+        }
+    };
+    let (commands_tx, commands_rx) = mpsc::channel();
+    let (results_tx, results_rx) = mpsc::channel();
+    let poll_interval = Duration::from_secs(active_config.poll_interval_seconds);
+    let retry_interval = Duration::from_secs(active_config.retry_interval_seconds);
+    let poller = thread::Builder::new()
+        .name("volty-device-poller".to_owned())
+        .spawn(move || {
+            poll_worker(
+                commands_rx,
+                results_tx,
+                poll_interval,
+                retry_interval,
+                device_state,
+            )
+        })?;
+    Ok((commands_tx, results_rx, poller))
 }
 
 fn toggle_start_on_boot() -> Result<bool, Box<dyn Error>> {
@@ -1497,6 +1745,7 @@ fn is_device_monitored(monitored_devices: &BTreeMap<String, bool>, identity: &st
 
 fn process_device_reading(
     notifications: &mut DeviceNotifications,
+    state: Option<&mut DeviceState>,
     reading: &mut DeviceReading,
     diagnostic_log: &mut VecDeque<String>,
     file_logger: &mut FileLogger,
@@ -1541,7 +1790,20 @@ fn process_device_reading(
                 sample.percentage
             ),
         )?;
-        match notifications.update(reading.identity.clone(), &device_name, sample) {
+        let notification_result =
+            notifications.update(reading.identity.clone(), &device_name, sample);
+        if let Err(error) = notifications.persist_pending_alerts(state) {
+            record_event(
+                diagnostic_log,
+                file_logger,
+                started,
+                LogLevel::Warn,
+                &format!(
+                    "Could not persist low-battery notification cycle for {device_name}: {error}"
+                ),
+            )?;
+        }
+        match notification_result {
             Ok(outcome) => {
                 let detail = match outcome {
                     NotificationOutcome::NotificationsDisabled => {
@@ -1707,6 +1969,31 @@ mod tests {
         atomic::{AtomicUsize, Ordering},
         Arc,
     };
+
+    #[test]
+    fn reset_removes_configuration_and_local_state_files() {
+        let directory = std::env::temp_dir().join(format!(
+            "volty-reset-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&directory).unwrap();
+        let configuration_file = directory.join("config.toml");
+        let local_state_file = directory.join("device-state.sqlite3");
+        fs::write(&configuration_file, "test config").unwrap();
+        fs::write(&local_state_file, "test state").unwrap();
+
+        remove_reset_files(&configuration_file, &local_state_file).unwrap();
+        assert!(!configuration_file.exists());
+        assert!(!local_state_file.exists());
+        remove_reset_files(&configuration_file, &local_state_file).unwrap();
+
+        fs::remove_dir_all(directory).unwrap();
+    }
+
     #[test]
     fn coarse_full_level_does_not_mark_a_discharging_battery_as_full() {
         let battery = BatteryStatus {
@@ -2028,10 +2315,22 @@ mod tests {
             NotificationEngine::from_config(AppConfig::default()).unwrap(),
         );
         let monitored_devices = BTreeMap::from([(unmonitored.config_id(), false)]);
+        let monitored_key = monitored.config_id();
+        let unmonitored_key = unmonitored.config_id();
+        notifications.restore_persisted_alerts(HashSet::from([
+            monitored_key.clone(),
+            unmonitored_key.clone(),
+        ]));
 
         notifications.retain_monitored_devices(&monitored_devices);
         assert!(notifications.engines.contains_key(&monitored));
         assert!(!notifications.engines.contains_key(&unmonitored));
+        assert!(notifications.persisted_alerts.contains(&monitored_key));
+        assert!(!notifications.persisted_alerts.contains(&unmonitored_key));
+        assert_eq!(
+            notifications.pending_alerts.get(&unmonitored_key),
+            Some(&false)
+        );
     }
 
     #[test]

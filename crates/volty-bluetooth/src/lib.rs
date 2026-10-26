@@ -84,9 +84,10 @@ fn decode_windows_battery_life(value: u8) -> Result<Option<u8>, BluetoothError> 
 #[cfg(windows)]
 mod windows_backend;
 
-/// Reads battery levels from connected Bluetooth devices with a Windows battery
-/// property and from Windows-paired BLE devices. Paired BLE devices may be
-/// read even when Windows does not report an active BLE connection.
+/// Reads battery levels from connected Bluetooth devices when Windows exposes
+/// its battery property, including through present Bluetooth PnP nodes, and
+/// from Windows-paired BLE devices. Paired BLE devices may be read even when
+/// Windows does not report an active BLE connection.
 #[cfg(windows)]
 pub fn scan_battery_devices() -> Result<BluetoothScan, BluetoothError> {
     windows_backend::scan_battery_devices()

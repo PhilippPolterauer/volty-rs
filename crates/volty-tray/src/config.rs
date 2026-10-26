@@ -139,7 +139,7 @@ impl AppConfig {
         let defaults = Self::default();
         let contents = format!(
             "# Volty user configuration\n\
-             # Notify at or below this battery percentage (1-100).\n\
+            # Notify at or below this battery percentage (1-100).\n\
              # low_battery_threshold = {}\n\
              # Seconds between successful battery readings (30-3600).\n\
              # poll_interval_seconds = {}\n\

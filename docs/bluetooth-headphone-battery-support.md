@@ -3,7 +3,9 @@
 ## Supported Bluetooth scope
 
 Volty reads battery percentages from connected Bluetooth devices when Windows
-supplies the `System.Devices.BatteryLife` property. It also reads
+supplies the `System.Devices.BatteryLife` property. It checks both the
+connected-device properties and present Bluetooth PnP device nodes, since
+Windows can expose that property through either surface. It also reads
 Windows-paired Bluetooth Low Energy (BLE) devices, including paired devices
 that Windows does not report as connected, through the standardized GATT
 Battery Service and Battery Level characteristic:
@@ -32,10 +34,12 @@ the values.
 
 Classic Bluetooth Hands-Free Profile (HFP) battery indications and
 manufacturer-specific protocols are separate follow-up work. They are not
-interchangeable with GATT, and the MVP should not claim support for headphones
-that expose neither the standard GATT service nor a separately implemented
-protocol. Being visible as a connected Bluetooth audio device in Windows does
-not by itself mean that its battery is readable through GATT.
+interchangeable with GATT. Volty does not open a second HFP/RFCOMM connection:
+Windows owns the active audio profile, and a competing profile connection may
+fail or interfere with audio. A headphone can therefore show a battery
+percentage in Windows while Volty has no non-invasive battery source for it.
+Devices that expose neither the Windows battery property nor the standard GATT
+service need a separately implemented protocol.
 
 ## Current architecture and integration boundary
 
@@ -65,9 +69,10 @@ The implemented structure keeps the backends separate:
 
 ### Device discovery
 
-- Volty checks connected Bluetooth devices for the Windows battery-life
-  property and enumerates Windows-paired Bluetooth LE devices. It does not
-  pair devices or perform a broad discovery scan.
+- Volty checks connected Bluetooth devices and present Bluetooth PnP nodes for
+  the Windows battery-life property, and enumerates Windows-paired Bluetooth
+  LE devices. It does not pair devices or perform a broad Bluetooth discovery
+  scan.
 - A device must expose GATT Battery Service `0x180F` and Battery Level
   characteristic `0x2A19`; classic HFP and vendor-specific battery reports are
   not read.
@@ -135,7 +140,9 @@ Hardware verification is still required for each target headset:
 ## Follow-up scope
 
 Only pursue HFP or vendor-specific support after collecting concrete target
-headset models and confirming what Windows exposes for them. Add each follow-up
+headset models and confirming what Windows exposes for them. Any direct HFP
+implementation must be explicitly tested for interaction with the Windows
+audio profile before being enabled during routine polling. Add each follow-up
 as a separate backend with its own tests and hardware validation; do not widen
 the generic BLE claim to imply support for every Bluetooth headset.
 

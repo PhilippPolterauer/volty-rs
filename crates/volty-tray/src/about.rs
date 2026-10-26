@@ -2,9 +2,12 @@ use std::{error::Error, ffi::c_void, io, mem, ptr};
 
 use windows_sys::Win32::{
     Foundation::{
-        GetLastError, ERROR_CLASS_ALREADY_EXISTS, HINSTANCE, HWND, LPARAM, LRESULT, WPARAM,
+        GetLastError, ERROR_CLASS_ALREADY_EXISTS, HINSTANCE, HWND, LPARAM, LRESULT, POINT, WPARAM,
     },
-    Graphics::Gdi::{GetSysColorBrush, COLOR_WINDOW},
+    Graphics::Gdi::{
+        GetMonitorInfoW, GetSysColorBrush, MonitorFromPoint, COLOR_WINDOW, MONITORINFO,
+        MONITOR_DEFAULTTONEAREST,
+    },
     System::{
         LibraryLoader::GetModuleHandleW,
         SystemServices::{SS_ETCHEDHORZ, SS_ICON},
@@ -12,10 +15,10 @@ use windows_sys::Win32::{
     UI::{
         Shell::ShellExecuteW,
         WindowsAndMessaging::{
-            CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetMessageW,
-            GetWindowLongPtrW, PostQuitMessage, RegisterClassW, SendMessageW, SetWindowLongPtrW,
-            SetWindowTextW, ShowWindow, TranslateMessage, BS_PUSHBUTTON, CREATESTRUCTW,
-            CW_USEDEFAULT, GWLP_USERDATA, MSG, STM_SETICON, SW_SHOWNORMAL, WM_CLOSE, WM_COMMAND,
+            CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetCursorPos,
+            GetMessageW, GetWindowLongPtrW, PostQuitMessage, RegisterClassW, SendMessageW,
+            SetWindowLongPtrW, SetWindowTextW, ShowWindow, TranslateMessage, BS_PUSHBUTTON,
+            CREATESTRUCTW, GWLP_USERDATA, MSG, STM_SETICON, SW_SHOWNORMAL, WM_CLOSE, WM_COMMAND,
             WM_CTLCOLORSTATIC, WM_DESTROY, WM_NCCREATE, WNDCLASSW, WS_CAPTION, WS_CHILD,
             WS_OVERLAPPED, WS_SYSMENU, WS_TABSTOP, WS_VISIBLE,
         },
@@ -25,6 +28,8 @@ use windows_sys::Win32::{
 use crate::native_ui::{application_icon, set_control_font, static_control_color, FontSet};
 
 const WINDOW_CLASS: &str = "VoltyAboutWindow";
+const WINDOW_WIDTH: i32 = 500;
+const WINDOW_HEIGHT: i32 = 280;
 const STAR_ON_GITHUB_ID: usize = 1001;
 const CLOSE_ID: usize = 1002;
 const GITHUB_URL: &str = "https://github.com/PhilippPolterauer/volty-rs";
@@ -61,6 +66,7 @@ pub fn show_about_window() -> Result<(), Box<dyn Error>> {
         return Err(io::Error::last_os_error().into());
     }
 
+    let (window_x, window_y) = centered_window_position(WINDOW_WIDTH, WINDOW_HEIGHT)?;
     let fonts = FontSet::new()?;
     let mut state = Box::new(AboutWindow {
         status: ptr::null_mut(),
@@ -73,10 +79,10 @@ pub fn show_about_window() -> Result<(), Box<dyn Error>> {
             class_name.as_ptr(),
             title.as_ptr(),
             WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU,
-            CW_USEDEFAULT,
-            CW_USEDEFAULT,
-            500,
-            280,
+            window_x,
+            window_y,
+            WINDOW_WIDTH,
+            WINDOW_HEIGHT,
             ptr::null_mut(),
             ptr::null_mut(),
             instance,
@@ -113,6 +119,39 @@ pub fn show_about_window() -> Result<(), Box<dyn Error>> {
         }
     }
     Ok(())
+}
+
+fn centered_window_position(width: i32, height: i32) -> io::Result<(i32, i32)> {
+    unsafe {
+        let mut cursor = POINT { x: 0, y: 0 };
+        if GetCursorPos(&mut cursor) == 0 {
+            return Err(io::Error::last_os_error());
+        }
+
+        let monitor = MonitorFromPoint(cursor, MONITOR_DEFAULTTONEAREST);
+        if monitor.is_null() {
+            return Err(io::Error::last_os_error());
+        }
+
+        let mut info: MONITORINFO = mem::zeroed();
+        info.cbSize = mem::size_of::<MONITORINFO>() as u32;
+        if GetMonitorInfoW(monitor, &mut info) == 0 {
+            return Err(io::Error::last_os_error());
+        }
+
+        Ok(center_in_work_area(&info.rcWork, width, height))
+    }
+}
+
+fn center_in_work_area(
+    work_area: &windows_sys::Win32::Foundation::RECT,
+    width: i32,
+    height: i32,
+) -> (i32, i32) {
+    (
+        work_area.left + (work_area.right - work_area.left - width) / 2,
+        work_area.top + (work_area.bottom - work_area.top - height) / 2,
+    )
 }
 
 unsafe fn create_controls(
@@ -375,4 +414,22 @@ fn open_github() -> Result<(), io::Error> {
 
 fn to_wide(value: &str) -> Vec<u16> {
     value.encode_utf16().chain(Some(0)).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::center_in_work_area;
+    use windows_sys::Win32::Foundation::RECT;
+
+    #[test]
+    fn centers_window_in_work_area_with_negative_monitor_coordinates() {
+        let work_area = RECT {
+            left: -1920,
+            top: 40,
+            right: 0,
+            bottom: 1040,
+        };
+
+        assert_eq!(center_in_work_area(&work_area, 500, 280), (-1210, 400));
+    }
 }
