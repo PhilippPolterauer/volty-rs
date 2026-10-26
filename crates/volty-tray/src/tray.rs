@@ -161,7 +161,7 @@ impl TrayController {
     ///
     /// For example, `update_status("G502 X", "Discharging", Some(85))`
     /// displays `G502 X: 85% (Discharging)`. Pass `None` when the device or
-    /// percentage is unavailable; the last numeric icon is retained if one
+    /// percentage is unavailable; the last battery level is retained if one
     /// has already been rendered.
     pub fn update_status(
         &mut self,
@@ -235,11 +235,9 @@ impl TrayController {
         self.status_item.set_text(menu_status);
         self.replace_device_status_items(device_statuses)?;
         let icon = match percentage {
-            Some(percentage) => numeric_battery_icon_at_size_with_color_map(
-                percentage,
-                icon_size,
-                self.battery_color_map,
-            )?,
+            Some(percentage) => {
+                battery_icon_at_size_with_color_map(percentage, icon_size, self.battery_color_map)?
+            }
             None => unknown_battery_icon_at_size(icon_size)?,
         };
         self.icon
@@ -351,11 +349,8 @@ impl TrayController {
             return Ok(());
         }
         if let Some(percentage) = self.percentage {
-            let icon = numeric_battery_icon_at_size_with_color_map(
-                percentage,
-                ICON_SIZE,
-                battery_color_map,
-            )?;
+            let icon =
+                battery_icon_at_size_with_color_map(percentage, ICON_SIZE, battery_color_map)?;
             self.icon
                 .set_icon(Some(icon))
                 .map_err(|error| TrayError::new(format!("could not update tray icon: {error}")))?;
@@ -398,63 +393,58 @@ fn shorten_status(status: &str) -> String {
     shortened
 }
 
-/// Renders an RGBA numeric icon. Supported sizes are 16 and 32 pixels square.
+/// Renders an RGBA battery-level icon. Supported sizes are 16 and 32 pixels square.
 #[cfg(test)]
-fn numeric_battery_rgba(percentage: u8, size: u32) -> Result<Vec<u8>, TrayError> {
-    numeric_battery_rgba_with_color_map(percentage, size, BatteryColorMap::default())
+fn battery_rgba(percentage: u8, size: u32) -> Result<Vec<u8>, TrayError> {
+    battery_rgba_with_color_map(percentage, size, BatteryColorMap::default())
 }
 
-fn numeric_battery_rgba_with_color_map(
+fn battery_rgba_with_color_map(
     percentage: u8,
     size: u32,
     battery_color_map: BatteryColorMap,
 ) -> Result<Vec<u8>, TrayError> {
     validate_icon_size(size)?;
-    Ok(render_numeric_battery(percentage, size, battery_color_map).into_raw())
+    Ok(render_battery(percentage, size, battery_color_map).into_raw())
 }
 
-/// Produces a numeric battery icon at 16×16 or 32×32 pixels.
+/// Produces a battery-level icon at 16×16 or 32×32 pixels.
 #[cfg(test)]
-fn numeric_battery_icon_at_size(percentage: u8, size: u32) -> Result<Icon, TrayError> {
-    let rgba = numeric_battery_rgba(percentage, size)?;
+fn battery_icon_at_size(percentage: u8, size: u32) -> Result<Icon, TrayError> {
+    let rgba = battery_rgba(percentage, size)?;
     Icon::from_rgba(rgba, size, size)
         .map_err(|error| TrayError::new(format!("could not create battery icon: {error}")))
 }
 
-fn numeric_battery_icon_at_size_with_color_map(
+fn battery_icon_at_size_with_color_map(
     percentage: u8,
     size: u32,
     battery_color_map: BatteryColorMap,
 ) -> Result<Icon, TrayError> {
-    let rgba = numeric_battery_rgba_with_color_map(percentage, size, battery_color_map)?;
+    let rgba = battery_rgba_with_color_map(percentage, size, battery_color_map)?;
     Icon::from_rgba(rgba, size, size)
         .map_err(|error| TrayError::new(format!("could not create battery icon: {error}")))
 }
 
-fn render_numeric_battery(
-    percentage: u8,
-    size: u32,
-    battery_color_map: BatteryColorMap,
-) -> RgbaImage {
+fn render_battery(percentage: u8, size: u32, battery_color_map: BatteryColorMap) -> RgbaImage {
     let percentage = percentage.min(100);
     let scale = size as f32 * SUPERSAMPLE as f32 / ICON_SIZE as f32;
-    let mut image = RgbaImage::from_pixel(
-        size * SUPERSAMPLE,
-        size * SUPERSAMPLE,
-        Rgba([0, 0, 0, 0]),
-    );
+    let mut image =
+        RgbaImage::from_pixel(size * SUPERSAMPLE, size * SUPERSAMPLE, Rgba([0, 0, 0, 0]));
     let fill_color = battery_color_map.color_for(percentage);
 
     if percentage > 0 {
-        let fill_width = 9.4 * (f32::from(percentage) / 100.0).max(0.08);
+        let fill_width = 10.25 * (f32::from(percentage) / 100.0).max(0.08);
         fill_rounded_rect(
             &mut image,
             scale,
-            2.55,
-            4.3,
-            fill_width,
-            7.4,
-            1.1,
+            RoundedRect {
+                x: 2.25,
+                y: 3.25,
+                width: fill_width,
+                height: 9.55,
+                radius: 1.2,
+            },
             Rgba([fill_color[0], fill_color[1], fill_color[2], 255]),
         );
     }
@@ -477,30 +467,27 @@ fn unknown_battery_icon_at_size(size: u32) -> Result<Icon, TrayError> {
 
 fn render_unknown_battery(size: u32) -> RgbaImage {
     let scale = size as f32 * SUPERSAMPLE as f32 / ICON_SIZE as f32;
-    let mut image = RgbaImage::from_pixel(
-        size * SUPERSAMPLE,
-        size * SUPERSAMPLE,
-        Rgba([0, 0, 0, 0]),
-    );
+    let mut image =
+        RgbaImage::from_pixel(size * SUPERSAMPLE, size * SUPERSAMPLE, Rgba([0, 0, 0, 0]));
     let outline = Rgba([232, 238, 243, 255]);
     draw_battery_shell(&mut image, scale, outline);
 
     let question_mark = [
-        (6.0, 6.4),
-        (6.25, 5.8),
-        (6.8, 5.35),
-        (7.65, 5.2),
-        (8.55, 5.35),
-        (9.2, 5.9),
-        (9.35, 6.55),
-        (9.1, 7.15),
-        (8.55, 7.65),
-        (7.95, 8.15),
+        (5.5, 6.45),
+        (5.8, 5.8),
+        (6.5, 5.3),
+        (7.4, 5.1),
+        (8.4, 5.3),
+        (9.0, 5.85),
+        (9.2, 6.5),
+        (9.0, 7.2),
+        (8.4, 7.8),
+        (7.55, 8.45),
     ];
     for points in question_mark.windows(2) {
-        draw_line_segment(&mut image, scale, points[0], points[1], 1.15, outline);
+        draw_line_segment(&mut image, scale, points[0], points[1], 1.25, outline);
     }
-    fill_circle(&mut image, scale, 7.95, 9.75, 0.65, outline);
+    fill_circle(&mut image, scale, 7.55, 10.0, 0.75, outline);
 
     downsample_icon(image, size)
 }
@@ -513,58 +500,210 @@ fn validate_icon_size(size: u32) -> Result<(), TrayError> {
     }
 }
 
-fn scale_icon(image: RgbaImage, size: u32) -> RgbaImage {
-    if size == ICON_SIZE {
-        return image;
-    }
+const SUPERSAMPLE: u32 = 8;
 
-    let mut scaled = RgbaImage::new(size, size);
-    for y in 0..size {
-        for x in 0..size {
-            scaled.put_pixel(
-                x,
-                y,
-                *image.get_pixel(x * ICON_SIZE / size, y * ICON_SIZE / size),
-            );
-        }
-    }
-    scaled
+#[derive(Clone, Copy)]
+struct RoundedRect {
+    x: f32,
+    y: f32,
+    width: f32,
+    height: f32,
+    radius: f32,
 }
 
-fn draw_number(image: &mut RgbaImage, number: u8, color: Rgba<u8>) {
-    let digits = number.to_string();
-    let width = digits.len() as u32 * 3 + digits.len() as u32 - 1;
-    let start_x = 2 + (11 - width) / 2;
-    let start_y = 5;
-    for (index, digit) in digits.bytes().enumerate() {
-        let rows = DIGIT_GLYPHS[usize::from(digit - b'0')];
-        for (row, bits) in rows.iter().enumerate() {
-            for column in 0..3 {
-                if bits & (1 << (2 - column)) != 0 {
-                    image.put_pixel(
-                        start_x + index as u32 * 4 + column,
-                        start_y + row as u32,
-                        color,
-                    );
-                }
+fn draw_battery_shell(image: &mut RgbaImage, scale: f32, color: Rgba<u8>) {
+    stroke_rounded_rect(
+        image,
+        scale,
+        RoundedRect {
+            x: 0.65,
+            y: 1.55,
+            width: 13.4,
+            height: 12.9,
+            radius: 2.4,
+        },
+        1.3,
+        color,
+    );
+    fill_rounded_rect(
+        image,
+        scale,
+        RoundedRect {
+            x: 13.75,
+            y: 6.2,
+            width: 1.5,
+            height: 3.6,
+            radius: 0.75,
+        },
+        color,
+    );
+}
+
+fn fill_rounded_rect(image: &mut RgbaImage, scale: f32, rect: RoundedRect, color: Rgba<u8>) {
+    let left = (rect.x.max(0.0) * scale).floor() as u32;
+    let top = (rect.y.max(0.0) * scale).floor() as u32;
+    let right = ((rect.x + rect.width).min(ICON_SIZE as f32) * scale)
+        .ceil()
+        .min(image.width() as f32) as u32;
+    let bottom = ((rect.y + rect.height).min(ICON_SIZE as f32) * scale)
+        .ceil()
+        .min(image.height() as f32) as u32;
+
+    for pixel_y in top..bottom {
+        for pixel_x in left..right {
+            let point_x = (pixel_x as f32 + 0.5) / scale;
+            let point_y = (pixel_y as f32 + 0.5) / scale;
+            if inside_rounded_rect(point_x, point_y, rect) {
+                image.put_pixel(pixel_x, pixel_y, color);
             }
         }
     }
 }
 
-// Five rows of three pixels, read left-to-right from the high bit.
-const DIGIT_GLYPHS: [[u8; 5]; 10] = [
-    [0b111, 0b101, 0b101, 0b101, 0b111], // 0
-    [0b010, 0b110, 0b010, 0b010, 0b111], // 1
-    [0b111, 0b001, 0b111, 0b100, 0b111], // 2
-    [0b111, 0b001, 0b111, 0b001, 0b111], // 3
-    [0b101, 0b101, 0b111, 0b001, 0b001], // 4
-    [0b111, 0b100, 0b111, 0b001, 0b111], // 5
-    [0b111, 0b100, 0b111, 0b101, 0b111], // 6
-    [0b111, 0b001, 0b010, 0b010, 0b010], // 7
-    [0b111, 0b101, 0b111, 0b101, 0b111], // 8
-    [0b111, 0b101, 0b111, 0b001, 0b111], // 9
-];
+fn stroke_rounded_rect(
+    image: &mut RgbaImage,
+    scale: f32,
+    rect: RoundedRect,
+    thickness: f32,
+    color: Rgba<u8>,
+) {
+    let left = (rect.x.max(0.0) * scale).floor() as u32;
+    let top = (rect.y.max(0.0) * scale).floor() as u32;
+    let right = ((rect.x + rect.width).min(ICON_SIZE as f32) * scale)
+        .ceil()
+        .min(image.width() as f32) as u32;
+    let bottom = ((rect.y + rect.height).min(ICON_SIZE as f32) * scale)
+        .ceil()
+        .min(image.height() as f32) as u32;
+
+    for pixel_y in top..bottom {
+        for pixel_x in left..right {
+            let point_x = (pixel_x as f32 + 0.5) / scale;
+            let point_y = (pixel_y as f32 + 0.5) / scale;
+            let outer = inside_rounded_rect(point_x, point_y, rect);
+            let inner = inside_rounded_rect(
+                point_x,
+                point_y,
+                RoundedRect {
+                    x: rect.x + thickness,
+                    y: rect.y + thickness,
+                    width: rect.width - 2.0 * thickness,
+                    height: rect.height - 2.0 * thickness,
+                    radius: (rect.radius - thickness).max(0.0),
+                },
+            );
+            if outer && !inner {
+                image.put_pixel(pixel_x, pixel_y, color);
+            }
+        }
+    }
+}
+
+fn inside_rounded_rect(point_x: f32, point_y: f32, rect: RoundedRect) -> bool {
+    let radius = rect.radius.min(rect.width / 2.0).min(rect.height / 2.0);
+    let half_width = (rect.width / 2.0 - radius).max(0.0);
+    let half_height = (rect.height / 2.0 - radius).max(0.0);
+    let delta_x = (point_x - (rect.x + rect.width / 2.0)).abs() - half_width;
+    let delta_y = (point_y - (rect.y + rect.height / 2.0)).abs() - half_height;
+    delta_x.max(0.0).hypot(delta_y.max(0.0)) + delta_x.max(delta_y).min(0.0) <= radius
+}
+
+fn draw_line_segment(
+    image: &mut RgbaImage,
+    scale: f32,
+    start: (f32, f32),
+    end: (f32, f32),
+    thickness: f32,
+    color: Rgba<u8>,
+) {
+    let radius = thickness / 2.0;
+    let left = ((start.0.min(end.0) - radius).max(0.0) * scale).floor() as u32;
+    let top = ((start.1.min(end.1) - radius).max(0.0) * scale).floor() as u32;
+    let right = ((start.0.max(end.0) + radius).min(ICON_SIZE as f32) * scale)
+        .ceil()
+        .min(image.width() as f32) as u32;
+    let bottom = ((start.1.max(end.1) + radius).min(ICON_SIZE as f32) * scale)
+        .ceil()
+        .min(image.height() as f32) as u32;
+    let vector_x = end.0 - start.0;
+    let vector_y = end.1 - start.1;
+    let length_squared = vector_x * vector_x + vector_y * vector_y;
+
+    for pixel_y in top..bottom {
+        for pixel_x in left..right {
+            let point_x = (pixel_x as f32 + 0.5) / scale;
+            let point_y = (pixel_y as f32 + 0.5) / scale;
+            let projection = (((point_x - start.0) * vector_x + (point_y - start.1) * vector_y)
+                / length_squared)
+                .clamp(0.0, 1.0);
+            let nearest_x = start.0 + projection * vector_x;
+            let nearest_y = start.1 + projection * vector_y;
+            if (point_x - nearest_x).powi(2) + (point_y - nearest_y).powi(2) <= radius * radius {
+                image.put_pixel(pixel_x, pixel_y, color);
+            }
+        }
+    }
+}
+
+fn fill_circle(
+    image: &mut RgbaImage,
+    scale: f32,
+    center_x: f32,
+    center_y: f32,
+    radius: f32,
+    color: Rgba<u8>,
+) {
+    let left = ((center_x - radius).max(0.0) * scale).floor() as u32;
+    let top = ((center_y - radius).max(0.0) * scale).floor() as u32;
+    let right = ((center_x + radius).min(ICON_SIZE as f32) * scale)
+        .ceil()
+        .min(image.width() as f32) as u32;
+    let bottom = ((center_y + radius).min(ICON_SIZE as f32) * scale)
+        .ceil()
+        .min(image.height() as f32) as u32;
+
+    for pixel_y in top..bottom {
+        for pixel_x in left..right {
+            let point_x = (pixel_x as f32 + 0.5) / scale;
+            let point_y = (pixel_y as f32 + 0.5) / scale;
+            if (point_x - center_x).powi(2) + (point_y - center_y).powi(2) <= radius * radius {
+                image.put_pixel(pixel_x, pixel_y, color);
+            }
+        }
+    }
+}
+
+fn downsample_icon(image: RgbaImage, size: u32) -> RgbaImage {
+    let mut output = RgbaImage::new(size, size);
+    let sample_count = u64::from(SUPERSAMPLE * SUPERSAMPLE);
+
+    // Premultiplied averaging keeps transparent edges clean on any taskbar background.
+    for y in 0..size {
+        for x in 0..size {
+            let mut alpha_sum = 0_u64;
+            let mut color_sum = [0_u64; 3];
+            for sample_y in 0..SUPERSAMPLE {
+                for sample_x in 0..SUPERSAMPLE {
+                    let pixel =
+                        image.get_pixel(x * SUPERSAMPLE + sample_x, y * SUPERSAMPLE + sample_y);
+                    let alpha = u64::from(pixel[3]);
+                    alpha_sum += alpha;
+                    for channel in 0..3 {
+                        color_sum[channel] += u64::from(pixel[channel]) * alpha;
+                    }
+                }
+            }
+
+            if alpha_sum > 0 {
+                let alpha = ((alpha_sum + sample_count / 2) / sample_count) as u8;
+                let color = color_sum.map(|channel| ((channel + alpha_sum / 2) / alpha_sum) as u8);
+                output.put_pixel(x, y, Rgba([color[0], color[1], color[2], alpha]));
+            }
+        }
+    }
+
+    output
+}
 
 /// Checks whether the Windows Run-key entry exists.
 pub fn start_on_boot_enabled() -> Result<bool, TrayError> {
@@ -694,8 +833,7 @@ mod tests {
     #[test]
     fn icon_renderer_accepts_boundary_percentages() {
         for percentage in [0, 15, 16, 30, 31, 100] {
-            let icon =
-                numeric_battery_icon_at_size(percentage, ICON_SIZE).expect("valid 16x16 icon");
+            let icon = battery_icon_at_size(percentage, ICON_SIZE).expect("valid 16x16 icon");
             let _ = icon;
         }
     }
@@ -704,7 +842,7 @@ mod tests {
     fn rgba_renderers_support_both_dpi_sizes() {
         for size in [16, 32] {
             assert_eq!(
-                numeric_battery_rgba(85, size).unwrap().len(),
+                battery_rgba(85, size).unwrap().len(),
                 (size * size * 4) as usize
             );
             assert_eq!(
@@ -712,7 +850,41 @@ mod tests {
                 (size * size * 4) as usize
             );
         }
-        assert!(numeric_battery_rgba(85, 24).is_err());
+        assert!(battery_rgba(85, 24).is_err());
+    }
+
+    #[test]
+    fn rgba_renderers_antialias_icon_edges() {
+        for rgba in [
+            battery_rgba(85, ICON_SIZE).unwrap(),
+            unknown_battery_rgba(ICON_SIZE).unwrap(),
+        ] {
+            assert!(rgba
+                .iter()
+                .skip(3)
+                .step_by(4)
+                .any(|alpha| *alpha > 0 && *alpha < 255));
+        }
+    }
+
+    #[test]
+    fn battery_icon_uses_nearly_the_full_canvas() {
+        let rgba = battery_rgba(85, ICON_SIZE).unwrap();
+        let mut bounds = [ICON_SIZE, ICON_SIZE, 0, 0];
+
+        for y in 0..ICON_SIZE {
+            for x in 0..ICON_SIZE {
+                let alpha_index = ((y * ICON_SIZE + x) * 4 + 3) as usize;
+                if rgba[alpha_index] > 0 {
+                    bounds[0] = bounds[0].min(x);
+                    bounds[1] = bounds[1].min(y);
+                    bounds[2] = bounds[2].max(x);
+                    bounds[3] = bounds[3].max(y);
+                }
+            }
+        }
+
+        assert_eq!(bounds, [0, 1, ICON_SIZE - 1, ICON_SIZE - 2]);
     }
 
     #[test]
@@ -725,7 +897,7 @@ mod tests {
             green: [7, 8, 9],
         };
         let pixel = |percentage| {
-            let rgba = numeric_battery_rgba_with_color_map(percentage, ICON_SIZE, map).unwrap();
+            let rgba = battery_rgba_with_color_map(percentage, ICON_SIZE, map).unwrap();
             let index = ((10 * ICON_SIZE + 3) * 4) as usize;
             [rgba[index], rgba[index + 1], rgba[index + 2]]
         };

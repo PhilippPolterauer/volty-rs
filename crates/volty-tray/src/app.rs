@@ -9,7 +9,7 @@ use std::{
 };
 
 use notify::{Event, RecommendedWatcher, RecursiveMode, Watcher};
-use volty_hid::{BatteryLevel, BatteryState, BatteryStatus};
+use volty_hid::{BatteryLevel, BatterySource, BatteryState, BatteryStatus};
 
 use crate::{
     about::show_about_window,
@@ -34,6 +34,7 @@ enum PollCommand {
 struct DeviceReading {
     identity: DeviceIdentity,
     name: String,
+    name_discovery_error: Option<String>,
     device_index: u8,
     battery: BatteryStatus,
 }
@@ -680,7 +681,7 @@ fn query_devices() -> PollResult {
         };
         supported_interfaces += 1;
         let protocol = mouse.protocol();
-        let name = interface
+        let fallback_name = interface
             .product_string
             .as_deref()
             .filter(|name| !name.trim().is_empty())
@@ -689,18 +690,26 @@ fn query_devices() -> PollResult {
         let interface_path = interface.path.to_string_lossy().into_owned();
 
         for &device_index in protocol.device_indices() {
-            match protocol.query_battery(&interface, device_index) {
-                Ok(battery) => readings.push(DeviceReading {
-                    identity: DeviceIdentity {
-                        interface_path: interface_path.clone(),
+            match protocol.query_device(&interface, device_index) {
+                Ok(reading) => {
+                    let (name, name_discovery_error) = match reading.name {
+                        Ok(Some(name)) if !name.trim().is_empty() => (name.trim().to_owned(), None),
+                        Ok(_) => (fallback_name.clone(), None),
+                        Err(error) => (fallback_name.clone(), Some(error.to_string())),
+                    };
+                    readings.push(DeviceReading {
+                        identity: DeviceIdentity {
+                            interface_path: interface_path.clone(),
+                            device_index,
+                        },
+                        name,
+                        name_discovery_error,
                         device_index,
-                    },
-                    name: name.clone(),
-                    device_index,
-                    battery,
-                }),
+                        battery: reading.battery,
+                    });
+                }
                 Err(error) => errors.push(format!(
-                    "{name} via {} (slot {device_index}): {error}",
+                    "{fallback_name} via {} (slot {device_index}): {error}",
                     protocol.name()
                 )),
             }
@@ -759,6 +768,17 @@ fn apply_poll_result(
     let mut lowest_percentage: Option<u8> = None;
     for reading in readings {
         let device_name = format_device_name(&reading.name, reading.device_index);
+        if let Some(error) = reading.name_discovery_error.as_deref() {
+            record_event(
+                diagnostic_log,
+                file_logger,
+                started,
+                LogLevel::Debug,
+                &format!(
+                    "Protocol name discovery failed for {device_name}; using interface label: {error}"
+                ),
+            )?;
+        }
         let percentage = reading.battery.level_percent;
         lowest_percentage = match (lowest_percentage, percentage) {
             (Some(current), Some(value)) => Some(current.min(value)),
@@ -780,9 +800,7 @@ fn apply_poll_result(
             reading.battery.state,
             BatteryState::Charging | BatteryState::ChargingNearlyFull | BatteryState::ChargingSlow
         );
-        let full = matches!(reading.battery.state, BatteryState::Charged)
-            || reading.battery.level == BatteryLevel::Full
-            || percentage.is_some_and(|percentage| percentage >= 100);
+        let full = battery_is_full(&reading.battery);
         if percentage.is_some() || charging || full {
             let sample = BatterySample {
                 // Percentage is irrelevant while charging/full because the engine
@@ -918,12 +936,19 @@ fn battery_status_label(battery: &BatteryStatus) -> String {
         BatteryLevel::Critical => Some("critical level"),
         BatteryLevel::Low => Some("low level"),
         BatteryLevel::Good => Some("good level"),
-        BatteryLevel::Full => Some("full"),
+        BatteryLevel::Full => Some("full level"),
     };
     match level {
         Some(level) => format!("{state} ({level})"),
         None => state.to_owned(),
     }
+}
+
+fn battery_is_full(battery: &BatteryStatus) -> bool {
+    matches!(battery.state, BatteryState::Charged)
+        || battery
+            .level_percent
+            .is_some_and(|percentage| percentage >= 100)
 }
 
 fn report_error(
@@ -979,6 +1004,21 @@ mod tests {
         atomic::{AtomicUsize, Ordering},
         Arc,
     };
+
+    #[test]
+    fn coarse_full_level_does_not_mark_a_discharging_battery_as_full() {
+        let battery = BatteryStatus {
+            level_percent: Some(77),
+            level: BatteryLevel::Full,
+            raw_level: 8,
+            state: BatteryState::Discharging,
+            raw_status: 0,
+            source: BatterySource::Unified,
+        };
+
+        assert!(!battery_is_full(&battery));
+        assert_eq!(battery_status_label(&battery), "Discharging (full level)");
+    }
 
     #[test]
     fn refresh_command_triggers_an_immediate_device_poll() {

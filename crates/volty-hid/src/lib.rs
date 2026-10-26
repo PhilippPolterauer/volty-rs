@@ -16,8 +16,8 @@ pub use command::*;
 pub use logitech_hidpp::*;
 pub use profile::*;
 pub use protocol::{
-    resolve_mouse_model, AmbiguousMouseModel, BatteryProtocol, MouseModel, ProtocolError,
-    SUPPORTED_MICE,
+    resolve_mouse_model, AmbiguousMouseModel, BatteryProtocol, MouseModel, ProtocolDeviceReading,
+    ProtocolError, SUPPORTED_MICE,
 };
 
 #[cfg(feature = "hidapi")]
@@ -278,6 +278,17 @@ mod hid {
             get_feature(self, device_index, logical_feature_id, software_id, timeout)
         }
 
+        pub fn get_device_name(
+            &mut self,
+            device_index: u8,
+            timeout: Duration,
+        ) -> Result<Option<String>, HidppError> {
+            let mut software_ids = self.software_ids.clone();
+            let result = query_device_name(self, device_index, &mut software_ids, timeout);
+            self.software_ids = software_ids;
+            result
+        }
+
         /// Enumerate the device's advertised features via FeatureSet and Root.
         pub fn enumerate_features(
             &mut self,
@@ -333,49 +344,108 @@ mod hid {
         info: &HidInterfaceInfo,
         device_index: u8,
     ) -> Result<BatteryStatus, HidppError> {
+        let mut session = open_hidpp_session(info)?;
+        query_battery_session(&mut session, device_index)
+    }
+
+    pub(crate) fn query_device_interface(
+        info: &HidInterfaceInfo,
+        device_index: u8,
+    ) -> Result<(Result<Option<String>, HidppError>, BatteryStatus), HidppError> {
+        let mut session = open_hidpp_session(info)?;
+        query_device_session(&mut session, device_index)
+    }
+
+    fn open_hidpp_session(info: &HidInterfaceInfo) -> Result<HidppSession, HidppError> {
         let api = HidApi::new().map_err(HidppError::HidApi)?;
         let device = api.open_path(&info.path).map_err(HidppError::HidApi)?;
-        let mut session = HidppSession {
+        Ok(HidppSession {
             device,
             info: info.clone(),
             software_ids: SoftwareIdAllocator::new(),
-        };
+        })
+    }
 
+    fn query_battery_session(
+        session: &mut HidppSession,
+        device_index: u8,
+    ) -> Result<BatteryStatus, HidppError> {
         if let Some(feature) = session.get_feature(
             device_index,
             FEATURE_UNIFIED_BATTERY,
             Duration::from_secs(2),
         )? {
-            let capabilities = transact_feature(
-                &mut session,
-                device_index,
-                feature.feature_index,
-                FUNCTION_GET_UNIFIED_BATTERY_CAPABILITIES,
-                Duration::from_secs(2),
-            )?;
-            let capabilities = parse_unified_battery_capabilities(&capabilities)?;
-            let response = transact_feature(
-                &mut session,
-                device_index,
-                feature.feature_index,
-                FUNCTION_GET_UNIFIED_BATTERY_INFO,
-                Duration::from_secs(2),
-            )?;
-            return parse_unified_battery(&response, capabilities);
+            return read_unified_battery(session, device_index, feature.feature_index);
         }
         if let Some(feature) =
             session.get_feature(device_index, FEATURE_BATTERY_STATUS, Duration::from_secs(2))?
         {
-            let response = transact_feature(
-                &mut session,
-                device_index,
-                feature.feature_index,
-                FUNCTION_GET_BATTERY_STATUS,
-                Duration::from_secs(2),
-            )?;
-            return parse_legacy_battery_status(&response);
+            return read_legacy_battery(session, device_index, feature.feature_index);
         }
         Err(HidppError::UnsupportedBatteryFeature)
+    }
+
+    fn query_device_session(
+        session: &mut HidppSession,
+        device_index: u8,
+    ) -> Result<(Result<Option<String>, HidppError>, BatteryStatus), HidppError> {
+        if let Some(feature) = session.get_feature(
+            device_index,
+            FEATURE_UNIFIED_BATTERY,
+            Duration::from_secs(2),
+        )? {
+            let name = session.get_device_name(device_index, Duration::from_secs(2));
+            let battery = read_unified_battery(session, device_index, feature.feature_index)?;
+            return Ok((name, battery));
+        }
+
+        if let Some(feature) =
+            session.get_feature(device_index, FEATURE_BATTERY_STATUS, Duration::from_secs(2))?
+        {
+            let name = session.get_device_name(device_index, Duration::from_secs(2));
+            let battery = read_legacy_battery(session, device_index, feature.feature_index)?;
+            return Ok((name, battery));
+        }
+
+        Err(HidppError::UnsupportedBatteryFeature)
+    }
+
+    fn read_unified_battery(
+        session: &mut HidppSession,
+        device_index: u8,
+        feature_index: u8,
+    ) -> Result<BatteryStatus, HidppError> {
+        let capabilities = transact_feature(
+            session,
+            device_index,
+            feature_index,
+            FUNCTION_GET_UNIFIED_BATTERY_CAPABILITIES,
+            Duration::from_secs(2),
+        )?;
+        let capabilities = parse_unified_battery_capabilities(&capabilities)?;
+        let response = transact_feature(
+            session,
+            device_index,
+            feature_index,
+            FUNCTION_GET_UNIFIED_BATTERY_INFO,
+            Duration::from_secs(2),
+        )?;
+        parse_unified_battery(&response, capabilities)
+    }
+
+    fn read_legacy_battery(
+        session: &mut HidppSession,
+        device_index: u8,
+        feature_index: u8,
+    ) -> Result<BatteryStatus, HidppError> {
+        let response = transact_feature(
+            session,
+            device_index,
+            feature_index,
+            FUNCTION_GET_BATTERY_STATUS,
+            Duration::from_secs(2),
+        )?;
+        parse_legacy_battery_status(&response)
     }
 
     fn transact_feature(
@@ -394,6 +464,78 @@ mod hid {
         );
         session.transact(&request, timeout)
     }
+}
+
+/// Reads a device name from the HID++ Device Name and Type feature.
+///
+/// Returns `None` when the device does not advertise the feature or has an
+/// empty name. Longer names are fetched in protocol-sized fragments.
+pub fn query_device_name(
+    transport: &mut impl HidppTransport,
+    device_index: u8,
+    software_ids: &mut SoftwareIdAllocator,
+    timeout: std::time::Duration,
+) -> Result<Option<String>, HidppError> {
+    let Some(feature) = get_feature(
+        transport,
+        device_index,
+        FEATURE_DEVICE_NAME,
+        software_ids.allocate(),
+        timeout,
+    )?
+    else {
+        return Ok(None);
+    };
+
+    let name_length_request = HidppFrame::long(
+        device_index,
+        feature.feature_index,
+        FUNCTION_GET_DEVICE_NAME,
+        software_ids.allocate(),
+        [0; 16],
+    );
+    let name_length_response = transport.transact(&name_length_request, timeout)?;
+    verify_response(&name_length_request, &name_length_response)?;
+    let name_length =
+        *name_length_response
+            .params
+            .first()
+            .ok_or(HidppError::UnexpectedResponse(
+                "device name response is missing its length",
+            ))?;
+    if name_length == 0 {
+        return Ok(None);
+    }
+
+    let mut name = Vec::with_capacity(usize::from(name_length));
+    while name.len() < usize::from(name_length) {
+        let offset = u8::try_from(name.len()).map_err(|_| {
+            HidppError::UnexpectedResponse("device name is longer than the protocol allows")
+        })?;
+        let mut params = [0; 16];
+        params[0] = offset;
+        let fragment_request = HidppFrame::long(
+            device_index,
+            feature.feature_index,
+            FUNCTION_GET_DEVICE_NAME_FRAGMENT,
+            software_ids.allocate(),
+            params,
+        );
+        let fragment_response = transport.transact(&fragment_request, timeout)?;
+        verify_response(&fragment_request, &fragment_response)?;
+        let remaining = usize::from(name_length) - name.len();
+        let fragment_length = fragment_response.params.len().min(remaining);
+        if fragment_length == 0 {
+            return Err(HidppError::UnexpectedResponse(
+                "device name fragment is empty",
+            ));
+        }
+        name.extend_from_slice(&fragment_response.params[..fragment_length]);
+    }
+
+    String::from_utf8(name)
+        .map(Some)
+        .map_err(|_| HidppError::UnexpectedResponse("device name is not valid UTF-8"))
 }
 
 /// Query a logical feature through Root using a caller-selected software ID.
@@ -526,6 +668,9 @@ pub use hid::{
 
 #[cfg(feature = "hidapi")]
 pub(crate) use hid::query_battery_interface;
+
+#[cfg(feature = "hidapi")]
+pub(crate) use hid::query_device_interface;
 
 #[cfg(test)]
 mod tests {
@@ -703,6 +848,64 @@ mod tests {
             .unwrap(),
             None
         );
+    }
+
+    #[test]
+    fn device_name_feature_reads_fragmented_names() {
+        let expected_name = "Logitech G502 X Plus";
+        let name_bytes = expected_name.as_bytes();
+        let mut transport = MockTransport::default();
+        transport.responses.push_back(root_reply(1, 1, 7, 0, 1));
+        let mut length_params = [0; 16];
+        length_params[0] = name_bytes.len() as u8;
+        transport
+            .responses
+            .push_back(HidppFrame::long(1, 7, 0, 2, length_params));
+        let mut first_fragment = [0; 16];
+        first_fragment.copy_from_slice(&name_bytes[..16]);
+        transport
+            .responses
+            .push_back(HidppFrame::long(1, 7, 1, 3, first_fragment));
+        let mut second_fragment = [0; 16];
+        second_fragment[..name_bytes.len() - 16].copy_from_slice(&name_bytes[16..]);
+        transport
+            .responses
+            .push_back(HidppFrame::long(1, 7, 1, 4, second_fragment));
+
+        let name = query_device_name(
+            &mut transport,
+            1,
+            &mut SoftwareIdAllocator::new(),
+            Duration::from_secs(1),
+        )
+        .unwrap();
+
+        assert_eq!(name.as_deref(), Some(expected_name));
+        assert_eq!(transport.requests[0].params[..2], [0, 5]);
+        assert_eq!(
+            transport.requests[2].function_id,
+            FUNCTION_GET_DEVICE_NAME_FRAGMENT
+        );
+        assert_eq!(transport.requests[2].params[0], 0);
+        assert_eq!(transport.requests[3].params[0], 16);
+    }
+
+    #[test]
+    fn device_name_feature_returns_none_when_not_advertised() {
+        let mut transport = MockTransport::default();
+        transport.responses.push_back(root_reply(1, 1, 0, 0, 0));
+
+        assert_eq!(
+            query_device_name(
+                &mut transport,
+                1,
+                &mut SoftwareIdAllocator::new(),
+                Duration::from_secs(1),
+            )
+            .unwrap(),
+            None
+        );
+        assert_eq!(transport.requests.len(), 1);
     }
 
     #[test]

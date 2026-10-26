@@ -5,6 +5,12 @@ use std::fmt;
 /// An error returned by a protocol-specific battery query.
 pub type ProtocolError = Box<dyn Error + Send + Sync>;
 
+/// A battery reading with a best-effort device name from the protocol.
+pub struct ProtocolDeviceReading {
+    pub name: Result<Option<String>, ProtocolError>,
+    pub battery: BatteryStatus,
+}
+
 /// A transport/protocol implementation that can produce normalized battery readings.
 pub trait BatteryProtocol: Sync {
     fn name(&self) -> &'static str;
@@ -19,6 +25,21 @@ pub trait BatteryProtocol: Sync {
         interface: &HidInterfaceInfo,
         device_index: u8,
     ) -> Result<BatteryStatus, ProtocolError>;
+
+    /// Queries identity before battery details where the protocol supports it.
+    ///
+    /// A name-discovery failure is kept separate so it does not discard a
+    /// battery reading that was successfully obtained.
+    fn query_device(
+        &self,
+        interface: &HidInterfaceInfo,
+        device_index: u8,
+    ) -> Result<ProtocolDeviceReading, ProtocolError> {
+        Ok(ProtocolDeviceReading {
+            name: Ok(None),
+            battery: self.query_battery(interface, device_index)?,
+        })
+    }
 }
 
 /// A mouse family mapped to the protocol used to query its battery.

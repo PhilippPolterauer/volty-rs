@@ -1,5 +1,5 @@
 //! Logitech HID++ 2.0 frame, transport, and protocol-specific definitions.
-use crate::protocol::{BatteryProtocol, MouseModel, ProtocolError};
+use crate::protocol::{BatteryProtocol, MouseModel, ProtocolDeviceReading, ProtocolError};
 use crate::{BatteryStatus, HidInterfaceInfo};
 use std::fmt;
 use std::time::{Duration, Instant};
@@ -39,6 +39,30 @@ impl BatteryProtocol for LogitechHidpp20 {
             )))
         }
     }
+
+    fn query_device(
+        &self,
+        interface: &HidInterfaceInfo,
+        device_index: u8,
+    ) -> Result<ProtocolDeviceReading, ProtocolError> {
+        #[cfg(feature = "hidapi")]
+        {
+            let (name, battery) = crate::query_device_interface(interface, device_index)
+                .map_err(|error| Box::new(error) as ProtocolError)?;
+            Ok(ProtocolDeviceReading {
+                name: name.map_err(|error| Box::new(error) as ProtocolError),
+                battery,
+            })
+        }
+        #[cfg(not(feature = "hidapi"))]
+        {
+            let _ = (interface, device_index);
+            Err(Box::new(std::io::Error::new(
+                std::io::ErrorKind::Unsupported,
+                "Logitech HID++ battery queries require the `hidapi` feature",
+            )))
+        }
+    }
 }
 
 /// Logitech HID++ 2.0 mouse family; battery support is confirmed by feature discovery.
@@ -60,12 +84,15 @@ pub static LOGITECH_HIDPP_MOUSE: LogitechHidppMouse = LogitechHidppMouse;
 pub const LOGITECH_VENDOR_ID: u16 = 0x046d;
 pub const FEATURE_ROOT: u16 = 0x0000;
 pub const FEATURE_SET: u16 = 0x0001;
+pub const FEATURE_DEVICE_NAME: u16 = 0x0005;
 pub const FEATURE_BATTERY_STATUS: u16 = 0x1000;
 pub const FEATURE_UNIFIED_BATTERY: u16 = 0x1004;
 pub const LOGITECH_HIDPP_USAGE_PAGE: u16 = 0xff00;
 pub const FUNCTION_GET_FEATURE: u8 = 0x00;
 pub const FUNCTION_GET_FEATURE_SET_COUNT: u8 = 0x00;
 pub const FUNCTION_GET_FEATURE_SET_ID: u8 = 0x01;
+pub const FUNCTION_GET_DEVICE_NAME: u8 = 0x00;
+pub const FUNCTION_GET_DEVICE_NAME_FRAGMENT: u8 = 0x01;
 pub const FUNCTION_GET_BATTERY_STATUS: u8 = 0x00;
 pub const FUNCTION_GET_UNIFIED_BATTERY_CAPABILITIES: u8 = 0x00;
 pub const FUNCTION_GET_UNIFIED_BATTERY_INFO: u8 = 0x01;
