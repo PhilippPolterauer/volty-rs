@@ -54,21 +54,25 @@ Standard Windows battery APIs (like ACPI) only report system battery status for 
 volty-rs/
 ├── crates/
 │   ├── volty-hid/             # Zero-UI, zero-Win32 protocol crate
-│   │   ├── protocols/         # TOML profiles embedded into the executable
-│   │   ├── build.rs           # Generates the embedded profile registry
+│   │   ├── protocols/         # Built-in TOML command profiles
+│   │   │   └── logitech-hidpp/
+│   │   │       └── unified-battery.toml
+│   │   ├── build.rs           # Embeds the profile directory at compile time
 │   │   ├── src/
 │   │   │   ├── lib.rs         # Public API and optional HID device access
-│   │   │   ├── protocol.rs    # Extensible protocol and mouse-model traits
-│   │   │   ├── logitech_hidpp.rs # First and currently only protocol backend
-│   │   │   └── battery.rs     # UnifiedBattery and legacy status parsing
+│   │   │   ├── protocol.rs    # Protocol/model traits and support catalog
+│   │   │   ├── logitech_hidpp.rs # HID++ 2.0 transport and battery backend
+│   │   │   ├── battery.rs     # Normalized battery status and decoding
 │   │   │   ├── command.rs     # Validated profile command execution
 │   │   │   └── profile.rs     # TOML command profiles and response decoders
 │   │   └── Cargo.toml
 │   │
 │   └── volty-tray/            # Windows binary application
+│       ├── build.rs           # Embeds the Windows application manifest
+│       ├── volty.manifest
 │       ├── src/
 │       │   ├── main.rs        # Single-instance guard
-│       │   ├── hid_cli.rs     # On-demand HID++ diagnostics
+│       │   ├── hid_cli.rs     # On-demand HID++ profile/device diagnostics
 │       │   ├── app.rs         # Polling state machine and worker
 │       │   ├── config.rs      # Per-user TOML settings
 │       │   ├── tray.rs        # Dynamic icon generation & context menu
@@ -81,16 +85,52 @@ volty-rs/
 └── Cargo.toml                 # Workspace manifest
 ```
 
-The HID crate defines `BatteryProtocol` and `MouseModel` traits. The
-`SUPPORTED_MICE` catalog maps matching device interfaces to their battery
-backend; ambiguous matches are rejected instead of relying on registration
-order. Logitech HID++ 2.0 is currently the only registered backend, and its
-runtime feature discovery confirms battery support. Adding a backend does not
-require changing battery presentation or tray polling. Generic HID
-battery-report discovery and other vendors are not implemented yet. The tray
-does not load command profiles. See
+### Runtime data flow
+
+```text
+HID interface enumeration
+        |
+        v
+resolve_mouse_model -> SUPPORTED_MICE catalog
+        | no match: skip interface
+        | ambiguous: report an error
+        | unique model
+        v
+model.protocol() -> BatteryProtocol
+        |
+        v
+protocol-specific transport, feature discovery, and decoding
+        |
+        v
+BatteryStatus -> tray state, icon, and notifications
+```
+
+`volty-hid` owns protocol behavior and presents readings through the common
+`BatteryStatus` type. `BatteryProtocol` implements interface matching,
+device-address iteration, and the protocol-specific battery query.
+`MouseModel` associates a device family with a backend. The `SUPPORTED_MICE`
+catalog is the dispatch source: an interface must match exactly one model;
+no match is skipped and overlapping matches are an error. The current catalog
+contains one Logitech HID++ 2.0 model. That backend then discovers battery
+features at runtime. The tray currently returns its first successful battery
+reading rather than maintaining a separate tray reading for every paired
+mouse.
+
+`volty-tray` owns polling, configuration, tray presentation, and
+notifications. Its `build.rs` embeds `volty.manifest` in Windows builds.
+Separately, `volty-hid/build.rs` embeds every TOML profile below `protocols/`
+in the executable. `volty hid profiles` lists these built-ins; `volty hid run`
+can select one by ID or load a custom profile from a path. Profiles are
+diagnostic command descriptions only: the tray does not load them or use them
+for backend selection. The current profile runner supports HID++ 2.0 only.
+
+Adding a device that shares an existing wire protocol requires a specific
+`MouseModel` matcher and a catalog entry. A new wire protocol additionally
+requires a `BatteryProtocol` implementation that normalizes readings to
+`BatteryStatus`. Neither a profile file nor a protocol implementation alone
+registers a device for tray polling. See
 [Generic HID battery-level support](./docs/hid-battery-support.md) for the
-component flow, current limits, and profile packaging options.
+extension flow and current limitations.
 
 ## Quick start
 

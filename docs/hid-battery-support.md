@@ -65,7 +65,7 @@ The HID crate separates protocol behavior from mouse-family matching:
   its backend.
 
 During tray polling, Volty enumerates HID interfaces and calls
-`find_supported_mouse` for each one. The resolver checks the models in
+`resolve_mouse_model` for each one. The resolver checks the models in
 `SUPPORTED_MICE`: no match selects no model, exactly one match selects that
 model, and multiple matches produce an ambiguity error rather than letting
 catalog order decide. `MouseModel::matches` defaults to the selected backend's
