@@ -1,53 +1,7 @@
 use crate::logitech_hidpp::{
     HidppError, HidppFrame, FUNCTION_GET_BATTERY_STATUS, FUNCTION_GET_UNIFIED_BATTERY_INFO,
 };
-
-/// The known charging/discharging condition, or `Unknown` if unavailable.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum BatteryState {
-    Unknown,
-    Discharging,
-    Charging,
-    ChargingNearlyFull,
-    Charged,
-    ChargingSlow,
-    InvalidBattery,
-    ThermalError,
-    ChargingError,
-}
-
-/// Coarse battery-level bucket reported by Unified Battery.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum BatteryLevel {
-    Unknown,
-    Critical,
-    Low,
-    Good,
-    Full,
-}
-
-/// Origin of a parsed battery status.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum BatterySource {
-    Unified,
-    LegacyBatteryStatus,
-}
-
-/// Normalized battery reading. Level is `None` when the device reports an
-/// unknown/sentinel value; `raw_status` preserves the device status byte.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct BatteryStatus {
-    /// A percentage only when the device advertises percentage support.
-    pub level_percent: Option<u8>,
-    /// Coarse Unified Battery bucket, when available.
-    pub level: BatteryLevel,
-    /// Raw level byte returned by the device. Legacy Battery Status values are
-    /// device-specific charge readings and are not assumed to be percentages.
-    pub raw_level: u8,
-    pub state: BatteryState,
-    pub raw_status: u8,
-    pub source: BatterySource,
-}
+pub use volty_battery::{BatteryLevel, BatterySource, BatteryState, BatteryStatus};
 
 /// Unified Battery feature capabilities.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -113,7 +67,7 @@ pub fn parse_unified_battery(
         level,
         raw_level,
         state,
-        raw_status,
+        raw_status: Some(raw_status),
         source: BatterySource::Unified,
     })
 }
@@ -142,7 +96,7 @@ pub fn parse_legacy_battery_status(frame: &HidppFrame) -> Result<BatteryStatus, 
         level: BatteryLevel::Unknown,
         raw_level,
         state: parse_charge_status(raw_status),
-        raw_status,
+        raw_status: Some(raw_status),
         source: BatterySource::LegacyBatteryStatus,
     })
 }

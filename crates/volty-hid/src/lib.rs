@@ -4,14 +4,12 @@
 //! dependencies. Enable `hidapi` for interface enumeration and sessions.
 
 mod battery;
-mod builtin_protocols;
 mod command;
 mod logitech_hidpp;
 mod profile;
 mod protocol;
 
 pub use battery::*;
-pub use builtin_protocols::{builtin_profile_names, builtin_profile_source};
 pub use command::*;
 pub use logitech_hidpp::*;
 pub use profile::*;

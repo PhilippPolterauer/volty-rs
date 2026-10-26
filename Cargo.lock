@@ -1602,6 +1602,7 @@ version = "0.1.0"
 dependencies = [
  "hidapi",
  "toml 0.8.2",
+ "volty-battery",
 ]
 
 [[package]]

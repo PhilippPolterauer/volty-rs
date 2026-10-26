@@ -12,4 +12,5 @@ hidapi = ["dep:hidapi"]
 
 [dependencies]
 hidapi = { version = "2.6", optional = true }
+volty-battery = { path = "../volty-battery" }
 toml = "0.8"

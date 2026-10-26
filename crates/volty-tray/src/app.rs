@@ -10,7 +10,6 @@ use std::{
 
 use notify::{Event, RecommendedWatcher, RecursiveMode, Watcher};
 use volty_battery::{BatteryLevel, BatterySource, BatteryState, BatteryStatus};
-use volty_hid::{BatteryProtocol, HidInterfaceInfo};
 
 use crate::{
     about::show_about_window,
@@ -46,14 +45,6 @@ struct DeviceReading {
     device_index: Option<u8>,
     battery: BatteryStatus,
     notification_error: Option<String>,
-}
-
-struct PendingDeviceName {
-    identity: DeviceIdentity,
-    interface: HidInterfaceInfo,
-    protocol: &'static dyn BatteryProtocol,
-    fallback_name: String,
-    device_index: u8,
 }
 
 #[derive(Clone, Eq, Hash, PartialEq)]
@@ -1123,8 +1114,6 @@ fn query_devices(
             Vec::new()
         }
     };
-    let mut pending_names = Vec::new();
-    let mut pending_name_ids = HashSet::new();
     let mut supported_interfaces = 0;
     let mut reading_count = 0;
     for interface in interfaces {
@@ -1170,22 +1159,30 @@ fn query_devices(
                 interface_path: interface_path.clone(),
                 device_index,
             };
-            match protocol.query_battery(&interface, device_index) {
-                Ok(battery) => {
-                    let cached_name = name_cache.get(&identity).map(str::to_owned);
-                    let name = cached_name.clone().unwrap_or_else(|| fallback_name.clone());
-                    if cached_name.is_none() && pending_name_ids.insert(identity.clone()) {
-                        pending_names.push(PendingDeviceName {
-                            identity: identity.clone(),
-                            interface: interface.clone(),
-                            protocol,
-                            fallback_name: fallback_name.clone(),
-                            device_index,
-                        });
-                    }
+            let cached_name = name_cache.get(&identity).map(str::to_owned);
+            let reading = match cached_name {
+                Some(name) => protocol
+                    .query_battery(&interface, device_index)
+                    .map(|battery| (battery, name, None, false)),
+                None => protocol
+                    .query_device(&interface, device_index)
+                    .map(|device| {
+                        let volty_hid::ProtocolDeviceReading {
+                            name: queried_name,
+                            battery,
+                        } = device;
+                        let (name, name_error) =
+                            name_cache.resolve(identity.clone(), &fallback_name, || {
+                                queried_name.map_err(|error| error.to_string())
+                            });
+                        (battery, name, name_error, true)
+                    }),
+            };
+            match reading {
+                Ok((battery, name, name_error, name_was_queried)) => {
                     let reading = DeviceReading {
-                        identity,
-                        name,
+                        identity: identity.clone(),
+                        name: name.clone(),
                         device_index: Some(device_index),
                         battery,
                         notification_error: None,
@@ -1205,6 +1202,17 @@ fn query_devices(
                             )))
                             .map_err(|_| "device polling result receiver disconnected".to_owned())?;
                     }
+                    if name_was_queried {
+                        results
+                            .send(PollUpdate::DeviceName {
+                                identity,
+                                name,
+                                error: name_error,
+                            })
+                            .map_err(|_| {
+                                "device polling result receiver disconnected".to_owned()
+                            })?;
+                    }
                 }
                 Err(error) => {
                     name_cache.forget(&identity);
@@ -1215,23 +1223,6 @@ fn query_devices(
                 }
             }
         }
-    }
-
-    for pending in pending_names {
-        let (name, error) =
-            name_cache.resolve(pending.identity.clone(), &pending.fallback_name, || {
-                pending
-                    .protocol
-                    .query_device_name(&pending.interface, pending.device_index)
-                    .map_err(|error| error.to_string())
-            });
-        results
-            .send(PollUpdate::DeviceName {
-                identity: pending.identity,
-                name,
-                error,
-            })
-            .map_err(|_| "device polling result receiver disconnected".to_owned())?;
     }
 
     match volty_bluetooth::scan_connected_devices() {
