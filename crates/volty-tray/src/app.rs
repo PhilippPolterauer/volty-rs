@@ -1,6 +1,8 @@
 use std::{
+    collections::VecDeque,
     error::Error,
-    path::PathBuf,
+    io,
+    path::{Path, PathBuf},
     sync::mpsc::{self, Receiver, RecvTimeoutError, TryRecvError},
     thread,
     time::{Duration, Instant},
@@ -10,19 +12,22 @@ use notify::{Event, RecommendedWatcher, RecursiveMode, Watcher};
 use volty_hid::{BatteryLevel, BatteryState, BatteryStatus};
 
 use crate::{
-    config::{config_path, NotificationConfig},
+    about::show_about_window,
+    config::{config_path, AppConfig, LogLevel},
+    diagnose::show_diagnose_window,
+    logging::FileLogger,
     notify::{BatterySample, NotificationEngine},
-    report::generate_debug_report,
+    report::generate_diagnostic_report,
     tray::{set_start_on_boot_enabled, start_on_boot_enabled, TrayAction, TrayController},
 };
 
-const POLL_INTERVAL: Duration = Duration::from_secs(120);
-const RECOVERY_INTERVAL: Duration = Duration::from_secs(15);
 const UI_POLL_INTERVAL: Duration = Duration::from_millis(100);
 const CONFIG_RELOAD_DEBOUNCE: Duration = Duration::from_millis(200);
+const MAX_DIAGNOSTIC_LOG_ENTRIES: usize = 200;
 
 enum PollCommand {
     Refresh,
+    UpdateIntervals { poll: Duration, retry: Duration },
     Quit,
 }
 
@@ -40,94 +45,225 @@ struct ConfigWatch {
 }
 
 pub fn run() -> Result<(), Box<dyn Error>> {
+    let started = Instant::now();
+    let mut diagnostic_log = VecDeque::new();
+    let (mut active_config, mut notification_config_error) = match AppConfig::load() {
+        Ok(config) => (config, None),
+        Err(error) => (AppConfig::default(), Some(error.to_string())),
+    };
+    let mut file_logger = FileLogger::open(active_config.log_level)?;
+    record_event(
+        &mut diagnostic_log,
+        &mut file_logger,
+        started,
+        LogLevel::Info,
+        "Volty started",
+    )?;
     let mut tray = TrayController::new()?;
-    tray.update_status("", "Searching for Logitech device", None)?;
+    tray.set_battery_color_map(active_config.battery_color_map)?;
+    tray.update_status("", "Searching for supported mouse", None)?;
     let config_watch = watch_config_file()?;
 
-    let (mut notifications, mut notification_config_error) =
-        match NotificationEngine::from_local_config() {
-            Ok(engine) => (engine, None),
-            Err(error) => {
-                let message = error.to_string();
-                eprintln!("Volty notification configuration error: {error}");
-                tray.update_status("", &format!("Notification config error: {message}"), None)?;
-                (NotificationEngine::new(), Some(message))
-            }
-        };
+    if let Some(message) = notification_config_error.as_deref() {
+        record_event(
+            &mut diagnostic_log,
+            &mut file_logger,
+            started,
+            LogLevel::Error,
+            &format!("Configuration error: {message}"),
+        )?;
+        tray.update_status("", &format!("Configuration error: {message}"), None)?;
+    }
+    let mut notifications = NotificationEngine::from_config(active_config)?;
 
     let (commands_tx, commands_rx) = mpsc::channel();
     let (results_tx, results_rx) = mpsc::channel();
+    let poll_interval = Duration::from_secs(active_config.poll_interval_seconds);
+    let retry_interval = Duration::from_secs(active_config.retry_interval_seconds);
     thread::Builder::new()
         .name("volty-device-poller".to_owned())
-        .spawn(move || poll_worker(commands_rx, results_tx))?;
+        .spawn(move || poll_worker(commands_rx, results_tx, poll_interval, retry_interval))?;
     let mut config_reload_due = None;
 
     loop {
         if !process_windows_messages() {
+            record_event(
+                &mut diagnostic_log,
+                &mut file_logger,
+                started,
+                LogLevel::Info,
+                "Windows requested application shutdown",
+            )?;
             return Ok(());
         }
 
         if let Err(error) = tray.process_menu_events() {
-            report_error(&mut tray, "Tray menu error", &error.to_string());
+            report_error(
+                &mut tray,
+                &mut diagnostic_log,
+                &mut file_logger,
+                started,
+                "Tray menu error",
+                &error.to_string(),
+            )?;
         }
 
         loop {
             match tray.try_recv_action() {
                 Ok(TrayAction::RefreshNow) => {
+                    record_event(
+                        &mut diagnostic_log,
+                        &mut file_logger,
+                        started,
+                        LogLevel::Debug,
+                        "Manual battery refresh requested",
+                    )?;
                     reload_notification_config(
                         &mut tray,
                         &mut notifications,
                         &mut notification_config_error,
-                    );
+                        &mut active_config,
+                        &commands_tx,
+                        &mut diagnostic_log,
+                        &mut file_logger,
+                        started,
+                    )?;
                     if commands_tx.send(PollCommand::Refresh).is_err() {
-                        report_error(&mut tray, "Refresh error", "device poller has stopped");
+                        report_error(
+                            &mut tray,
+                            &mut diagnostic_log,
+                            &mut file_logger,
+                            started,
+                            "Refresh error",
+                            "device poller has stopped",
+                        )?;
+                    }
+                }
+                Ok(TrayAction::OpenLogFile) => {
+                    let path = file_logger.path().to_owned();
+                    match open_log_file(&path) {
+                        Ok(()) => record_event(
+                            &mut diagnostic_log,
+                            &mut file_logger,
+                            started,
+                            LogLevel::Info,
+                            &format!("Opened log file: {}", path.display()),
+                        )?,
+                        Err(error) => report_error(
+                            &mut tray,
+                            &mut diagnostic_log,
+                            &mut file_logger,
+                            started,
+                            "Log file error",
+                            &error.to_string(),
+                        )?,
                     }
                 }
                 Ok(TrayAction::OpenConfiguration) => {
                     if let Err(error) = open_configuration() {
-                        report_error(&mut tray, "Configuration error", &error.to_string());
+                        report_error(
+                            &mut tray,
+                            &mut diagnostic_log,
+                            &mut file_logger,
+                            started,
+                            "Configuration error",
+                            &error.to_string(),
+                        )?;
                     }
                 }
-                Ok(TrayAction::GenerateDebugReport) => match generate_debug_report() {
-                    Ok(path) => {
-                        let path_text = path.display().to_string();
-                        match shell_open(path.as_os_str()) {
-                            Ok(()) => {
-                                if let Err(error) = tray.update_status(
-                                    "",
-                                    &format!("Debug report opened: {path_text}"),
-                                    None,
-                                ) {
-                                    eprintln!("Volty tray update error: {error}");
+                Ok(TrayAction::Diagnose) => {
+                    match generate_diagnostic_report(active_config, &diagnostic_log) {
+                        Ok((path, report)) => {
+                            let path_text = path.display().to_string();
+                            match show_diagnose_window(&report) {
+                                Ok(()) => {
+                                    record_event(
+                                        &mut diagnostic_log,
+                                        &mut file_logger,
+                                        started,
+                                        LogLevel::Info,
+                                        &format!("Diagnostic report saved: {path_text}"),
+                                    )?;
+                                    if let Err(error) = tray.update_status(
+                                        "",
+                                        &format!(
+                                            "Diagnose window closed; report saved: {path_text}"
+                                        ),
+                                        None,
+                                    ) {
+                                        record_event(
+                                            &mut diagnostic_log,
+                                            &mut file_logger,
+                                            started,
+                                            LogLevel::Error,
+                                            &format!("Tray update error: {error}"),
+                                        )?;
+                                    }
                                 }
+                                Err(error) => report_error(
+                                    &mut tray,
+                                    &mut diagnostic_log,
+                                    &mut file_logger,
+                                    started,
+                                    "Diagnose window error",
+                                    &format!("{error}; report saved at {path_text}"),
+                                )?,
                             }
-                            Err(code) => report_error(
-                                &mut tray,
-                                "Debug report saved but could not be opened",
-                                &format!("{path_text} (ShellExecuteW code {code})"),
-                            ),
                         }
+                        Err(error) => report_error(
+                            &mut tray,
+                            &mut diagnostic_log,
+                            &mut file_logger,
+                            started,
+                            "Diagnostic report error",
+                            &error.to_string(),
+                        )?,
                     }
-                    Err(error) => report_error(&mut tray, "Debug report error", &error.to_string()),
-                },
+                }
                 Ok(TrayAction::ToggleStartOnBoot) => match toggle_start_on_boot() {
                     Ok(enabled) => tray.set_start_on_boot_checked(enabled),
-                    Err(error) => {
-                        report_error(&mut tray, "Start on Boot error", &error.to_string())
-                    }
+                    Err(error) => report_error(
+                        &mut tray,
+                        &mut diagnostic_log,
+                        &mut file_logger,
+                        started,
+                        "Start on Boot error",
+                        &error.to_string(),
+                    )?,
                 },
-                Ok(TrayAction::OpenGitHub) => {
-                    if let Err(error) = open_github() {
-                        report_error(&mut tray, "GitHub error", &error.to_string());
+                Ok(TrayAction::About) => {
+                    if let Err(error) = show_about_window() {
+                        report_error(
+                            &mut tray,
+                            &mut diagnostic_log,
+                            &mut file_logger,
+                            started,
+                            "About window error",
+                            &error.to_string(),
+                        )?;
                     }
                 }
                 Ok(TrayAction::Quit) => {
+                    record_event(
+                        &mut diagnostic_log,
+                        &mut file_logger,
+                        started,
+                        LogLevel::Info,
+                        "Volty shutting down",
+                    )?;
                     let _ = commands_tx.send(PollCommand::Quit);
                     return Ok(());
                 }
                 Err(TryRecvError::Empty) => break,
                 Err(TryRecvError::Disconnected) => {
-                    report_error(&mut tray, "Tray error", "tray action channel disconnected");
+                    report_error(
+                        &mut tray,
+                        &mut diagnostic_log,
+                        &mut file_logger,
+                        started,
+                        "Tray error",
+                        "tray action channel disconnected",
+                    )?;
                     break;
                 }
             }
@@ -141,12 +277,24 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                         .iter()
                         .any(|path| path == &config_watch.config_file) =>
                 {
+                    record_event(
+                        &mut diagnostic_log,
+                        &mut file_logger,
+                        started,
+                        LogLevel::Trace,
+                        "Configuration file change detected",
+                    )?;
                     config_reload_due = Some(Instant::now() + CONFIG_RELOAD_DEBOUNCE);
                 }
                 Ok(_) => {}
-                Err(error) => {
-                    report_error(&mut tray, "Configuration watch error", &error.to_string())
-                }
+                Err(error) => report_error(
+                    &mut tray,
+                    &mut diagnostic_log,
+                    &mut file_logger,
+                    started,
+                    "Configuration watch error",
+                    &error.to_string(),
+                )?,
             }
         }
 
@@ -156,9 +304,21 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                 &mut tray,
                 &mut notifications,
                 &mut notification_config_error,
-            ) && commands_tx.send(PollCommand::Refresh).is_err()
+                &mut active_config,
+                &commands_tx,
+                &mut diagnostic_log,
+                &mut file_logger,
+                started,
+            )? && commands_tx.send(PollCommand::Refresh).is_err()
             {
-                report_error(&mut tray, "Refresh error", "device poller has stopped");
+                report_error(
+                    &mut tray,
+                    &mut diagnostic_log,
+                    &mut file_logger,
+                    started,
+                    "Refresh error",
+                    "device poller has stopped",
+                )?;
             }
         }
 
@@ -167,14 +327,33 @@ pub fn run() -> Result<(), Box<dyn Error>> {
         #[allow(clippy::while_let_loop)]
         loop {
             match results_rx.try_recv() {
-                Ok(result) => apply_poll_result(
-                    &mut tray,
-                    &mut notifications,
-                    result,
-                    notification_config_error.as_deref(),
-                ),
+                Ok(result) => {
+                    record_event(
+                        &mut diagnostic_log,
+                        &mut file_logger,
+                        started,
+                        LogLevel::Trace,
+                        "Received device polling result",
+                    )?;
+                    apply_poll_result(
+                        &mut tray,
+                        &mut notifications,
+                        result,
+                        notification_config_error.as_deref(),
+                        &mut diagnostic_log,
+                        &mut file_logger,
+                        started,
+                    )?;
+                }
                 Err(TryRecvError::Empty) => break,
                 Err(TryRecvError::Disconnected) => {
+                    record_event(
+                        &mut diagnostic_log,
+                        &mut file_logger,
+                        started,
+                        LogLevel::Error,
+                        "Device polling worker stopped unexpectedly",
+                    )?;
                     return Err("device polling worker stopped unexpectedly".into());
                 }
             }
@@ -215,33 +394,97 @@ fn reload_notification_config(
     tray: &mut TrayController,
     notifications: &mut NotificationEngine,
     current_error: &mut Option<String>,
-) -> bool {
-    let config = match NotificationConfig::load() {
+    active_config: &mut AppConfig,
+    commands: &mpsc::Sender<PollCommand>,
+    diagnostic_log: &mut VecDeque<String>,
+    file_logger: &mut FileLogger,
+    started: Instant,
+) -> Result<bool, io::Error> {
+    let config = match AppConfig::load() {
         Ok(config) => config,
         Err(error) => {
             let message = error.to_string();
             if current_error.as_deref() != Some(&message) {
-                report_error(tray, "Configuration error", &message);
+                report_error(
+                    tray,
+                    diagnostic_log,
+                    file_logger,
+                    started,
+                    "Configuration error",
+                    &message,
+                )?;
                 *current_error = Some(message);
             }
-            return false;
+            return Ok(false);
         }
     };
 
-    if let Err(error) = notifications.set_threshold(config.low_battery_threshold) {
+    if let Err(error) = tray.set_battery_color_map(config.battery_color_map) {
         let message = error.to_string();
         if current_error.as_deref() != Some(&message) {
-            report_error(tray, "Configuration error", &message);
+            report_error(
+                tray,
+                diagnostic_log,
+                file_logger,
+                started,
+                "Configuration error",
+                &message,
+            )?;
             *current_error = Some(message);
         }
-        return false;
+        return Ok(false);
     }
 
-    let recovered = current_error.take().is_some();
-    if recovered {
-        eprintln!("Volty configuration reloaded successfully");
+    if let Err(error) = notifications.set_config(config) {
+        let message = error.to_string();
+        if current_error.as_deref() != Some(&message) {
+            report_error(
+                tray,
+                diagnostic_log,
+                file_logger,
+                started,
+                "Configuration error",
+                &message,
+            )?;
+            *current_error = Some(message);
+        }
+        return Ok(false);
     }
-    recovered
+
+    let intervals_changed = config.poll_interval_seconds != active_config.poll_interval_seconds
+        || config.retry_interval_seconds != active_config.retry_interval_seconds;
+    if intervals_changed
+        && commands
+            .send(PollCommand::UpdateIntervals {
+                poll: Duration::from_secs(config.poll_interval_seconds),
+                retry: Duration::from_secs(config.retry_interval_seconds),
+            })
+            .is_err()
+    {
+        report_error(
+            tray,
+            diagnostic_log,
+            file_logger,
+            started,
+            "Configuration error",
+            "device poller has stopped; polling intervals were not applied",
+        )?;
+        return Ok(false);
+    }
+    let config_changed = *active_config != config;
+    *active_config = config;
+    file_logger.set_level(config.log_level);
+    let recovered = current_error.take().is_some();
+    if recovered || config_changed {
+        record_event(
+            diagnostic_log,
+            file_logger,
+            started,
+            LogLevel::Info,
+            "Configuration reloaded successfully",
+        )?;
+    }
+    Ok(recovered || config_changed)
 }
 
 fn process_windows_messages() -> bool {
@@ -263,7 +506,7 @@ fn process_windows_messages() -> bool {
 }
 
 fn open_configuration() -> Result<(), Box<dyn Error>> {
-    let path = NotificationConfig::ensure_config_file()?;
+    let path = AppConfig::ensure_config_file()?;
     if let Err(code) = shell_open(path.as_os_str()) {
         std::process::Command::new("notepad.exe")
             .arg(&path)
@@ -275,14 +518,23 @@ fn open_configuration() -> Result<(), Box<dyn Error>> {
                 )
             })?;
     }
+
     Ok(())
 }
 
-fn open_github() -> Result<(), Box<dyn Error>> {
-    const GITHUB_URL: &str = "https://github.com/PhilippPolterauer/volty-rs";
-    shell_open(std::ffi::OsStr::new(GITHUB_URL)).map_err(|code| {
-        format!("could not open GitHub page {GITHUB_URL} (ShellExecuteW code {code})").into()
-    })
+fn open_log_file(path: &Path) -> Result<(), Box<dyn Error>> {
+    if let Err(code) = shell_open(path.as_os_str()) {
+        std::process::Command::new("notepad.exe")
+            .arg(path)
+            .spawn()
+            .map_err(|error| {
+                format!(
+                    "could not open log file {} with its associated application (ShellExecuteW code {code}) or Notepad: {error}",
+                    path.display()
+                )
+            })?;
+    }
+    Ok(())
 }
 
 fn shell_open(target: &std::ffi::OsStr) -> Result<(), isize> {
@@ -314,55 +566,76 @@ fn toggle_start_on_boot() -> Result<bool, Box<dyn Error>> {
     Ok(enabled)
 }
 
-fn poll_worker(commands: mpsc::Receiver<PollCommand>, results: mpsc::Sender<PollResult>) {
+fn poll_worker(
+    commands: mpsc::Receiver<PollCommand>,
+    results: mpsc::Sender<PollResult>,
+    mut poll_interval: Duration,
+    mut retry_interval: Duration,
+) {
     loop {
         let reading = query_devices();
-        let next_poll = if reading.is_ok() {
-            POLL_INTERVAL
+        let successful_read = reading.is_ok();
+        let next_poll = if successful_read {
+            poll_interval
         } else {
-            RECOVERY_INTERVAL
+            retry_interval
         };
         if results.send(reading).is_err() {
             return;
         }
 
-        match commands.recv_timeout(next_poll) {
-            Ok(PollCommand::Refresh) => {}
-            Ok(PollCommand::Quit) | Err(RecvTimeoutError::Disconnected) => return,
-            Err(RecvTimeoutError::Timeout) => {}
+        let mut wait_interval = next_poll;
+        loop {
+            match commands.recv_timeout(wait_interval) {
+                Ok(PollCommand::Refresh) | Err(RecvTimeoutError::Timeout) => break,
+                Ok(PollCommand::UpdateIntervals { poll, retry }) => {
+                    poll_interval = poll;
+                    retry_interval = retry;
+                    wait_interval = if successful_read { poll } else { retry };
+                }
+                Ok(PollCommand::Quit) | Err(RecvTimeoutError::Disconnected) => return,
+            }
         }
     }
 }
 
 fn query_devices() -> PollResult {
-    use volty_hid::{enumerate_logitech_devices, query_battery};
+    use volty_hid::{enumerate_hid_interfaces, find_supported_mouse};
 
-    let devices = enumerate_logitech_devices().map_err(|error| error.to_string())?;
-    if devices.is_empty() {
-        return Err("No Logitech HID device found".to_owned());
-    }
+    let interfaces = enumerate_hid_interfaces().map_err(|error| error.to_string())?;
 
     let mut errors = Vec::new();
-    for device in devices {
-        let name = device
+    let mut supported_interfaces = 0;
+    for interface in interfaces {
+        let Some(mouse) = find_supported_mouse(&interface) else {
+            continue;
+        };
+        supported_interfaces += 1;
+        let protocol = mouse.protocol();
+        let name = interface
             .product_string
             .as_deref()
             .filter(|name| !name.trim().is_empty())
             .map(str::to_owned)
-            .unwrap_or_else(|| format!("Logitech device {:04x}", device.product_id));
+            .unwrap_or_else(|| mouse.name().to_owned());
 
-        // The HID++ API accepts a paired-device index but doesn't enumerate
-        // receiver pairings. Probe the common device slots so receivers work too.
-        for device_index in [0xff, 1, 2, 3, 4, 5, 6] {
-            match query_battery(&device, device_index) {
+        for &device_index in protocol.device_indices() {
+            match protocol.query_battery(&interface, device_index) {
                 Ok(battery) => return Ok(DeviceReading { name, battery }),
-                Err(error) => errors.push(format!("{name} (slot {device_index}): {error}")),
+                Err(error) => errors.push(format!(
+                    "{name} via {} (slot {device_index}): {error}",
+                    protocol.name()
+                )),
             }
         }
     }
 
+    if supported_interfaces == 0 {
+        return Err("No supported mouse found".to_owned());
+    }
+
     Err(format!(
-        "Could not read a Logitech battery: {}",
+        "Could not read a supported mouse battery: {}",
         errors.join("; ")
     ))
 }
@@ -372,22 +645,49 @@ fn apply_poll_result(
     notifications: &mut NotificationEngine,
     result: PollResult,
     notification_config_error: Option<&str>,
-) {
+    diagnostic_log: &mut VecDeque<String>,
+    file_logger: &mut FileLogger,
+    started: Instant,
+) -> io::Result<()> {
     let reading = match result {
         Ok(reading) => reading,
         Err(error) => {
-            eprintln!("Volty device polling error: {error}");
+            record_event(
+                diagnostic_log,
+                file_logger,
+                started,
+                LogLevel::Warn,
+                &format!("Device polling error: {error}"),
+            )?;
             let mut status = format!("Error: {error}");
             append_config_error(&mut status, notification_config_error);
             if let Err(tray_error) = tray.update_status("", &status, None) {
-                eprintln!("Volty tray update error: {tray_error}");
+                record_event(
+                    diagnostic_log,
+                    file_logger,
+                    started,
+                    LogLevel::Error,
+                    &format!("Tray update error: {tray_error}"),
+                )?;
             }
-            return;
+            return Ok(());
         }
     };
 
     let percentage = reading.battery.level_percent;
     let mut status = battery_status_label(&reading.battery);
+    record_event(
+        diagnostic_log,
+        file_logger,
+        started,
+        LogLevel::Debug,
+        &format!(
+            "Battery read for {}: {} ({})",
+            reading.name,
+            percentage.map_or_else(|| "unknown".to_owned(), |value| format!("{value}%")),
+            status
+        ),
+    )?;
     let charging = matches!(
         reading.battery.state,
         BatteryState::Charging | BatteryState::ChargingNearlyFull | BatteryState::ChargingSlow
@@ -405,7 +705,13 @@ fn apply_poll_result(
         };
         if let Err(error) = notifications.update(sample) {
             let error = error.to_string();
-            eprintln!("Volty notification error: {error}");
+            record_event(
+                diagnostic_log,
+                file_logger,
+                started,
+                LogLevel::Error,
+                &format!("Notification error: {error}"),
+            )?;
             status.push_str("; notification error: ");
             status.push_str(&error);
         }
@@ -416,8 +722,15 @@ fn apply_poll_result(
     append_config_error(&mut status, notification_config_error);
 
     if let Err(error) = tray.update_status(&reading.name, &status, percentage) {
-        eprintln!("Volty tray update error: {error}");
+        record_event(
+            diagnostic_log,
+            file_logger,
+            started,
+            LogLevel::Error,
+            &format!("Tray update error: {error}"),
+        )?;
     }
+    Ok(())
 }
 
 fn append_config_error(status: &mut String, error: Option<&str>) {
@@ -452,9 +765,48 @@ fn battery_status_label(battery: &BatteryStatus) -> String {
     }
 }
 
-fn report_error(tray: &mut TrayController, title: &str, message: &str) {
-    eprintln!("Volty {title}: {message}");
+fn report_error(
+    tray: &mut TrayController,
+    diagnostic_log: &mut VecDeque<String>,
+    file_logger: &mut FileLogger,
+    started: Instant,
+    title: &str,
+    message: &str,
+) -> io::Result<()> {
+    record_event(
+        diagnostic_log,
+        file_logger,
+        started,
+        LogLevel::Error,
+        &format!("{title}: {message}"),
+    )?;
     if let Err(error) = tray.update_status("", &format!("{title}: {message}"), None) {
-        eprintln!("Volty tray update error: {error}");
+        record_event(
+            diagnostic_log,
+            file_logger,
+            started,
+            LogLevel::Error,
+            &format!("Tray update error: {error}"),
+        )?;
     }
+    Ok(())
+}
+
+fn record_event(
+    log: &mut VecDeque<String>,
+    file_logger: &mut FileLogger,
+    started: Instant,
+    level: LogLevel,
+    message: &str,
+) -> io::Result<()> {
+    file_logger.log(level, message)?;
+    if log.len() == MAX_DIAGNOSTIC_LOG_ENTRIES {
+        log.pop_front();
+    }
+    log.push_back(format!(
+        "[+{}s] [{}] {message}",
+        started.elapsed().as_secs(),
+        level.as_str()
+    ));
+    Ok(())
 }

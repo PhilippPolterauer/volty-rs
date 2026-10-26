@@ -1,4 +1,5 @@
 use std::{
+    collections::VecDeque,
     error::Error,
     fmt,
     fs::{self, OpenOptions},
@@ -9,7 +10,12 @@ use std::{
 
 use volty_hid::enumerate_hid_devices;
 
-pub fn generate_debug_report() -> Result<PathBuf, Box<dyn Error>> {
+use crate::config::AppConfig;
+
+pub fn generate_diagnostic_report(
+    config: AppConfig,
+    log: &VecDeque<String>,
+) -> Result<(PathBuf, String), Box<dyn Error>> {
     let devices = enumerate_hid_devices()?;
     let app_data = std::env::var_os("APPDATA")
         .map(PathBuf::from)
@@ -17,19 +23,19 @@ pub fn generate_debug_report() -> Result<PathBuf, Box<dyn Error>> {
     let report_dir = app_data.join("Volty").join("reports");
     fs::create_dir_all(&report_dir).map_err(|error| {
         format!(
-            "could not create debug report folder {}: {error}",
+            "could not create diagnostic report folder {}: {error}",
             report_dir.display()
         )
     })?;
 
     let timestamp = SystemTime::now().duration_since(UNIX_EPOCH)?;
     let report_path = report_dir.join(format!(
-        "volty-debug-report-{}-{:09}.txt",
+        "volty-diagnose-{}-{:09}.txt",
         timestamp.as_secs(),
         timestamp.subsec_nanos()
     ));
 
-    let report = render_debug_report(&devices, timestamp)?;
+    let report = render_diagnostic_report(&devices, timestamp, config, log)?;
 
     let mut file = OpenOptions::new()
         .write(true)
@@ -37,43 +43,77 @@ pub fn generate_debug_report() -> Result<PathBuf, Box<dyn Error>> {
         .open(&report_path)
         .map_err(|error| {
             format!(
-                "could not create debug report {}: {error}",
+                "could not create diagnostic report {}: {error}",
                 report_path.display()
             )
         })?;
     file.write_all(report.as_bytes()).map_err(|error| {
         format!(
-            "could not write debug report {}: {error}",
+            "could not write diagnostic report {}: {error}",
             report_path.display()
         )
     })?;
-    Ok(report_path)
+    Ok((report_path, report))
 }
 
-fn render_debug_report(
+fn render_diagnostic_report(
     devices: &[volty_hid::HidDeviceInfo],
     timestamp: std::time::Duration,
+    config: AppConfig,
+    log: &VecDeque<String>,
 ) -> Result<String, fmt::Error> {
     let mut report = format!(
-        "Volty Debug Report\n\
+        "Volty Diagnose Log\n\
          Generated (Unix time): {}.{:09} UTC\n\
          Volty version: {}\n\
          Operating system: {} ({})\n\
          Architecture: {}\n\
          \n\
-         HID interfaces visible to hidapi: {}\n\
-         Device paths, serial numbers, and user or computer names are not included.\n\
-         This report is saved locally; Volty does not upload it.\n",
+         [Configuration]\n\
+         Low-battery threshold: {}%\n\
+         Poll interval: {} seconds\n\
+         Retry interval: {} seconds\n\
+         Log level: {}\n\
+         Low-battery notifications: {}\n\
+         Tray color map: red <= {}% ({}), yellow <= {}% ({}), green > {}% ({})\n\
+         \n\
+         [Recent application log]\n\
+         The log contains the latest {} events.\n",
         timestamp.as_secs(),
         timestamp.subsec_nanos(),
         env!("CARGO_PKG_VERSION"),
         std::env::consts::OS,
         std::env::consts::FAMILY,
         std::env::consts::ARCH,
-        devices.len()
+        config.low_battery_threshold,
+        config.poll_interval_seconds,
+        config.retry_interval_seconds,
+        config.log_level.as_str(),
+        if config.notifications_enabled {
+            "enabled"
+        } else {
+            "disabled"
+        },
+        config.battery_color_map.red_max_percent,
+        format_color(config.battery_color_map.red),
+        config.battery_color_map.yellow_max_percent,
+        format_color(config.battery_color_map.yellow),
+        config.battery_color_map.yellow_max_percent,
+        format_color(config.battery_color_map.green),
+        log.len()
     );
 
     use std::fmt::Write as _;
+    for entry in log {
+        writeln!(report, "{entry}")?;
+    }
+    writeln!(
+        report,
+        "\n[HID interfaces visible to hidapi: {}]\n\
+         Device paths and serial numbers are not included.\n\
+         Review device names and log messages before sharing. Nothing is uploaded automatically.",
+        devices.len()
+    )?;
     for (index, device) in devices.iter().enumerate() {
         writeln!(
             report,
@@ -102,6 +142,10 @@ fn render_debug_report(
     Ok(report)
 }
 
+fn format_color(color: [u8; 3]) -> String {
+    format!("#{:02x}{:02x}{:02x}", color[0], color[1], color[2])
+}
+
 fn format_optional_hex(value: Option<u16>) -> String {
     value.map_or_else(
         || "unavailable".to_owned(),
@@ -118,7 +162,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn report_includes_generic_hid_devices_and_excludes_identifiers() {
+    fn report_includes_diagnostics_and_excludes_device_paths() {
         let device = volty_hid::HidDeviceInfo {
             vendor_id: 0x1234,
             product_id: 0xabcd,
@@ -130,8 +174,22 @@ mod tests {
             manufacturer_string: Some("Example Maker".to_owned()),
             product_string: Some("Example Mouse".to_owned()),
         };
-        let report = render_debug_report(&[device], std::time::Duration::new(1, 2)).unwrap();
+        let mut log = VecDeque::new();
+        log.push_back("[+1s] Battery poll succeeded".to_owned());
+        let report = render_diagnostic_report(
+            &[device],
+            std::time::Duration::new(1, 2),
+            AppConfig::default(),
+            &log,
+        )
+        .unwrap();
 
+        assert!(report.contains("Volty Diagnose Log"));
+        assert!(report.contains("Low-battery threshold: 20%"));
+        assert!(report.contains(
+            "Tray color map: red <= 15% (#d23030), yellow <= 30% (#ebbe23), green > 30% (#2daa4b)"
+        ));
+        assert!(report.contains("[+1s] Battery poll succeeded"));
         assert!(report.contains("Bus: Bluetooth"));
         assert!(report.contains("Vendor ID: 0x1234"));
         assert!(report.contains("Product ID: 0xabcd"));

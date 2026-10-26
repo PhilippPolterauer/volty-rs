@@ -1,0 +1,15 @@
+[profile]
+schema_version = 1
+name = "battery-diagnostics"
+protocol = "hidpp20"
+
+[commands.battery-status]
+description = "Read Unified Battery status"
+access = "read_only"
+operation = "feature_call"
+feature_id = 0x1004
+function_index = 1
+report = "long"
+request_params = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+timeout_ms = 2000
+decoder = "unified_battery_status"

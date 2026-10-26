@@ -1,231 +1,80 @@
-use std::fmt;
+use crate::{BatteryStatus, HidInterfaceInfo};
+use std::error::Error;
 
-pub const LOGITECH_VENDOR_ID: u16 = 0x046d;
-pub const FEATURE_ROOT: u16 = 0x0000;
-pub const FEATURE_BATTERY_STATUS: u16 = 0x1000;
-pub const FEATURE_UNIFIED_BATTERY: u16 = 0x1004;
-pub const LOGITECH_HIDPP_USAGE_PAGE: u16 = 0xff00;
-pub const FUNCTION_GET_FEATURE: u8 = 0x00;
-pub const FUNCTION_GET_BATTERY_STATUS: u8 = 0x00;
-pub const FUNCTION_GET_UNIFIED_BATTERY_CAPABILITIES: u8 = 0x00;
-pub const FUNCTION_GET_UNIFIED_BATTERY_INFO: u8 = 0x01;
-pub const HIDPP_SOFTWARE_ID: u8 = 0x01;
+/// An error returned by a protocol-specific battery query.
+pub type ProtocolError = Box<dyn Error + Send + Sync + 'static>;
 
-const REPORT_ID_SHORT: u8 = 0x10;
-const REPORT_ID_LONG: u8 = 0x11;
-const SHORT_FRAME_LEN: usize = 7;
-const LONG_FRAME_LEN: usize = 20;
-const SHORT_PARAMS_LEN: usize = 3;
-const LONG_PARAMS_LEN: usize = 16;
+/// A transport/protocol implementation that can produce normalized battery readings.
+pub trait BatteryProtocol: Sync {
+    fn name(&self) -> &'static str;
 
-/// The HID++ report format determines its payload capacity.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum FrameFormat {
-    Short,
-    Long,
-}
+    fn supports_interface(&self, interface: &HidInterfaceInfo) -> bool;
 
-impl FrameFormat {
-    pub fn report_id(self) -> u8 {
-        match self {
-            Self::Short => REPORT_ID_SHORT,
-            Self::Long => REPORT_ID_LONG,
-        }
-    }
+    /// Protocol-specific device addresses to try, in preferred order.
+    fn device_indices(&self) -> &'static [u8];
 
-    fn payload_len(self) -> usize {
-        match self {
-            Self::Short => SHORT_PARAMS_LEN,
-            Self::Long => LONG_PARAMS_LEN,
-        }
-    }
-
-    fn frame_len(self) -> usize {
-        match self {
-            Self::Short => SHORT_FRAME_LEN,
-            Self::Long => LONG_FRAME_LEN,
-        }
-    }
-}
-
-/// A decoded HID++ short or long frame.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct HidppFrame {
-    pub format: FrameFormat,
-    pub device_index: u8,
-    pub feature_index: u8,
-    /// Function ID encoded in the high nibble of byte 3.
-    pub function_id: u8,
-    /// Software ID encoded in the low nibble of byte 3.
-    pub software_id: u8,
-    pub params: Vec<u8>,
-}
-
-impl HidppFrame {
-    /// Build a short frame. `params` must contain exactly 3 bytes.
-    pub fn short(
+    fn query_battery(
+        &self,
+        interface: &HidInterfaceInfo,
         device_index: u8,
-        feature_index: u8,
-        function_id: u8,
-        software_id: u8,
-        params: [u8; SHORT_PARAMS_LEN],
-    ) -> Self {
-        Self {
-            format: FrameFormat::Short,
-            device_index,
-            feature_index,
-            function_id,
-            software_id,
-            params: params.to_vec(),
-        }
-    }
+    ) -> Result<BatteryStatus, ProtocolError>;
+}
 
-    /// Build a long frame. `params` must contain exactly 16 bytes.
-    pub fn long(
-        device_index: u8,
-        feature_index: u8,
-        function_id: u8,
-        software_id: u8,
-        params: [u8; LONG_PARAMS_LEN],
-    ) -> Self {
-        Self {
-            format: FrameFormat::Long,
-            device_index,
-            feature_index,
-            function_id,
-            software_id,
-            params: params.to_vec(),
-        }
-    }
+/// A mouse family mapped to the protocol used to query its battery.
+pub trait MouseModel: Sync {
+    fn name(&self) -> &'static str;
 
-    /// Decode a complete HID++ report, including its report-id byte.
-    pub fn parse(bytes: &[u8]) -> Result<Self, HidppError> {
-        let format = match bytes.first().copied() {
-            Some(REPORT_ID_SHORT) => FrameFormat::Short,
-            Some(REPORT_ID_LONG) => FrameFormat::Long,
-            Some(id) => return Err(HidppError::InvalidReportId(id)),
-            None => {
-                return Err(HidppError::InvalidFrameLength {
-                    expected: 1,
-                    actual: 0,
-                })
-            }
-        };
-        let expected = format.frame_len();
-        if bytes.len() != expected {
-            return Err(HidppError::InvalidFrameLength {
-                expected,
-                actual: bytes.len(),
-            });
-        }
+    fn protocol(&self) -> &'static dyn BatteryProtocol;
 
-        Ok(Self {
-            format,
-            device_index: bytes[1],
-            feature_index: bytes[2],
-            function_id: bytes[3] >> 4,
-            software_id: bytes[3] & 0x0f,
-            params: bytes[4..].to_vec(),
-        })
-    }
-
-    /// Encode this frame as a complete HID report.
-    pub fn encode(&self) -> Result<Vec<u8>, HidppError> {
-        let expected = self.format.payload_len();
-        if self.params.len() != expected {
-            return Err(HidppError::InvalidPayloadLength {
-                expected,
-                actual: self.params.len(),
-            });
-        }
-        if self.function_id > 0x0f || self.software_id > 0x0f {
-            return Err(HidppError::InvalidFunctionSoftwareId {
-                function_id: self.function_id,
-                software_id: self.software_id,
-            });
-        }
-
-        let mut bytes = Vec::with_capacity(self.format.frame_len());
-        bytes.extend_from_slice(&[
-            self.format.report_id(),
-            self.device_index,
-            self.feature_index,
-            (self.function_id << 4) | self.software_id,
-        ]);
-        bytes.extend_from_slice(&self.params);
-        Ok(bytes)
+    fn matches(&self, interface: &HidInterfaceInfo) -> bool {
+        self.protocol().supports_interface(interface)
     }
 }
 
-/// Errors returned by frame decoding, battery parsing, or optional HID access.
-#[derive(Debug)]
-pub enum HidppError {
-    InvalidReportId(u8),
-    InvalidFrameLength {
-        expected: usize,
-        actual: usize,
-    },
-    InvalidPayloadLength {
-        expected: usize,
-        actual: usize,
-    },
-    InvalidFunctionSoftwareId {
-        function_id: u8,
-        software_id: u8,
-    },
-    UnexpectedResponse(&'static str),
-    InvalidBatteryLevel(u8),
-    UnsupportedBatteryFeature,
-    #[cfg(feature = "hidapi")]
-    HidApi(hidapi::HidError),
-    #[cfg(feature = "hidapi")]
-    Timeout,
+/// Find the registered mouse family for an enumerated HID interface.
+pub fn find_supported_mouse(interface: &HidInterfaceInfo) -> Option<&'static dyn MouseModel> {
+    SUPPORTED_MICE
+        .iter()
+        .copied()
+        .find(|mouse| mouse.matches(interface))
 }
 
-impl fmt::Display for HidppError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::InvalidReportId(id) => write!(f, "unsupported HID++ report id 0x{id:02x}"),
-            Self::InvalidFrameLength { expected, actual } => {
-                write!(
-                    f,
-                    "invalid HID++ frame length: expected {expected}, got {actual}"
-                )
-            }
-            Self::InvalidPayloadLength { expected, actual } => {
-                write!(
-                    f,
-                    "invalid HID++ payload length: expected {expected}, got {actual}"
-                )
-            }
-            Self::InvalidFunctionSoftwareId {
-                function_id,
-                software_id,
-            } => write!(
-                f,
-                "invalid HID++ function/software id: function 0x{function_id:02x}, software 0x{software_id:02x}; both must fit in a nibble"
-            ),
-            Self::UnexpectedResponse(message) => write!(f, "unexpected HID++ response: {message}"),
-            Self::InvalidBatteryLevel(level) => {
-                write!(f, "invalid battery percentage {level}; expected 0..=100")
-            }
-            Self::UnsupportedBatteryFeature => {
-                f.write_str("device does not expose a supported battery feature")
-            }
-            #[cfg(feature = "hidapi")]
-            Self::HidApi(error) => write!(f, "HID API error: {error}"),
-            #[cfg(feature = "hidapi")]
-            Self::Timeout => f.write_str("timed out waiting for a HID++ response"),
+/// Mouse families currently known to Volty.
+pub static SUPPORTED_MICE: &[&dyn MouseModel] = &[&crate::logitech_hidpp::LOGITECH_HIDPP_MOUSE];
+
+/// Protocol implementations currently registered with Volty.
+pub static SUPPORTED_PROTOCOLS: &[&dyn BatteryProtocol] =
+    &[&crate::logitech_hidpp::LOGITECH_HIDPP_20];
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::ffi::CString;
+
+    fn interface(vendor_id: u16) -> HidInterfaceInfo {
+        HidInterfaceInfo {
+            vendor_id,
+            product_id: 0xc547,
+            release_number: 1,
+            usage_page: Some(0xff00),
+            usage: Some(2),
+            interface_number: 1,
+            bus_type: "Usb".to_owned(),
+            manufacturer_string: None,
+            product_string: Some("HID++ receiver".to_owned()),
+            path: CString::new("test").unwrap(),
         }
     }
-}
 
-impl std::error::Error for HidppError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        #[cfg(feature = "hidapi")]
-        if let Self::HidApi(error) = self {
-            return Some(error);
-        }
-        None
+    #[test]
+    fn registry_matches_only_the_registered_logitech_hidpp_family() {
+        let matched = interface(0x046d);
+        let mouse = find_supported_mouse(&matched).unwrap();
+        assert_eq!(mouse.name(), "Logitech HID++ mouse");
+        assert_eq!(mouse.protocol().name(), "Logitech HID++ 2.0");
+        assert_eq!(SUPPORTED_PROTOCOLS.len(), 1);
+        assert_eq!(SUPPORTED_MICE.len(), 1);
+
+        assert!(find_supported_mouse(&interface(0x1234)).is_none());
     }
 }

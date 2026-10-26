@@ -6,21 +6,102 @@ use std::{
 };
 
 pub const DEFAULT_LOW_BATTERY_THRESHOLD: u8 = 20;
+pub const DEFAULT_POLL_INTERVAL_SECONDS: u64 = 120;
+pub const DEFAULT_RETRY_INTERVAL_SECONDS: u64 = 15;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct NotificationConfig {
-    pub low_battery_threshold: u8,
+pub struct BatteryColorMap {
+    pub red_max_percent: u8,
+    pub yellow_max_percent: u8,
+    pub red: [u8; 3],
+    pub yellow: [u8; 3],
+    pub green: [u8; 3],
 }
 
-impl Default for NotificationConfig {
-    fn default() -> Self {
-        Self {
-            low_battery_threshold: DEFAULT_LOW_BATTERY_THRESHOLD,
+impl BatteryColorMap {
+    pub const fn color_for(self, percentage: u8) -> [u8; 3] {
+        if percentage <= self.red_max_percent {
+            self.red
+        } else if percentage <= self.yellow_max_percent {
+            self.yellow
+        } else {
+            self.green
         }
     }
 }
 
-impl NotificationConfig {
+impl Default for BatteryColorMap {
+    fn default() -> Self {
+        Self {
+            red_max_percent: 15,
+            yellow_max_percent: 30,
+            red: [210, 48, 48],
+            yellow: [235, 190, 35],
+            green: [45, 170, 75],
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum LogLevel {
+    Error,
+    Warn,
+    Info,
+    Debug,
+    Trace,
+}
+
+impl LogLevel {
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.to_ascii_lowercase().as_str() {
+            "error" => Some(Self::Error),
+            "warn" => Some(Self::Warn),
+            "info" => Some(Self::Info),
+            "debug" => Some(Self::Debug),
+            "trace" => Some(Self::Trace),
+            _ => None,
+        }
+    }
+
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Error => "ERROR",
+            Self::Warn => "WARN",
+            Self::Info => "INFO",
+            Self::Debug => "DEBUG",
+            Self::Trace => "TRACE",
+        }
+    }
+
+    pub fn includes(self, event_level: Self) -> bool {
+        event_level <= self
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AppConfig {
+    pub low_battery_threshold: u8,
+    pub poll_interval_seconds: u64,
+    pub retry_interval_seconds: u64,
+    pub notifications_enabled: bool,
+    pub log_level: LogLevel,
+    pub battery_color_map: BatteryColorMap,
+}
+
+impl Default for AppConfig {
+    fn default() -> Self {
+        Self {
+            low_battery_threshold: DEFAULT_LOW_BATTERY_THRESHOLD,
+            poll_interval_seconds: DEFAULT_POLL_INTERVAL_SECONDS,
+            retry_interval_seconds: DEFAULT_RETRY_INTERVAL_SECONDS,
+            notifications_enabled: true,
+            log_level: LogLevel::Info,
+            battery_color_map: BatteryColorMap::default(),
+        }
+    }
+}
+
+impl AppConfig {
     pub fn load() -> Result<Self, ConfigError> {
         let Some(path) = config_path() else {
             return Ok(Self::default());
@@ -53,9 +134,32 @@ impl NotificationConfig {
             return Ok(path);
         }
 
+        let defaults = Self::default();
         let contents = format!(
-            "# Volty user configuration\nlow_battery_threshold = {}\n",
-            Self::default().low_battery_threshold
+            "# Volty user configuration\n\
+             # Notify at or below this battery percentage (1-100).\n\
+             low_battery_threshold = {}\n\
+             # Seconds between successful battery readings (30-3600).\n\
+             poll_interval_seconds = {}\n\
+             # Seconds between retries after a polling error (5-300).\n\
+             retry_interval_seconds = {}\n\
+             # Set to false to disable low-battery toast notifications.\n\
+             notifications_enabled = {}\n\
+             # error, warn, info, debug, or trace.\n\
+             log_level = \"{}\"\n\
+             # Uncomment this table to override the default tray battery colors.\n\
+             # Thresholds are inclusive upper bounds; red must be below yellow.\n\
+             # [battery_color_map]\n\
+             # red_max_percent = 15\n\
+             # yellow_max_percent = 30\n\
+             # red = \"#d23030\"\n\
+             # yellow = \"#ebbe23\"\n\
+             # green = \"#2daa4b\"\n",
+            defaults.low_battery_threshold,
+            defaults.poll_interval_seconds,
+            defaults.retry_interval_seconds,
+            defaults.notifications_enabled,
+            defaults.log_level.as_str().to_ascii_lowercase()
         );
         let parent = path
             .parent()
@@ -125,7 +229,7 @@ impl fmt::Display for ConfigError {
 
 impl Error for ConfigError {}
 
-fn parse_toml(contents: &str, path: &Path) -> Result<NotificationConfig, ConfigError> {
+fn parse_toml(contents: &str, path: &Path) -> Result<AppConfig, ConfigError> {
     let value = contents.parse::<toml::Value>().map_err(|error| {
         ConfigError::new(format!("invalid configuration {}: {error}", path.display()))
     })?;
@@ -136,34 +240,192 @@ fn parse_toml(contents: &str, path: &Path) -> Result<NotificationConfig, ConfigE
         ))
     })?;
 
-    for key in table.keys() {
-        if key != "low_battery_threshold" {
-            return Err(ConfigError::new(format!(
-                "invalid configuration {}: unknown setting {key:?}",
-                path.display()
-            )));
+    let mut config = AppConfig::default();
+    for (key, value) in table {
+        match key.as_str() {
+            "low_battery_threshold" => {
+                let threshold = value.as_integer().ok_or_else(|| {
+                    ConfigError::new(format!(
+                        "invalid configuration {}: low_battery_threshold must be an integer",
+                        path.display()
+                    ))
+                })?;
+                if !(1..=100).contains(&threshold) {
+                    return Err(ConfigError::new(format!(
+                        "invalid configuration {}: low_battery_threshold must be between 1 and 100 percent",
+                        path.display()
+                    )));
+                }
+                config.low_battery_threshold = threshold as u8;
+            }
+            "poll_interval_seconds" => {
+                config.poll_interval_seconds =
+                    parse_interval(value, "poll_interval_seconds", 30, 3600, path)?;
+            }
+            "retry_interval_seconds" => {
+                config.retry_interval_seconds =
+                    parse_interval(value, "retry_interval_seconds", 5, 300, path)?;
+            }
+            "notifications_enabled" => {
+                config.notifications_enabled = value.as_bool().ok_or_else(|| {
+                    ConfigError::new(format!(
+                        "invalid configuration {}: notifications_enabled must be a boolean",
+                        path.display()
+                    ))
+                })?;
+            }
+            "log_level" => {
+                let level = value.as_str().ok_or_else(|| {
+                    ConfigError::new(format!(
+                        "invalid configuration {}: log_level must be a string",
+                        path.display()
+                    ))
+                })?;
+                config.log_level = LogLevel::parse(level).ok_or_else(|| {
+                    ConfigError::new(format!(
+                        "invalid configuration {}: log_level must be one of error, warn, info, debug, or trace",
+                        path.display()
+                    ))
+                })?;
+            }
+            "battery_color_map" => {
+                config.battery_color_map =
+                    parse_battery_color_map(value, config.battery_color_map, path)?;
+            }
+            _ => {
+                return Err(ConfigError::new(format!(
+                    "invalid configuration {}: unknown setting {key:?}",
+                    path.display()
+                )))
+            }
         }
     }
 
-    let Some(threshold) = table.get("low_battery_threshold") else {
-        return Ok(NotificationConfig::default());
-    };
-    let threshold = threshold.as_integer().ok_or_else(|| {
+    Ok(config)
+}
+
+fn parse_battery_color_map(
+    value: &toml::Value,
+    mut color_map: BatteryColorMap,
+    path: &Path,
+) -> Result<BatteryColorMap, ConfigError> {
+    let table = value.as_table().ok_or_else(|| {
         ConfigError::new(format!(
-            "invalid configuration {}: low_battery_threshold must be an integer",
+            "invalid configuration {}: battery_color_map must be a table",
             path.display()
         ))
     })?;
-    if !(1..=100).contains(&threshold) {
+
+    for (key, value) in table {
+        match key.as_str() {
+            "red_max_percent" => {
+                color_map.red_max_percent =
+                    parse_color_threshold(value, "battery_color_map.red_max_percent", 0, 99, path)?;
+            }
+            "yellow_max_percent" => {
+                color_map.yellow_max_percent = parse_color_threshold(
+                    value,
+                    "battery_color_map.yellow_max_percent",
+                    1,
+                    100,
+                    path,
+                )?;
+            }
+            "red" => color_map.red = parse_hex_color(value, "battery_color_map.red", path)?,
+            "yellow" => {
+                color_map.yellow = parse_hex_color(value, "battery_color_map.yellow", path)?
+            }
+            "green" => color_map.green = parse_hex_color(value, "battery_color_map.green", path)?,
+            _ => {
+                return Err(ConfigError::new(format!(
+                    "invalid configuration {}: unknown battery_color_map setting {key:?}",
+                    path.display()
+                )))
+            }
+        }
+    }
+
+    if color_map.red_max_percent >= color_map.yellow_max_percent {
         return Err(ConfigError::new(format!(
-            "invalid configuration {}: low_battery_threshold must be between 1 and 100 percent",
+            "invalid configuration {}: battery_color_map.red_max_percent must be less than yellow_max_percent",
             path.display()
         )));
     }
+    Ok(color_map)
+}
 
-    Ok(NotificationConfig {
-        low_battery_threshold: threshold as u8,
-    })
+fn parse_color_threshold(
+    value: &toml::Value,
+    key: &str,
+    minimum: i64,
+    maximum: i64,
+    path: &Path,
+) -> Result<u8, ConfigError> {
+    let threshold = value.as_integer().ok_or_else(|| {
+        ConfigError::new(format!(
+            "invalid configuration {}: {key} must be an integer",
+            path.display()
+        ))
+    })?;
+    if !(minimum..=maximum).contains(&threshold) {
+        return Err(ConfigError::new(format!(
+            "invalid configuration {}: {key} must be between {minimum} and {maximum} percent",
+            path.display()
+        )));
+    }
+    Ok(threshold as u8)
+}
+
+fn parse_hex_color(value: &toml::Value, key: &str, path: &Path) -> Result<[u8; 3], ConfigError> {
+    let value = value.as_str().ok_or_else(|| {
+        ConfigError::new(format!(
+            "invalid configuration {}: {key} must be a #RRGGBB string",
+            path.display()
+        ))
+    })?;
+    let hex = value.strip_prefix('#').ok_or_else(|| {
+        ConfigError::new(format!(
+            "invalid configuration {}: {key} must be a #RRGGBB string",
+            path.display()
+        ))
+    })?;
+    if hex.len() != 6 || !hex.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err(ConfigError::new(format!(
+            "invalid configuration {}: {key} must be a #RRGGBB string",
+            path.display()
+        )));
+    }
+    let channel = |start| {
+        u8::from_str_radix(&hex[start..start + 2], 16).map_err(|_| {
+            ConfigError::new(format!(
+                "invalid configuration {}: {key} must be a #RRGGBB string",
+                path.display()
+            ))
+        })
+    };
+    Ok([channel(0)?, channel(2)?, channel(4)?])
+}
+
+fn parse_interval(
+    value: &toml::Value,
+    key: &str,
+    minimum: i64,
+    maximum: i64,
+    path: &Path,
+) -> Result<u64, ConfigError> {
+    let seconds = value.as_integer().ok_or_else(|| {
+        ConfigError::new(format!(
+            "invalid configuration {}: {key} must be an integer",
+            path.display()
+        ))
+    })?;
+    if !(minimum..=maximum).contains(&seconds) {
+        return Err(ConfigError::new(format!(
+            "invalid configuration {}: {key} must be between {minimum} and {maximum} seconds",
+            path.display()
+        )));
+    }
+    Ok(seconds as u64)
 }
 
 #[cfg(test)]
@@ -175,14 +437,63 @@ mod tests {
         let path = Path::new("config.toml");
         assert_eq!(
             parse_toml("# Volty configuration\n", path).unwrap(),
-            NotificationConfig::default()
+            AppConfig::default()
         );
         assert_eq!(
             parse_toml("low_battery_threshold = 15\n", path).unwrap(),
-            NotificationConfig {
-                low_battery_threshold: 15
+            AppConfig {
+                low_battery_threshold: 15,
+                ..AppConfig::default()
             }
         );
+        assert_eq!(
+            parse_toml(
+                "low_battery_threshold = 80\npoll_interval_seconds = 300\nretry_interval_seconds = 30\nnotifications_enabled = false\nlog_level = \"debug\"\n",
+                path
+            )
+            .unwrap(),
+            AppConfig {
+                low_battery_threshold: 80,
+                poll_interval_seconds: 300,
+                retry_interval_seconds: 30,
+                notifications_enabled: false,
+                log_level: LogLevel::Debug,
+                battery_color_map: BatteryColorMap::default(),
+            }
+        );
+        for level in [
+            LogLevel::Error,
+            LogLevel::Warn,
+            LogLevel::Info,
+            LogLevel::Debug,
+            LogLevel::Trace,
+        ] {
+            assert_eq!(LogLevel::parse(level.as_str()), Some(level));
+        }
+        assert_eq!(LogLevel::parse("INFO"), Some(LogLevel::Info));
+    }
+
+    #[test]
+    fn toml_config_accepts_custom_battery_color_map() {
+        let config = parse_toml(
+            "[battery_color_map]\nred_max_percent = 10\nyellow_max_percent = 40\nred = \"#010203\"\nyellow = \"#aBcDeF\"\ngreen = \"#ffffff\"\n",
+            Path::new("config.toml"),
+        )
+        .unwrap();
+        assert_eq!(
+            config.battery_color_map,
+            BatteryColorMap {
+                red_max_percent: 10,
+                yellow_max_percent: 40,
+                red: [1, 2, 3],
+                yellow: [171, 205, 239],
+                green: [255, 255, 255],
+            }
+        );
+        assert_eq!(config.battery_color_map.color_for(10), [1, 2, 3]);
+        assert_eq!(config.battery_color_map.color_for(11), [171, 205, 239]);
+        assert_eq!(config.battery_color_map.color_for(40), [171, 205, 239]);
+        assert_eq!(config.battery_color_map.color_for(41), [255, 255, 255]);
     }
 
     #[test]
@@ -193,10 +504,36 @@ mod tests {
             "low_battery_threshold = \"20\"",
             "low_battery_threshold = 0",
             "low_battery_threshold = 101",
+            "poll_interval_seconds = 29",
+            "poll_interval_seconds = 3601",
+            "poll_interval_seconds = \"120\"",
+            "retry_interval_seconds = 4",
+            "retry_interval_seconds = 301",
+            "notifications_enabled = \"true\"",
+            "log_level = 5",
+            "log_level = \"verbose\"",
+            "battery_color_map = \"invalid\"",
+            "[battery_color_map]\nred_max_percent = -1",
+            "[battery_color_map]\nred_max_percent = 100",
+            "[battery_color_map]\nyellow_max_percent = 0",
+            "[battery_color_map]\nred_max_percent = 30\nyellow_max_percent = 30",
+            "[battery_color_map]\nred = \"red\"",
+            "[battery_color_map]\nyellow = \"#12345g\"",
+            "[battery_color_map]\nunknown = 3",
             "unknown_setting = 20",
             "low_battery_threshold = 20\nlow_battery_threshold = 15",
         ] {
             assert!(parse_toml(malformed, path).is_err(), "{malformed}");
         }
+    }
+
+    #[test]
+    fn log_levels_filter_less_severe_events() {
+        assert!(LogLevel::Info.includes(LogLevel::Error));
+        assert!(LogLevel::Info.includes(LogLevel::Warn));
+        assert!(LogLevel::Info.includes(LogLevel::Info));
+        assert!(!LogLevel::Info.includes(LogLevel::Debug));
+        assert!(!LogLevel::Info.includes(LogLevel::Trace));
+        assert!(LogLevel::Trace.includes(LogLevel::Debug));
     }
 }

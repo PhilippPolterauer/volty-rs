@@ -1,6 +1,13 @@
 #[cfg(windows)]
+mod about;
+#[cfg(windows)]
 mod app;
 mod config;
+#[cfg(windows)]
+mod diagnose;
+mod hid_cli;
+#[cfg(windows)]
+mod logging;
 #[cfg(windows)]
 mod notify;
 #[cfg(windows)]
@@ -8,18 +15,32 @@ mod report;
 #[cfg(windows)]
 mod tray;
 
-#[cfg(windows)]
-fn main() -> Result<(), Box<dyn std::error::Error>> {
-    if !SingleInstance::acquire()?.is_first() {
-        return Ok(());
+fn main() {
+    if let Err(error) = run() {
+        eprintln!("volty: {error}");
+        std::process::exit(2);
     }
-
-    app::run()
 }
 
-#[cfg(not(windows))]
-fn main() {
+fn run() -> Result<(), Box<dyn std::error::Error>> {
+    let mut args = std::env::args().skip(1);
+    if args.next().as_deref() == Some("hid") {
+        return hid_cli::run(&args.collect::<Vec<_>>()).map_err(Into::into);
+    }
+
+    #[cfg(windows)]
+    {
+        if !SingleInstance::acquire()?.is_first() {
+            return Ok(());
+        }
+
+        app::run()?;
+    }
+
+    #[cfg(not(windows))]
     eprintln!("volty-tray is a Windows application.");
+
+    Ok(())
 }
 
 #[cfg(windows)]

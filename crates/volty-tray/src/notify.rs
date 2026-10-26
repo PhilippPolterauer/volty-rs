@@ -6,7 +6,7 @@
 
 use std::{error::Error, fmt};
 
-use crate::config::NotificationConfig;
+use crate::config::AppConfig;
 
 /// Battery data needed by the low-battery notification policy.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -51,43 +51,18 @@ impl Error for NotificationError {}
 pub struct NotificationEngine {
     notified_this_discharge: bool,
     threshold_percent: u8,
-}
-
-impl Default for NotificationEngine {
-    fn default() -> Self {
-        Self {
-            notified_this_discharge: false,
-            threshold_percent: Self::DEFAULT_THRESHOLD_PERCENT,
-        }
-    }
+    notifications_enabled: bool,
 }
 
 impl NotificationEngine {
-    pub const DEFAULT_THRESHOLD_PERCENT: u8 = crate::config::DEFAULT_LOW_BATTERY_THRESHOLD;
-
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// Creates an engine using the locally persisted configuration.
-    pub fn from_local_config() -> Result<Self, NotificationError> {
-        let config = NotificationConfig::load()
-            .map_err(|error| NotificationError::new(error.to_string()))?;
-        Self::from_config(config)
-    }
-
-    /// Creates an engine with a configured threshold from 1 through 100.
-    pub fn with_threshold(threshold_percent: u8) -> Result<Self, NotificationError> {
-        validate_threshold(threshold_percent)?;
+    /// Creates an engine from loaded or otherwise app-provided settings.
+    pub fn from_config(config: AppConfig) -> Result<Self, NotificationError> {
+        validate_threshold(config.low_battery_threshold)?;
         Ok(Self {
             notified_this_discharge: false,
-            threshold_percent,
+            threshold_percent: config.low_battery_threshold,
+            notifications_enabled: config.notifications_enabled,
         })
-    }
-
-    /// Creates an engine from loaded or otherwise app-provided settings.
-    pub fn from_config(config: NotificationConfig) -> Result<Self, NotificationError> {
-        Self::with_threshold(config.low_battery_threshold)
     }
 
     /// Returns the active alert threshold.
@@ -96,11 +71,12 @@ impl NotificationEngine {
         self.threshold_percent
     }
 
-    /// Updates the threshold without resetting the current discharge alert
-    /// guard. Invalid values leave the active threshold unchanged.
-    pub fn set_threshold(&mut self, threshold_percent: u8) -> Result<(), NotificationError> {
-        validate_threshold(threshold_percent)?;
-        self.threshold_percent = threshold_percent;
+    /// Applies a validated configuration without resetting the current
+    /// discharge alert guard.
+    pub fn set_config(&mut self, config: AppConfig) -> Result<(), NotificationError> {
+        validate_threshold(config.low_battery_threshold)?;
+        self.threshold_percent = config.low_battery_threshold;
+        self.notifications_enabled = config.notifications_enabled;
         Ok(())
     }
 
@@ -121,6 +97,10 @@ impl NotificationEngine {
             } else {
                 NotificationOutcome::Unchanged
             });
+        }
+
+        if !self.notifications_enabled {
+            return Ok(NotificationOutcome::Unchanged);
         }
 
         if !self.consume_discharge_alert(sample.percentage) {
@@ -177,7 +157,7 @@ mod tests {
 
     #[test]
     fn reset_and_threshold_policy_are_one_shot_per_discharge() {
-        let mut engine = NotificationEngine::new();
+        let mut engine = NotificationEngine::from_config(AppConfig::default()).unwrap();
         assert_eq!(engine.threshold_percent(), 20);
         assert!(!engine.consume_discharge_alert(21));
         assert!(engine.consume_discharge_alert(20));
@@ -197,21 +177,66 @@ mod tests {
 
     #[test]
     fn threshold_is_configurable_and_validated() {
-        let mut engine = NotificationEngine::with_threshold(10).unwrap();
+        let low_threshold = AppConfig {
+            low_battery_threshold: 10,
+            ..AppConfig::default()
+        };
+        let mut engine = NotificationEngine::from_config(low_threshold).unwrap();
         assert_eq!(engine.threshold_percent(), 10);
-        assert!(NotificationEngine::with_threshold(0).is_err());
-        assert!(engine.set_threshold(101).is_err());
+        assert!(NotificationEngine::from_config(AppConfig {
+            low_battery_threshold: 0,
+            ..AppConfig::default()
+        })
+        .is_err());
+        assert!(engine
+            .set_config(AppConfig {
+                low_battery_threshold: 101,
+                ..AppConfig::default()
+            })
+            .is_err());
         assert_eq!(engine.threshold_percent(), 10);
-        engine.set_threshold(25).unwrap();
+        engine
+            .set_config(AppConfig {
+                low_battery_threshold: 25,
+                ..AppConfig::default()
+            })
+            .unwrap();
         assert_eq!(engine.threshold_percent(), 25);
     }
 
     #[test]
     fn reloading_threshold_preserves_discharge_notification_guard() {
-        let mut engine = NotificationEngine::new();
+        let mut engine = NotificationEngine::from_config(AppConfig::default()).unwrap();
         assert!(engine.consume_discharge_alert(20));
-        engine.set_threshold(10).unwrap();
+        engine
+            .set_config(AppConfig {
+                low_battery_threshold: 10,
+                ..AppConfig::default()
+            })
+            .unwrap();
         assert!(!engine.consume_discharge_alert(10));
         assert_eq!(engine.threshold_percent(), 10);
+    }
+
+    #[test]
+    fn disabled_notifications_do_not_consume_the_discharge_guard() {
+        let mut engine = NotificationEngine::from_config(AppConfig {
+            notifications_enabled: false,
+            ..AppConfig::default()
+        })
+        .unwrap();
+        assert_eq!(
+            engine
+                .update(BatterySample {
+                    percentage: 10,
+                    charging: false,
+                    full: false,
+                })
+                .unwrap(),
+            NotificationOutcome::Unchanged
+        );
+
+        engine.set_config(AppConfig::default()).unwrap();
+        assert!(engine.consume_discharge_alert(10));
     }
 }

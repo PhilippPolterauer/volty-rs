@@ -1,4 +1,4 @@
-use crate::protocol::{
+use crate::logitech_hidpp::{
     HidppError, HidppFrame, FUNCTION_GET_BATTERY_STATUS, FUNCTION_GET_UNIFIED_BATTERY_INFO,
 };
 

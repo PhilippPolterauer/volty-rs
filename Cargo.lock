@@ -1537,6 +1537,7 @@ name = "volty-hid"
 version = "0.1.0"
 dependencies = [
  "hidapi",
+ "toml",
 ]
 
 [[package]]

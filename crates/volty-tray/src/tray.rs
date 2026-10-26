@@ -12,20 +12,24 @@ use std::{
 
 use image::{Rgba, RgbaImage};
 use tray_icon::{
-    menu::{CheckMenuItem, Menu, MenuEvent, MenuItem, PredefinedMenuItem, Submenu},
+    menu::{CheckMenuItem, Menu, MenuEvent, MenuItem, PredefinedMenuItem},
     Icon, TrayIcon, TrayIconBuilder,
 };
 
+use crate::config::BatteryColorMap;
+
 const ICON_SIZE: u32 = 16;
+const MAX_STATUS_CHARS: usize = 80;
 #[cfg(windows)]
 const BATTERY_RUN_KEY: &str = "Software\\Microsoft\\Windows\\CurrentVersion\\Run";
 #[cfg(windows)]
 const APP_RUN_VALUE: &str = "Volty";
 const REFRESH_ID: &str = "volty.refresh";
 const CONFIGURATION_ID: &str = "volty.configuration";
-const DEBUG_REPORT_ID: &str = "volty.debug-report";
+const LOG_FILE_ID: &str = "volty.open-log-file";
+const DIAGNOSE_ID: &str = "volty.diagnose";
 const START_ON_BOOT_ID: &str = "volty.start-on-boot";
-const STAR_ON_GITHUB_ID: &str = "volty.star-on-github";
+const ABOUT_ID: &str = "volty.about";
 const QUIT_ID: &str = "volty.quit";
 
 /// Actions that the application should handle after polling the controller.
@@ -33,9 +37,10 @@ const QUIT_ID: &str = "volty.quit";
 pub enum TrayAction {
     RefreshNow,
     OpenConfiguration,
-    GenerateDebugReport,
+    OpenLogFile,
+    Diagnose,
     ToggleStartOnBoot,
-    OpenGitHub,
+    About,
     Quit,
 }
 
@@ -67,6 +72,7 @@ pub struct TrayController {
     percentage: Option<u8>,
     device_name: String,
     charge_status: String,
+    battery_color_map: BatteryColorMap,
 }
 
 impl TrayController {
@@ -82,33 +88,12 @@ impl TrayController {
         let refresh_item = MenuItem::with_id(REFRESH_ID, "Refresh Now", true, None);
         let configuration_item =
             MenuItem::with_id(CONFIGURATION_ID, "Open Configuration", true, None);
-        let debug_report_item =
-            MenuItem::with_id(DEBUG_REPORT_ID, "Generate Debug Report", true, None);
+        let open_log_item = MenuItem::with_id(LOG_FILE_ID, "Open Log File", true, None);
+        let diagnose_item =
+            MenuItem::with_id(DIAGNOSE_ID, "Diagnose / Report an Issue", true, None);
         let start_on_boot_item =
             CheckMenuItem::with_id(START_ON_BOOT_ID, "Start on Boot", true, start_on_boot, None);
-        let about_menu = Submenu::new("About Volty", true);
-        let version_item =
-            MenuItem::new(format!("Volty {}", env!("CARGO_PKG_VERSION")), false, None);
-        let description_item = MenuItem::new("Lightweight Logitech battery monitor", false, None);
-        let star_item = MenuItem::with_id(
-            STAR_ON_GITHUB_ID,
-            "Enjoying Volty? Star on GitHub",
-            true,
-            None,
-        );
-        about_menu
-            .append(&version_item)
-            .map_err(|error| TrayError::new(format!("could not add About version: {error}")))?;
-        about_menu
-            .append(&description_item)
-            .map_err(|error| TrayError::new(format!("could not add About description: {error}")))?;
-        about_menu
-            .append(&PredefinedMenuItem::separator())
-            .map_err(|error| TrayError::new(format!("could not add About separator: {error}")))?;
-        about_menu.append(&star_item).map_err(|error| {
-            TrayError::new(format!("could not add GitHub star action: {error}"))
-        })?;
-
+        let about_item = MenuItem::with_id(ABOUT_ID, "About Volty", true, None);
         let quit_item = MenuItem::with_id(QUIT_ID, "Quit", true, None);
         let menu = Menu::new();
         menu.append(&status_item)
@@ -120,16 +105,17 @@ impl TrayController {
         menu.append(&configuration_item).map_err(|error| {
             TrayError::new(format!("could not add configuration action: {error}"))
         })?;
-        menu.append(&debug_report_item).map_err(|error| {
-            TrayError::new(format!("could not add debug report action: {error}"))
-        })?;
+        menu.append(&open_log_item)
+            .map_err(|error| TrayError::new(format!("could not add log-file action: {error}")))?;
+        menu.append(&diagnose_item)
+            .map_err(|error| TrayError::new(format!("could not add Diagnose action: {error}")))?;
         menu.append(&start_on_boot_item).map_err(|error| {
             TrayError::new(format!("could not add start-on-boot action: {error}"))
         })?;
         menu.append(&PredefinedMenuItem::separator())
             .map_err(|error| TrayError::new(format!("could not add tray separator: {error}")))?;
-        menu.append(&about_menu)
-            .map_err(|error| TrayError::new(format!("could not add About menu: {error}")))?;
+        menu.append(&about_item)
+            .map_err(|error| TrayError::new(format!("could not add About action: {error}")))?;
         menu.append(&PredefinedMenuItem::separator())
             .map_err(|error| TrayError::new(format!("could not add tray separator: {error}")))?;
         menu.append(&quit_item)
@@ -152,6 +138,7 @@ impl TrayController {
             percentage: None,
             device_name: String::new(),
             charge_status: "Unknown".to_owned(),
+            battery_color_map: BatteryColorMap::default(),
         })
     }
 
@@ -188,7 +175,11 @@ impl TrayController {
         self.charge_status = status.to_owned();
 
         let icon = match icon_percentage {
-            Some(percentage) => numeric_battery_icon_at_size(percentage, icon_size)?,
+            Some(percentage) => numeric_battery_icon_at_size_with_color_map(
+                percentage,
+                icon_size,
+                self.battery_color_map,
+            )?,
             None => unknown_battery_icon_at_size(icon_size)?,
         };
         self.icon
@@ -199,6 +190,7 @@ impl TrayController {
             None if device_name.is_empty() => status.to_owned(),
             None => format!("{device_name}: {status}"),
         };
+        let live_status = shorten_status(&live_status);
         self.status_item.set_text(&live_status);
         self.icon
             .set_tooltip(Some(&live_status))
@@ -236,9 +228,14 @@ impl TrayController {
                     .send(TrayAction::OpenConfiguration)
                     .map_err(|_| TrayError::new("tray action receiver has been dropped"))?;
                 handled += 1;
-            } else if id == DEBUG_REPORT_ID {
+            } else if id == LOG_FILE_ID {
                 self.actions_tx
-                    .send(TrayAction::GenerateDebugReport)
+                    .send(TrayAction::OpenLogFile)
+                    .map_err(|_| TrayError::new("tray action receiver has been dropped"))?;
+                handled += 1;
+            } else if id == DIAGNOSE_ID {
+                self.actions_tx
+                    .send(TrayAction::Diagnose)
                     .map_err(|_| TrayError::new("tray action receiver has been dropped"))?;
                 handled += 1;
             } else if id == START_ON_BOOT_ID {
@@ -246,9 +243,9 @@ impl TrayController {
                     .send(TrayAction::ToggleStartOnBoot)
                     .map_err(|_| TrayError::new("tray action receiver has been dropped"))?;
                 handled += 1;
-            } else if id == STAR_ON_GITHUB_ID {
+            } else if id == ABOUT_ID {
                 self.actions_tx
-                    .send(TrayAction::OpenGitHub)
+                    .send(TrayAction::About)
                     .map_err(|_| TrayError::new("tray action receiver has been dropped"))?;
                 handled += 1;
             } else if id == QUIT_ID {
@@ -269,12 +266,51 @@ impl TrayController {
     pub fn set_start_on_boot_checked(&self, checked: bool) {
         self.start_on_boot_item.set_checked(checked);
     }
+
+    pub fn set_battery_color_map(
+        &mut self,
+        battery_color_map: BatteryColorMap,
+    ) -> Result<(), TrayError> {
+        if self.battery_color_map == battery_color_map {
+            return Ok(());
+        }
+        if let Some(percentage) = self.percentage {
+            let icon = numeric_battery_icon_at_size_with_color_map(
+                percentage,
+                ICON_SIZE,
+                battery_color_map,
+            )?;
+            self.icon
+                .set_icon(Some(icon))
+                .map_err(|error| TrayError::new(format!("could not update tray icon: {error}")))?;
+        }
+        self.battery_color_map = battery_color_map;
+        Ok(())
+    }
+}
+
+fn shorten_status(status: &str) -> String {
+    let mut characters = status.chars();
+    let mut shortened: String = characters.by_ref().take(MAX_STATUS_CHARS).collect();
+    if characters.next().is_some() {
+        shortened.pop();
+        shortened.push('…');
+    }
+    shortened
 }
 
 /// Renders an RGBA numeric icon. Supported sizes are 16 and 32 pixels square.
 pub fn numeric_battery_rgba(percentage: u8, size: u32) -> Result<Vec<u8>, TrayError> {
+    numeric_battery_rgba_with_color_map(percentage, size, BatteryColorMap::default())
+}
+
+pub fn numeric_battery_rgba_with_color_map(
+    percentage: u8,
+    size: u32,
+    battery_color_map: BatteryColorMap,
+) -> Result<Vec<u8>, TrayError> {
     validate_icon_size(size)?;
-    Ok(scale_icon(render_numeric_battery(percentage), size).into_raw())
+    Ok(scale_icon(render_numeric_battery(percentage, battery_color_map), size).into_raw())
 }
 
 /// Produces a numeric battery icon at 16×16 or 32×32 pixels.
@@ -284,15 +320,19 @@ pub fn numeric_battery_icon_at_size(percentage: u8, size: u32) -> Result<Icon, T
         .map_err(|error| TrayError::new(format!("could not create battery icon: {error}")))
 }
 
-fn render_numeric_battery(percentage: u8) -> RgbaImage {
+fn numeric_battery_icon_at_size_with_color_map(
+    percentage: u8,
+    size: u32,
+    battery_color_map: BatteryColorMap,
+) -> Result<Icon, TrayError> {
+    let rgba = numeric_battery_rgba_with_color_map(percentage, size, battery_color_map)?;
+    Icon::from_rgba(rgba, size, size)
+        .map_err(|error| TrayError::new(format!("could not create battery icon: {error}")))
+}
+
+fn render_numeric_battery(percentage: u8, battery_color_map: BatteryColorMap) -> RgbaImage {
     let percentage = percentage.min(100);
-    let color = if percentage > 30 {
-        [45, 170, 75, 255]
-    } else if percentage >= 16 {
-        [235, 190, 35, 255]
-    } else {
-        [210, 48, 48, 255]
-    };
+    let color = battery_color_map.color_for(percentage);
     let mut image = RgbaImage::from_pixel(ICON_SIZE, ICON_SIZE, Rgba([0, 0, 0, 0]));
     let outline = Rgba([225, 232, 238, 255]);
     let interior = Rgba([30, 36, 42, 255]);
@@ -321,11 +361,14 @@ fn render_numeric_battery(percentage: u8) -> RgbaImage {
     let fill_width = (u32::from(percentage) * 9 / 100).max(if percentage > 0 { 1 } else { 0 });
     for x in 3..(3 + fill_width) {
         for y in 10..13 {
-            image.put_pixel(x, y, Rgba(color));
+            image.put_pixel(x, y, Rgba([color[0], color[1], color[2], 255]));
         }
     }
 
-    let text_color = if (16..=30).contains(&percentage) {
+    let text_color = if ((battery_color_map.red_max_percent + 1)
+        ..=battery_color_map.yellow_max_percent)
+        .contains(&percentage)
+    {
         Rgba([20, 24, 27, 255])
     } else {
         Rgba([255, 255, 255, 255])
@@ -532,6 +575,20 @@ mod tests {
     use super::*;
 
     #[test]
+    fn status_is_shortened_only_when_over_limit() {
+        let short = "Battery status";
+        assert_eq!(shorten_status(short), short);
+
+        let exact_limit = "x".repeat(MAX_STATUS_CHARS);
+        assert_eq!(shorten_status(&exact_limit), exact_limit);
+
+        let long = "x".repeat(MAX_STATUS_CHARS + 10);
+        let shortened = shorten_status(&long);
+        assert_eq!(shortened.chars().count(), MAX_STATUS_CHARS);
+        assert!(shortened.ends_with('…'));
+    }
+
+    #[test]
     fn icon_renderer_accepts_boundary_percentages() {
         for percentage in [0, 15, 16, 30, 31, 100] {
             let icon =
@@ -553,5 +610,26 @@ mod tests {
             );
         }
         assert!(numeric_battery_rgba(85, 24).is_err());
+    }
+
+    #[test]
+    fn rgba_renderer_uses_custom_color_map_boundaries() {
+        let map = BatteryColorMap {
+            red_max_percent: 10,
+            yellow_max_percent: 40,
+            red: [1, 2, 3],
+            yellow: [4, 5, 6],
+            green: [7, 8, 9],
+        };
+        let pixel = |percentage| {
+            let rgba = numeric_battery_rgba_with_color_map(percentage, ICON_SIZE, map).unwrap();
+            let index = ((10 * ICON_SIZE + 3) * 4) as usize;
+            [rgba[index], rgba[index + 1], rgba[index + 2]]
+        };
+
+        assert_eq!(pixel(10), [1, 2, 3]);
+        assert_eq!(pixel(11), [4, 5, 6]);
+        assert_eq!(pixel(40), [4, 5, 6]);
+        assert_eq!(pixel(41), [7, 8, 9]);
     }
 }
