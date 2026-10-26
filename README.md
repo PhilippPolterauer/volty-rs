@@ -5,7 +5,7 @@
 </p>
 
 <p align="center">
-  <strong>A Windows system-tray battery monitor for supported HID and Bluetooth LE devices, written in Rust.</strong>
+  <strong>A Windows system-tray battery monitor for supported HID devices, written in Rust.</strong>
 </p>
 
 <p align="center">
@@ -21,16 +21,18 @@
 
 ## Current support
 
-Volty is a Windows system-tray battery monitor. It supports Logitech HID++ 2.0
-interfaces, connected Bluetooth devices for which Windows provides the
-battery-life device property, and Windows-paired Bluetooth LE devices that
-expose the standard Battery Service (`0x180F`) and Battery Level characteristic
-(`0x2A19`), including paired BLE devices that Windows does not report as
-connected.
+Volty currently supports Logitech HID++ 2.0 interfaces. The Bluetooth tray
+integration is disabled by default because it is not working as intended and
+has not been tested; do not rely on it. To opt into this experimental code in
+a local build, pass the tray crate's `bluetooth` feature:
+
+```powershell
+cargo run --release --package volty-tray --features bluetooth
+```
+
 Other vendor HID protocols, generic HID battery reports, classic Bluetooth HFP
 battery indications, and vendor-specific Bluetooth protocols are not currently
-supported. Hardware compatibility is best-effort; Bluetooth support has not
-been validated with every headset.
+supported.
 
 > **Project status:** Volty is a vibe-coded hobby project. It is experimental,
 > has limited hardware testing, and is not production-ready or affiliated with
@@ -41,10 +43,10 @@ been validated with every headset.
 ## ✨ Features
 
 * **HID++ Battery Monitoring:** Polls supported Logitech interfaces and paired-device indexes, prioritizes recently successful receiver slots from a machine-local SQLite cache, and uses each device's HID++ name when available.
-* **Bluetooth Battery Monitoring:** Reads battery levels from connected Bluetooth devices with the Windows device property and from Windows-paired BLE devices, including paired BLE devices that Windows does not report as connected.
+* **Experimental Bluetooth integration:** Opt-in via the `bluetooth` Cargo feature and currently not working as intended or tested; it is disabled in default builds.
 * **Configurable Color Coding:** The default tray map is green above 30%, yellow from 16–30%, and red at 15% or below. Thresholds and colors can be overridden in the TOML configuration.
 * **Threshold Alerts:** One-time native Windows toast notification per discharge cycle when battery hits warning thresholds.
-* **One-Click Diagnostics:** A native Diagnose window shows recent app logs, Bluetooth read status, and HID details, with buttons to copy the log or open a GitHub issue draft.
+* **One-Click Diagnostics:** A native Diagnose window shows recent app logs, backend status, and HID details, with buttons to copy the log or open a GitHub issue draft.
 * **Retry After Read Errors:** Polling resumes after errors using the configurable retry interval.
 * **Standalone Executable:** Releases provide a single `.exe` with no installer. Optional Start on Boot uses the current user's Windows Run setting.
 
@@ -66,9 +68,9 @@ On first launch, choose whether to start Volty automatically when you sign in.
 That choice is remembered and can be changed at any time using **Start on
 Boot** in the tray menu. If enabled, Windows starts Volty from the executable's
 current location, so keep the file there. Volty monitors supported Logitech
-HID++ devices and Bluetooth devices whose battery Windows exposes through a
-device property or the standard BLE Battery Service while running. Its tray
-icon shows the lowest reported battery level;
+HID++ devices while running. Bluetooth is disabled in the default build and is
+currently not working as intended or tested. Its tray icon shows the lowest
+reported battery level;
 hover over the icon for device names and reported charging status.
 
 ![Volty tray icon showing a monitored device's battery and charging status](./docs/tray.png)
@@ -143,8 +145,8 @@ volty-rs/
 ```text
 HID interface enumeration        Bluetooth battery discovery
         |                                |
-        v                                ├── Windows battery-life property
-SUPPORTED_MICE -> BatteryProtocol       └── Windows-paired BLE GATT Battery Service
+        v                                ├── Windows battery-life property (optional)
+SUPPORTED_MICE -> BatteryProtocol       └── Windows-paired BLE GATT Battery Service (optional)
         |                                |
         └────────────────┬───────────────┘
                          v
@@ -161,17 +163,12 @@ catalog is the HID dispatch source: an interface must match exactly one model;
 no match is skipped and overlapping matches are reported. Its current catalog
 contains one Logitech HID++ 2.0 model.
 
-`volty-bluetooth` reads the Windows `System.Devices.BatteryLife` property for
-connected Bluetooth devices when Windows supplies it, and otherwise attempts
-Windows Runtime GATT reads for Windows-paired BLE devices, even when Windows
-does not report an active BLE connection. It does not pair devices or scan for
-unpaired devices, and it does not infer charging state. Ambiguous multiple
-GATT battery components are rejected. Classic HFP and vendor-specific battery
-protocols are not read.
-The tray poller keeps HID and Bluetooth failures separate, lists each readable
-device without assigning Bluetooth devices a fake HID slot, isolates their
-notification state, and uses the lowest reported percentage for its battery
-icon.
+`volty-bluetooth` contains experimental Windows Bluetooth battery discovery.
+The tray only compiles and polls it when built with
+`--package volty-tray --features bluetooth`. This integration is currently not
+working as intended and is untested; the default build does not include or
+poll it. Its intended scope and implementation notes are in
+[Bluetooth headphone battery support](./docs/bluetooth-headphone-battery-support.md).
 
 `volty-tray` owns polling, configuration, tray presentation, and
 notifications. Its `build.rs` embeds `volty.manifest` in Windows builds.
@@ -193,9 +190,6 @@ reports a percentage. Add or update a `MouseModel` and register it in
 `SUPPORTED_MICE` when the interface needs a new or more specific match. The
 existing tray code consumes `BatteryStatus`, so a new backend does not need a
 tray/UI trait or a protocol-specific icon.
-
-Bluetooth support details and current limitations are in
-[Bluetooth headphone battery support](./docs/bluetooth-headphone-battery-support.md).
 
 If an existing model already matches the interface and its backend already
 reads the device's battery feature, no new trait implementation is needed.

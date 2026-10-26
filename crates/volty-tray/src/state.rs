@@ -57,6 +57,21 @@ impl DeviceState {
         interface_path: &str,
         defaults: &[u8],
     ) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+        let mut indices = self.known_device_indices(interface_path, defaults)?;
+        let mut seen: HashSet<_> = indices.iter().copied().collect();
+        for &index in defaults {
+            if seen.insert(index) {
+                indices.push(index);
+            }
+        }
+        Ok(indices)
+    }
+
+    pub fn known_device_indices(
+        &self,
+        interface_path: &str,
+        candidates: &[u8],
+    ) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
         let mut statement = self.connection.prepare(
             "SELECT device_index
              FROM recent_devices
@@ -64,16 +79,11 @@ impl DeviceState {
              ORDER BY seen_order DESC, device_index",
         )?;
         let rows = statement.query_map([interface_path], |row| row.get::<_, u8>(0))?;
-        let mut indices = Vec::with_capacity(defaults.len());
-        let mut seen = HashSet::with_capacity(defaults.len());
+        let mut indices = Vec::with_capacity(candidates.len());
+        let mut seen = HashSet::with_capacity(candidates.len());
         for row in rows {
             let index = row?;
-            if defaults.contains(&index) && seen.insert(index) {
-                indices.push(index);
-            }
-        }
-        for &index in defaults {
-            if seen.insert(index) {
+            if candidates.contains(&index) && seen.insert(index) {
                 indices.push(index);
             }
         }
@@ -233,11 +243,19 @@ mod tests {
                     .unwrap(),
                 defaults
             );
+            assert!(state
+                .known_device_indices("receiver-a", &defaults)
+                .unwrap()
+                .is_empty());
             state.record("receiver-a", 1).unwrap();
             state.record("receiver-a", 3).unwrap();
             state.record("receiver-a", 0xff).unwrap();
             state.record("receiver-b", 2).unwrap();
 
+            assert_eq!(
+                state.known_device_indices("receiver-a", &defaults).unwrap(),
+                [0xff, 3, 1]
+            );
             assert_eq!(
                 state
                     .ordered_device_indices("receiver-a", &defaults)
@@ -248,6 +266,10 @@ mod tests {
         }
 
         let state = DeviceState::open(&path).unwrap();
+        assert_eq!(
+            state.known_device_indices("receiver-a", &defaults).unwrap(),
+            [1, 0xff, 3]
+        );
         assert_eq!(
             state
                 .ordered_device_indices("receiver-a", &defaults)

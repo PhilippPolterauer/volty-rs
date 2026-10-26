@@ -5,6 +5,10 @@ edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
 
+[features]
+default = []
+bluetooth = ["dep:volty-bluetooth"]
+
 [[bin]]
 name = "volty"
 path = "src/main.rs"
@@ -18,7 +22,7 @@ winres = "0.1"
 
 [target.'cfg(windows)'.dependencies]
 volty-battery = { path = "../volty-battery" }
-volty-bluetooth = { path = "../volty-bluetooth" }
+volty-bluetooth = { path = "../volty-bluetooth", optional = true }
 volty-hid = { path = "../volty-hid", features = ["hidapi"] }
 tray-icon = "0.14"
 image = { version = "0.25", default-features = false, features = ["png"] }

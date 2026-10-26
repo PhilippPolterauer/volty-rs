@@ -107,11 +107,16 @@ fn render_diagnostic_report(
     for entry in log {
         writeln!(report, "{entry}")?;
     }
+    let bluetooth_status = if cfg!(feature = "bluetooth") {
+        "Bluetooth integration is enabled but currently does not work as intended and is untested. Bluetooth device IDs and addresses are not included; Bluetooth read results and errors may appear in recent logs."
+    } else {
+        "Bluetooth integration is disabled in this build."
+    };
     writeln!(
         report,
         "\n[Battery sources]\n\
-         Logitech HID++ 2.0 and Bluetooth devices exposing a Windows battery property or the standard GATT Battery Service are supported.\n\
-         Bluetooth device IDs and addresses are not included; Bluetooth read results and errors appear in the recent log.\n\
+         Logitech HID++ 2.0 is supported.\n\
+         {bluetooth_status}\n\
          \n[HID interfaces visible to hidapi: {}]\n\
          Device paths and serial numbers are not included.\n\
          Review device names and log messages before sharing. Nothing is uploaded automatically.",
@@ -193,7 +198,13 @@ mod tests {
             "Tray color map: red <= 15% (#d23030), yellow <= 30% (#ebbe23), green > 30% (#2daa4b)"
         ));
         assert!(report.contains("[Battery sources]"));
-        assert!(report.contains("Bluetooth device IDs and addresses are not included"));
+        if cfg!(feature = "bluetooth") {
+            assert!(report.contains(
+                "Bluetooth integration is enabled but currently does not work as intended and is untested."
+            ));
+        } else {
+            assert!(report.contains("Bluetooth integration is disabled in this build."));
+        }
         assert!(report.contains("[+1s] Battery poll succeeded"));
         assert!(report.contains("Bus: Bluetooth"));
         assert!(report.contains("Vendor ID: 0x1234"));

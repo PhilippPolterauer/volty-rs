@@ -53,9 +53,8 @@ enum DeviceIdentity {
         interface_path: String,
         device_index: u8,
     },
-    Bluetooth {
-        device_id: String,
-    },
+    #[cfg(feature = "bluetooth")]
+    Bluetooth { device_id: String },
 }
 
 impl DeviceIdentity {
@@ -65,6 +64,7 @@ impl DeviceIdentity {
                 interface_path,
                 device_index,
             } => format!("hid:{device_index}:{interface_path}"),
+            #[cfg(feature = "bluetooth")]
             Self::Bluetooth { device_id } => format!("bluetooth:{device_id}"),
         }
     }
@@ -72,6 +72,7 @@ impl DeviceIdentity {
     fn display_name(&self, name: &str) -> String {
         match self {
             Self::Hid { device_index, .. } => format_device_name(name, Some(*device_index)),
+            #[cfg(feature = "bluetooth")]
             Self::Bluetooth { .. } => name.to_owned(),
         }
     }
@@ -80,6 +81,7 @@ impl DeviceIdentity {
 #[derive(Default)]
 struct DeviceNameCache {
     names: HashMap<DeviceIdentity, String>,
+    known_devices: HashSet<DeviceIdentity>,
 }
 
 impl DeviceNameCache {
@@ -108,6 +110,23 @@ impl DeviceNameCache {
 
     fn forget(&mut self, identity: &DeviceIdentity) {
         self.names.remove(identity);
+    }
+
+    fn remember_device(&mut self, identity: DeviceIdentity) {
+        self.known_devices.insert(identity);
+    }
+
+    fn known_device_indices(&self, interface_path: &str, candidates: &[u8]) -> Vec<u8> {
+        candidates
+            .iter()
+            .copied()
+            .filter(|device_index| {
+                self.known_devices.contains(&DeviceIdentity::Hid {
+                    interface_path: interface_path.to_owned(),
+                    device_index: *device_index,
+                })
+            })
+            .collect()
     }
 }
 
@@ -1298,7 +1317,9 @@ fn poll_worker(
         results,
         poll_interval,
         retry_interval,
-        move |results| query_devices(results, &mut device_state, &mut name_cache),
+        move |results, full_scan| {
+            query_devices(results, &mut device_state, &mut name_cache, full_scan)
+        },
     );
 }
 
@@ -1318,10 +1339,11 @@ fn poll_worker_with_query(
     results: mpsc::Sender<PollUpdate>,
     mut poll_interval: Duration,
     mut retry_interval: Duration,
-    mut query: impl FnMut(&mpsc::Sender<PollUpdate>) -> PollResult,
+    mut query: impl FnMut(&mpsc::Sender<PollUpdate>, bool) -> PollResult,
 ) {
+    let mut full_scan = true;
     loop {
-        let reading = query(&results);
+        let reading = query(&results, full_scan);
         let successful_read = reading.is_ok();
         let next_poll = if successful_read {
             poll_interval
@@ -1335,7 +1357,14 @@ fn poll_worker_with_query(
         let mut wait_interval = next_poll;
         loop {
             match commands.recv_timeout(wait_interval) {
-                Ok(PollCommand::Discover) | Err(RecvTimeoutError::Timeout) => break,
+                Ok(PollCommand::Discover) => {
+                    full_scan = true;
+                    break;
+                }
+                Err(RecvTimeoutError::Timeout) => {
+                    full_scan = false;
+                    break;
+                }
                 Ok(PollCommand::UpdateIntervals { poll, retry }) => {
                     poll_interval = poll;
                     retry_interval = retry;
@@ -1351,6 +1380,7 @@ fn query_devices(
     results: &mpsc::Sender<PollUpdate>,
     device_state: &mut Option<DeviceState>,
     name_cache: &mut DeviceNameCache,
+    full_scan: bool,
 ) -> PollResult {
     use volty_hid::{enumerate_hid_interfaces, resolve_mouse_model};
 
@@ -1409,10 +1439,10 @@ fn query_devices(
             )))
             .map_err(|_| "device polling result receiver disconnected".to_owned())?;
         let interface_path = interface.path.to_string_lossy().into_owned();
-        let preferred_indices = device_state
+        let known_indices = device_state
             .as_ref()
-            .map(|state| state.ordered_device_indices(&interface_path, protocol.device_indices()));
-        let device_indices = match preferred_indices {
+            .map(|state| state.known_device_indices(&interface_path, protocol.device_indices()));
+        let mut known_indices = match known_indices {
             Some(Ok(indices)) => indices,
             Some(Err(error)) => {
                 *device_state = None;
@@ -1421,9 +1451,36 @@ fn query_devices(
                         "Could not read discovery state; continuing with a full scan: {error}"
                     )))
                     .map_err(|_| "device polling result receiver disconnected".to_owned())?;
-                protocol.device_indices().to_vec()
+                Vec::new()
             }
-            None => protocol.device_indices().to_vec(),
+            None => Vec::new(),
+        };
+        for device_index in
+            name_cache.known_device_indices(&interface_path, protocol.device_indices())
+        {
+            if !known_indices.contains(&device_index) {
+                known_indices.push(device_index);
+            }
+        }
+        let device_indices = if !full_scan && !known_indices.is_empty() {
+            known_indices.clone()
+        } else {
+            let preferred_indices = device_state.as_ref().map(|state| {
+                state.ordered_device_indices(&interface_path, protocol.device_indices())
+            });
+            match preferred_indices {
+                Some(Ok(indices)) => indices,
+                Some(Err(error)) => {
+                    *device_state = None;
+                    results
+                        .send(PollUpdate::Warning(format!(
+                            "Could not read discovery state; continuing with a full scan: {error}"
+                        )))
+                        .map_err(|_| "device polling result receiver disconnected".to_owned())?;
+                    protocol.device_indices().to_vec()
+                }
+                None => protocol.device_indices().to_vec(),
+            }
         };
 
         for device_index in device_indices {
@@ -1432,6 +1489,7 @@ fn query_devices(
                 device_index,
             };
             let cached_name = name_cache.get(&identity).map(str::to_owned);
+            let was_known = cached_name.is_some() || known_indices.contains(&device_index);
             let reading = match cached_name {
                 Some(name) => protocol
                     .query_battery(&interface, device_index)
@@ -1452,6 +1510,7 @@ fn query_devices(
             };
             match reading {
                 Ok((battery, name, name_error, name_was_queried)) => {
+                    name_cache.remember_device(identity.clone());
                     let reading = DeviceReading {
                         identity: identity.clone(),
                         name: name.clone(),
@@ -1488,53 +1547,72 @@ fn query_devices(
                 }
                 Err(error) => {
                     name_cache.forget(&identity);
-                    errors.push(format!(
-                        "{fallback_name} via {} (slot {device_index}): {error}",
-                        protocol.name()
-                    ));
+                    let empty_discovery_slot = full_scan
+                        && !was_known
+                        && matches!(
+                            error.downcast_ref::<volty_hid::HidppError>(),
+                            Some(volty_hid::HidppError::Timeout)
+                        );
+                    if empty_discovery_slot {
+                        results
+                            .send(PollUpdate::Trace(format!(
+                                "HID++ discovery address {device_index} did not respond"
+                            )))
+                            .map_err(|_| {
+                                "device polling result receiver disconnected".to_owned()
+                            })?;
+                    } else {
+                        errors.push(format!(
+                            "{fallback_name} via {} (slot {device_index}): {error}",
+                            protocol.name()
+                        ));
+                    }
                 }
             }
         }
     }
 
-    match volty_bluetooth::scan_battery_devices() {
-        Ok(scan) => {
-            results
-                .send(PollUpdate::Trace(format!(
-                    "Bluetooth discovery examined {} device entries and found {} readable battery value(s) with {} warning(s)",
-                    scan.devices_examined,
-                    scan.readings.len(),
-                    scan.warnings.len()
-                )))
-                .map_err(|_| "device polling result receiver disconnected".to_owned())?;
-            for event in scan.discovery_events {
+    #[cfg(feature = "bluetooth")]
+    {
+        match volty_bluetooth::scan_battery_devices() {
+            Ok(scan) => {
                 results
-                    .send(PollUpdate::Trace(format!("Bluetooth discovery: {event}")))
+                    .send(PollUpdate::Trace(format!(
+                        "Bluetooth discovery examined {} device entries and found {} readable battery value(s) with {} warning(s)",
+                        scan.devices_examined,
+                        scan.readings.len(),
+                        scan.warnings.len()
+                    )))
                     .map_err(|_| "device polling result receiver disconnected".to_owned())?;
+                for event in scan.discovery_events {
+                    results
+                        .send(PollUpdate::Trace(format!("Bluetooth discovery: {event}")))
+                        .map_err(|_| "device polling result receiver disconnected".to_owned())?;
+                }
+                errors.extend(
+                    scan.warnings
+                        .into_iter()
+                        .map(|warning| format!("Bluetooth battery read: {warning}")),
+                );
+                for reading in scan.readings {
+                    let identity = DeviceIdentity::Bluetooth {
+                        device_id: reading.device_id,
+                    };
+                    let reading = DeviceReading {
+                        identity,
+                        name: reading.name,
+                        device_index: None,
+                        battery: reading.battery,
+                        notification_error: None,
+                    };
+                    results
+                        .send(PollUpdate::Reading(reading))
+                        .map_err(|_| "device polling result receiver disconnected".to_owned())?;
+                    reading_count += 1;
+                }
             }
-            errors.extend(
-                scan.warnings
-                    .into_iter()
-                    .map(|warning| format!("Bluetooth battery read: {warning}")),
-            );
-            for reading in scan.readings {
-                let identity = DeviceIdentity::Bluetooth {
-                    device_id: reading.device_id,
-                };
-                let reading = DeviceReading {
-                    identity,
-                    name: reading.name,
-                    device_index: None,
-                    battery: reading.battery,
-                    notification_error: None,
-                };
-                results
-                    .send(PollUpdate::Reading(reading))
-                    .map_err(|_| "device polling result receiver disconnected".to_owned())?;
-                reading_count += 1;
-            }
+            Err(error) => errors.push(format!("Bluetooth discovery: {error}")),
         }
-        Err(error) => errors.push(format!("Bluetooth discovery: {error}")),
     }
 
     if reading_count > 0 {
@@ -1550,10 +1628,7 @@ fn query_devices(
     }
 
     if supported_interfaces == 0 && errors.is_empty() {
-        return Err(
-            "No readable battery found. Bluetooth support requires a Windows-reported battery property or the standard BLE Battery Service."
-                .to_owned(),
-        );
+        return Err("No readable battery found".to_owned());
     }
 
     Err(if errors.is_empty() {
@@ -2013,6 +2088,7 @@ mod tests {
     fn discovery_command_triggers_an_immediate_device_poll() {
         let (commands_tx, commands_rx) = mpsc::channel();
         let (results_tx, results_rx) = mpsc::channel();
+        let (full_scan_tx, full_scan_rx) = mpsc::channel();
         let query_count = Arc::new(AtomicUsize::new(0));
         let worker_query_count = Arc::clone(&query_count);
         let worker = thread::spawn(move || {
@@ -2021,18 +2097,21 @@ mod tests {
                 results_tx,
                 Duration::from_secs(60),
                 Duration::from_secs(60),
-                move |_| {
+                move |_, full_scan| {
+                    full_scan_tx.send(full_scan).unwrap();
                     worker_query_count.fetch_add(1, Ordering::Relaxed);
                     Ok(())
                 },
             );
         });
 
+        assert!(full_scan_rx.recv_timeout(Duration::from_secs(5)).unwrap());
         assert!(matches!(
             results_rx.recv_timeout(Duration::from_secs(5)).unwrap(),
             PollUpdate::Finished(Ok(()))
         ));
         commands_tx.send(PollCommand::Discover).unwrap();
+        assert!(full_scan_rx.recv_timeout(Duration::from_secs(5)).unwrap());
         assert!(matches!(
             results_rx.recv_timeout(Duration::from_secs(5)).unwrap(),
             PollUpdate::Finished(Ok(()))
@@ -2041,6 +2120,45 @@ mod tests {
         worker.join().unwrap();
 
         assert_eq!(query_count.load(Ordering::Relaxed), 2);
+    }
+
+    #[test]
+    fn timed_polls_reuse_discovered_devices_until_a_full_discovery_is_requested() {
+        let (commands_tx, commands_rx) = mpsc::channel();
+        let (results_tx, results_rx) = mpsc::channel();
+        let (full_scan_tx, full_scan_rx) = mpsc::channel();
+        let worker = thread::spawn(move || {
+            poll_worker_with_query(
+                commands_rx,
+                results_tx,
+                Duration::from_millis(20),
+                Duration::from_millis(20),
+                move |_, full_scan| {
+                    full_scan_tx.send(full_scan).unwrap();
+                    Ok(())
+                },
+            );
+        });
+
+        assert!(full_scan_rx.recv_timeout(Duration::from_secs(5)).unwrap());
+        assert!(matches!(
+            results_rx.recv_timeout(Duration::from_secs(5)).unwrap(),
+            PollUpdate::Finished(Ok(()))
+        ));
+        assert!(!full_scan_rx.recv_timeout(Duration::from_secs(5)).unwrap());
+        assert!(matches!(
+            results_rx.recv_timeout(Duration::from_secs(5)).unwrap(),
+            PollUpdate::Finished(Ok(()))
+        ));
+
+        commands_tx.send(PollCommand::Discover).unwrap();
+        assert!(full_scan_rx.recv_timeout(Duration::from_secs(5)).unwrap());
+        assert!(matches!(
+            results_rx.recv_timeout(Duration::from_secs(5)).unwrap(),
+            PollUpdate::Finished(Ok(()))
+        ));
+        commands_tx.send(PollCommand::Quit).unwrap();
+        worker.join().unwrap();
     }
 
     #[test]
@@ -2055,7 +2173,7 @@ mod tests {
                 results_tx,
                 Duration::from_secs(60),
                 Duration::from_secs(60),
-                move |_| {
+                move |_, _| {
                     worker_query_count.fetch_add(1, Ordering::Relaxed);
                     Ok(())
                 },
@@ -2090,7 +2208,7 @@ mod tests {
                 results_tx,
                 Duration::from_secs(60),
                 Duration::from_secs(60),
-                move |results| {
+                move |results, _| {
                     assert!(results.send(PollUpdate::Reading(test_reading())).is_ok());
                     finish_query_rx.recv().unwrap();
                     assert!(results
@@ -2207,6 +2325,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "bluetooth")]
     fn bluetooth_device_names_are_not_formatted_as_hid_slots() {
         let identity = DeviceIdentity::Bluetooth {
             device_id: "opaque-device-id".to_owned(),
@@ -2223,6 +2342,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "bluetooth")]
     fn bluetooth_identity_does_not_collide_with_hid_identity() {
         let identities = std::collections::HashSet::from([
             DeviceIdentity::Hid {
@@ -2243,28 +2363,32 @@ mod tests {
             interface_path: "receiver-path".to_owned(),
             device_index: 1,
         };
+        assert_eq!(hid.config_id(), "hid:1:receiver-path");
+        assert_eq!(hid.config_id(), hid.clone().config_id());
+
+        #[cfg(feature = "bluetooth")]
         let bluetooth = DeviceIdentity::Bluetooth {
             device_id: "receiver-path".to_owned(),
         };
 
-        assert_eq!(hid.config_id(), "hid:1:receiver-path");
+        #[cfg(feature = "bluetooth")]
         assert_eq!(bluetooth.config_id(), "bluetooth:receiver-path");
+        #[cfg(feature = "bluetooth")]
         assert_ne!(hid.config_id(), bluetooth.config_id());
-        assert_eq!(hid.config_id(), hid.clone().config_id());
     }
 
     #[test]
     fn new_devices_are_monitored_by_default() {
         let hid = test_reading();
-        let mut bluetooth = test_reading();
-        bluetooth.identity = DeviceIdentity::Bluetooth {
-            device_id: "bluetooth-device".to_owned(),
+        let mut second_hid = test_reading();
+        second_hid.identity = DeviceIdentity::Hid {
+            interface_path: "second-interface".to_owned(),
+            device_index: 2,
         };
-        bluetooth.name = "Bluetooth device".to_owned();
 
         let latest_readings = HashMap::from([
             (hid.identity.clone(), hid),
-            (bluetooth.identity.clone(), bluetooth),
+            (second_hid.identity.clone(), second_hid),
         ]);
         let visible = monitored_readings(&latest_readings, &BTreeMap::new());
 
@@ -2275,8 +2399,9 @@ mod tests {
     fn unmonitored_devices_are_excluded_from_visible_readings() {
         let included = test_reading();
         let mut excluded = test_reading();
-        excluded.identity = DeviceIdentity::Bluetooth {
-            device_id: "bluetooth-device".to_owned(),
+        excluded.identity = DeviceIdentity::Hid {
+            interface_path: "excluded-interface".to_owned(),
+            device_index: 2,
         };
         excluded.name = "Excluded device".to_owned();
 
@@ -2302,8 +2427,9 @@ mod tests {
             interface_path: "monitored".to_owned(),
             device_index: 1,
         };
-        let unmonitored = DeviceIdentity::Bluetooth {
-            device_id: "unmonitored".to_owned(),
+        let unmonitored = DeviceIdentity::Hid {
+            interface_path: "unmonitored".to_owned(),
+            device_index: 2,
         };
         let mut notifications = DeviceNotifications::from_config(AppConfig::default()).unwrap();
         notifications.engines.insert(
@@ -2334,6 +2460,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "bluetooth")]
     fn bluetooth_battery_source_is_explicit_in_diagnostics() {
         assert_eq!(
             battery_source_label(BatterySource::BluetoothGatt),

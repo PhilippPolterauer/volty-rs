@@ -1,11 +1,19 @@
 # Bluetooth headphone battery support
 
-## Supported Bluetooth scope
+> **Status:** The tray Bluetooth integration is disabled by default because it
+> is currently not working as intended and has not been tested. Do not rely on
+> it. This document describes intended scope and implementation notes, not
+> verified support. To opt in locally, run
+> `cargo run --release --package volty-tray --features bluetooth`.
+
+## Intended Bluetooth scope
 
 Volty reads battery percentages from connected Bluetooth devices when Windows
 supplies the `System.Devices.BatteryLife` property. It checks both the
 connected-device properties and present Bluetooth PnP device nodes, since
-Windows can expose that property through either surface. It also reads
+Windows can expose that property through either surface. For connected
+Hands-Free Profile (HFP) devices, it also checks the RFCOMM service metadata
+for the same property without opening an RFCOMM connection. It reads
 Windows-paired Bluetooth Low Energy (BLE) devices, including paired devices
 that Windows does not report as connected, through the standardized GATT
 Battery Service and Battery Level characteristic:
@@ -98,19 +106,22 @@ The implemented structure keeps the backends separate:
 
 ### Polling and tray
 
-- The tray poller queries HID and Bluetooth independently. It preserves
-  successful readings if the other source fails, and keeps low-battery
-  notification state keyed by source-specific device identity.
+- When built with the opt-in `bluetooth` feature, the tray poller queries HID
+  and Bluetooth independently. It preserves successful readings if the other
+  source fails, and keeps low-battery notification state keyed by
+  source-specific device identity. Default builds poll HID only.
 - Bluetooth names are shown without HID slot numbers. The existing tray list
-  and lowest-percentage icon behavior apply to both sources.
+  and lowest-percentage icon behavior are intended to apply to both sources.
 
 ## Diagnostics and privacy
 
-- The Diagnose report identifies supported backends and includes Bluetooth
-  scan counts and reading status from the recent application log.
-- **Discover Devices Now** in the tray triggers an immediate HID and Bluetooth
-  poll. Trace logs explain HID interface matches or skips and Bluetooth
-  selector, Windows battery-property, and GATT Battery Service match results.
+- The Diagnose report identifies whether the Bluetooth integration is enabled
+  in this build. Bluetooth scan counts and reading status are included only
+  when the feature is enabled.
+- **Discover Devices Now** triggers an immediate HID poll; it also polls
+  Bluetooth only when the opt-in feature is enabled. Trace logs explain HID
+  interface matches or skips and Bluetooth selector, Windows battery-property,
+  and GATT Battery Service match results.
 - Opaque Windows Bluetooth device IDs and addresses are retained only
   internally for stable notification identity; they are not written to logs
   or reports. HID interface paths are also excluded from discovery logs.

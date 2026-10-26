@@ -13,6 +13,7 @@ volty-battery = { path = "../volty-battery" }
 windows = { version = "0.62.2", features = [
     "Devices_Bluetooth",
     "Devices_Bluetooth_GenericAttributeProfile",
+    "Devices_Bluetooth_Rfcomm",
     "Devices_Enumeration",
     "Foundation",
     "Storage_Streams",

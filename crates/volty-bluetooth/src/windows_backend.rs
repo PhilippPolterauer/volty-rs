@@ -11,6 +11,7 @@ use windows::{
             GenericAttributeProfile::{
                 GattCharacteristicUuids, GattCommunicationStatus, GattServiceUuids,
             },
+            Rfcomm::{RfcommDeviceService, RfcommServiceId},
         },
         Enumeration::DeviceInformation,
     },
@@ -43,6 +44,7 @@ use crate::{
 const OPERATION_TIMEOUT: Duration = Duration::from_secs(5);
 const PAIRED_BLE_SCAN_BUDGET: Duration = Duration::from_secs(30);
 const WINDOWS_BATTERY_LIFE_PROPERTY: &str = "System.Devices.BatteryLife";
+const HFP_HANDSFREE_SERVICE_ID: u32 = 0x111e;
 const BATTERY_LIFE_PROPERTY_KEY: DEVPROPKEY = DEVPROPKEY {
     fmtid: windows::core::GUID::from_u128(0x49cd1f76_5626_4b17_a4e8_18b4aa1a2213),
     pid: 10,
@@ -143,26 +145,96 @@ fn scan_windows_battery_property() -> Result<BluetoothScan, BluetoothError> {
                 continue;
             }
         };
-        match read_windows_battery_life(&info) {
+        let battery_level = match read_windows_battery_life(&info) {
             Ok(Some(level)) => {
                 scan.discovery_events.push(format!(
                     "{name:?}: matched battery support because Windows supplied a valid {WINDOWS_BATTERY_LIFE_PROPERTY} value"
                 ));
                 scan.readings.push(BluetoothBatteryReading {
                     device_id: device_id.to_string_lossy(),
-                    name,
+                    name: name.clone(),
+                    battery: battery_status(
+                        level,
+                        volty_battery::BatterySource::BluetoothDeviceProperty,
+                    ),
+                });
+                Some(level)
+            }
+            Ok(None) => {
+                scan.discovery_events.push(format!(
+                    "{name:?}: no readable Windows Bluetooth battery property"
+                ));
+                None
+            }
+            Err(error) => {
+                scan.warnings.push(format!("{name}: {error}"));
+                None
+            }
+        };
+        if battery_level.is_none() {
+            match scan_hfp_service_battery_property(&device_id, &name) {
+                Ok(hfp_scan) => merge_scan(&mut scan, hfp_scan),
+                Err(error) => scan.warnings.push(format!(
+                    "{name}: Windows HFP service-property scan: {error}"
+                )),
+            }
+        }
+    }
+    Ok(scan)
+}
+
+fn scan_hfp_service_battery_property(
+    device_id: &HSTRING,
+    name: &str,
+) -> Result<BluetoothScan, BluetoothError> {
+    let device = await_operation(
+        BluetoothDevice::FromIdAsync(device_id)
+            .map_err(|error| windows_error("could not open the Bluetooth device", error))?,
+        "Bluetooth device lookup for HFP battery property",
+    )?;
+    let service_id = RfcommServiceId::FromShortId(HFP_HANDSFREE_SERVICE_ID)
+        .map_err(|error| windows_error("could not resolve the HFP service ID", error))?;
+    let selector =
+        RfcommDeviceService::GetDeviceSelectorForBluetoothDeviceAndServiceId(&device, &service_id)
+            .map_err(|error| windows_error("could not create an HFP service selector", error))?;
+    let properties =
+        windows_collections::IVectorView::from(vec![HSTRING::from(WINDOWS_BATTERY_LIFE_PROPERTY)]);
+    let services = await_operation(
+        DeviceInformation::FindAllAsyncAqsFilterAndAdditionalProperties(&selector, &properties)
+            .map_err(|error| windows_error("could not enumerate HFP service properties", error))?,
+        "HFP service-property enumeration",
+    )?;
+    let service_count = services
+        .Size()
+        .map_err(|error| windows_error("could not count HFP services", error))?;
+    let mut scan = BluetoothScan {
+        devices_examined: service_count as usize,
+        ..BluetoothScan::default()
+    };
+    let mut battery_properties_found = 0;
+    for index in 0..service_count {
+        let service = services
+            .GetAt(index)
+            .map_err(|error| windows_error("could not read HFP service information", error))?;
+        match read_windows_battery_life(&service) {
+            Ok(Some(level)) => {
+                battery_properties_found += 1;
+                scan.readings.push(BluetoothBatteryReading {
+                    device_id: device_id.to_string_lossy(),
+                    name: name.to_owned(),
                     battery: battery_status(
                         level,
                         volty_battery::BatterySource::BluetoothDeviceProperty,
                     ),
                 });
             }
-            Ok(None) => scan.discovery_events.push(format!(
-                "{name:?}: no readable {WINDOWS_BATTERY_LIFE_PROPERTY} value"
-            )),
+            Ok(None) => {}
             Err(error) => scan.warnings.push(format!("{name}: {error}")),
         }
     }
+    scan.discovery_events.push(format!(
+        "{name:?}: HFP service-property lookup examined {service_count} RFCOMM service(s) and found {battery_properties_found} {WINDOWS_BATTERY_LIFE_PROPERTY} value(s); no RFCOMM connection was opened"
+    ));
     Ok(scan)
 }
 
