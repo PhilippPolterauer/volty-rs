@@ -11,6 +11,7 @@ use toml_edit::Document;
 pub const DEFAULT_LOW_BATTERY_THRESHOLD: u8 = 20;
 pub const DEFAULT_POLL_INTERVAL_SECONDS: u64 = 120;
 pub const DEFAULT_RETRY_INTERVAL_SECONDS: u64 = 15;
+pub const DEFAULT_UI_POLL_INTERVAL_MS: u64 = 250;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BatteryColorMap {
@@ -86,6 +87,7 @@ pub struct AppConfig {
     pub low_battery_threshold: u8,
     pub poll_interval_seconds: u64,
     pub retry_interval_seconds: u64,
+    pub ui_poll_interval_ms: u64,
     pub notifications_enabled: bool,
     pub log_level: LogLevel,
     pub battery_color_map: BatteryColorMap,
@@ -97,6 +99,7 @@ impl Default for AppConfig {
             low_battery_threshold: DEFAULT_LOW_BATTERY_THRESHOLD,
             poll_interval_seconds: DEFAULT_POLL_INTERVAL_SECONDS,
             retry_interval_seconds: DEFAULT_RETRY_INTERVAL_SECONDS,
+            ui_poll_interval_ms: DEFAULT_UI_POLL_INTERVAL_MS,
             notifications_enabled: true,
             log_level: LogLevel::Info,
             battery_color_map: BatteryColorMap::default(),
@@ -141,10 +144,12 @@ impl AppConfig {
             "# Volty user configuration\n\
             # Notify at or below this battery percentage (1-100).\n\
              # low_battery_threshold = {}\n\
-             # Seconds between successful battery readings (30-3600).\n\
+             # Seconds between successful battery readings (10-3600).\n\
              # poll_interval_seconds = {}\n\
              # Seconds between retries after a polling error (5-300).\n\
              # retry_interval_seconds = {}\n\
+             # Milliseconds between tray-loop checks (50-1000).\n\
+             # ui_poll_interval_ms = {}\n\
              # Set to false to disable low-battery toast notifications.\n\
              # notifications_enabled = {}\n\
              # error, warn, info, debug, or trace.\n\
@@ -161,6 +166,7 @@ impl AppConfig {
             defaults.low_battery_threshold,
             defaults.poll_interval_seconds,
             defaults.retry_interval_seconds,
+            defaults.ui_poll_interval_ms,
             defaults.notifications_enabled,
             defaults.log_level.as_str().to_ascii_lowercase()
         );
@@ -352,11 +358,15 @@ fn parse_toml(contents: &str, path: &Path) -> Result<AppConfig, ConfigError> {
             }
             "poll_interval_seconds" => {
                 config.poll_interval_seconds =
-                    parse_interval(value, "poll_interval_seconds", 30, 3600, path)?;
+                    parse_interval(value, "poll_interval_seconds", 10, 3600, "seconds", path)?;
             }
             "retry_interval_seconds" => {
                 config.retry_interval_seconds =
-                    parse_interval(value, "retry_interval_seconds", 5, 300, path)?;
+                    parse_interval(value, "retry_interval_seconds", 5, 300, "seconds", path)?;
+            }
+            "ui_poll_interval_ms" => {
+                config.ui_poll_interval_ms =
+                    parse_interval(value, "ui_poll_interval_ms", 50, 1000, "milliseconds", path)?;
             }
             "notifications_enabled" => {
                 config.notifications_enabled = value.as_bool().ok_or_else(|| {
@@ -504,21 +514,22 @@ fn parse_interval(
     key: &str,
     minimum: i64,
     maximum: i64,
+    unit: &str,
     path: &Path,
 ) -> Result<u64, ConfigError> {
-    let seconds = value.as_integer().ok_or_else(|| {
+    let interval = value.as_integer().ok_or_else(|| {
         ConfigError::new(format!(
             "invalid configuration {}: {key} must be an integer",
             path.display()
         ))
     })?;
-    if !(minimum..=maximum).contains(&seconds) {
+    if !(minimum..=maximum).contains(&interval) {
         return Err(ConfigError::new(format!(
-            "invalid configuration {}: {key} must be between {minimum} and {maximum} seconds",
+            "invalid configuration {}: {key} must be between {minimum} and {maximum} {unit}",
             path.display()
         )));
     }
-    Ok(seconds as u64)
+    Ok(interval as u64)
 }
 
 #[cfg(test)]
@@ -528,6 +539,7 @@ mod tests {
     #[test]
     fn toml_config_accepts_defaults_and_threshold_values() {
         let path = Path::new("config.toml");
+        assert_eq!(AppConfig::default().ui_poll_interval_ms, 250);
         assert_eq!(
             parse_toml("# Volty configuration\n", path).unwrap(),
             AppConfig::default()
@@ -541,7 +553,7 @@ mod tests {
         );
         assert_eq!(
             parse_toml(
-                "low_battery_threshold = 80\npoll_interval_seconds = 300\nretry_interval_seconds = 30\nnotifications_enabled = false\nlog_level = \"debug\"\n",
+                "low_battery_threshold = 80\npoll_interval_seconds = 300\nretry_interval_seconds = 30\nui_poll_interval_ms = 250\nnotifications_enabled = false\nlog_level = \"debug\"\n",
                 path
             )
             .unwrap(),
@@ -549,6 +561,7 @@ mod tests {
                 low_battery_threshold: 80,
                 poll_interval_seconds: 300,
                 retry_interval_seconds: 30,
+                ui_poll_interval_ms: 250,
                 notifications_enabled: false,
                 log_level: LogLevel::Debug,
                 battery_color_map: BatteryColorMap::default(),
@@ -557,6 +570,18 @@ mod tests {
         assert_eq!(
             parse_toml("[monitored_devices]\n\"bluetooth:test\" = false\n", path).unwrap(),
             AppConfig::default()
+        );
+        assert_eq!(
+            parse_toml(
+                "poll_interval_seconds = 10\nui_poll_interval_ms = 250\n",
+                path
+            )
+            .unwrap(),
+            AppConfig {
+                poll_interval_seconds: 10,
+                ui_poll_interval_ms: 250,
+                ..AppConfig::default()
+            }
         );
         for level in [
             LogLevel::Error,
@@ -601,11 +626,14 @@ mod tests {
             "low_battery_threshold = \"20\"",
             "low_battery_threshold = 0",
             "low_battery_threshold = 101",
-            "poll_interval_seconds = 29",
+            "poll_interval_seconds = 9",
             "poll_interval_seconds = 3601",
             "poll_interval_seconds = \"120\"",
             "retry_interval_seconds = 4",
             "retry_interval_seconds = 301",
+            "ui_poll_interval_ms = 49",
+            "ui_poll_interval_ms = 1001",
+            "ui_poll_interval_ms = \"250\"",
             "notifications_enabled = \"true\"",
             "log_level = 5",
             "log_level = \"verbose\"",

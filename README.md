@@ -229,8 +229,9 @@ editor is associated with `.toml` files). Supported settings are:
 
 ```toml
 low_battery_threshold = 20 # 1-100 percent
-poll_interval_seconds = 120 # 30-3600 seconds after a successful reading
+poll_interval_seconds = 120 # 10-3600 seconds after a successful reading
 retry_interval_seconds = 15 # 5-300 seconds after an error
+ui_poll_interval_ms = 250 # 50-1000 milliseconds between tray-loop checks
 notifications_enabled = true
 log_level = "info" # error, warn, info, debug, or trace
 
@@ -330,6 +331,9 @@ toolchain.
 cargo build --release --package volty-tray
 cargo test --workspace
 ```
+
+See the [sustained-run performance assessment](./docs/performance-assessment.md)
+for one-minute resource measurements and polling-path limitations.
 
 ## Releases
 

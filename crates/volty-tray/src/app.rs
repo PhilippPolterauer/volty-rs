@@ -28,7 +28,6 @@ use crate::{
     },
 };
 
-const UI_POLL_INTERVAL: Duration = Duration::from_millis(100);
 const CONFIG_RELOAD_DEBOUNCE: Duration = Duration::from_millis(200);
 const MAX_DIAGNOSTIC_LOG_ENTRIES: usize = 200;
 
@@ -1040,7 +1039,7 @@ pub fn run() -> Result<(), Box<dyn Error>> {
             }
         }
 
-        thread::sleep(UI_POLL_INTERVAL);
+        thread::sleep(Duration::from_millis(active_config.ui_poll_interval_ms));
     }
 }
 

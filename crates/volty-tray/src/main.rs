@@ -26,6 +26,15 @@ fn main() {
     let cli_mode = std::env::args().nth(1).as_deref() == Some("hid");
 
     #[cfg(windows)]
+    if !cli_mode {
+        if let Err(error) = attach_parent_console() {
+            show_error(&format!(
+                "volty: could not attach to the parent console: {error}"
+            ));
+        }
+    }
+
+    #[cfg(windows)]
     if cli_mode {
         if let Err(error) = attach_cli_console() {
             show_error(&format!(
@@ -47,6 +56,25 @@ fn main() {
         eprintln!("{message}");
         std::process::exit(2);
     }
+}
+
+#[cfg(windows)]
+fn attach_parent_console() -> std::io::Result<()> {
+    use windows_sys::Win32::{
+        Foundation::{GetLastError, ERROR_ACCESS_DENIED, ERROR_INVALID_HANDLE},
+        System::Console::{AttachConsole, ATTACH_PARENT_PROCESS},
+    };
+
+    if unsafe { AttachConsole(ATTACH_PARENT_PROCESS) } != 0 {
+        return Ok(());
+    }
+
+    let error = unsafe { GetLastError() };
+    if error == ERROR_ACCESS_DENIED || error == ERROR_INVALID_HANDLE {
+        return Ok(());
+    }
+
+    Err(std::io::Error::from_raw_os_error(error as i32))
 }
 
 #[cfg(windows)]
