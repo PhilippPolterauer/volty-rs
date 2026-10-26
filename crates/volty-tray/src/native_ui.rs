@@ -30,6 +30,7 @@ pub fn application_icon(instance: HINSTANCE, size: i32) -> io::Result<HICON> {
 
 pub struct FontSet {
     pub body: windows_sys::Win32::Graphics::Gdi::HFONT,
+    pub body_small: windows_sys::Win32::Graphics::Gdi::HFONT,
     pub heading: windows_sys::Win32::Graphics::Gdi::HFONT,
     pub monospace: windows_sys::Win32::Graphics::Gdi::HFONT,
 }
@@ -37,10 +38,20 @@ pub struct FontSet {
 impl FontSet {
     pub fn new() -> io::Result<Self> {
         let body = create_font(-16, FW_NORMAL, "Segoe UI")?;
-        let heading = match create_font(-27, FW_SEMIBOLD, "Segoe UI") {
+        let body_small = match create_font(-14, FW_NORMAL, "Segoe UI") {
             Ok(font) => font,
             Err(error) => {
                 unsafe { DeleteObject(body) };
+                return Err(error);
+            }
+        };
+        let heading = match create_font(-27, FW_SEMIBOLD, "Segoe UI") {
+            Ok(font) => font,
+            Err(error) => {
+                unsafe {
+                    DeleteObject(body);
+                    DeleteObject(body_small);
+                }
                 return Err(error);
             }
         };
@@ -49,6 +60,7 @@ impl FontSet {
             Err(error) => {
                 unsafe {
                     DeleteObject(body);
+                    DeleteObject(body_small);
                     DeleteObject(heading);
                 }
                 return Err(error);
@@ -57,6 +69,7 @@ impl FontSet {
 
         Ok(Self {
             body,
+            body_small,
             heading,
             monospace,
         })
@@ -67,6 +80,7 @@ impl Drop for FontSet {
     fn drop(&mut self) {
         unsafe {
             DeleteObject(self.body);
+            DeleteObject(self.body_small);
             DeleteObject(self.heading);
             DeleteObject(self.monospace);
         }

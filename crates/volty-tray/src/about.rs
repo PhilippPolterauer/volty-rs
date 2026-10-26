@@ -29,7 +29,7 @@ use crate::native_ui::{application_icon, set_control_font, static_control_color,
 
 const WINDOW_CLASS: &str = "VoltyAboutWindow";
 const WINDOW_WIDTH: i32 = 500;
-const WINDOW_HEIGHT: i32 = 280;
+const WINDOW_HEIGHT: i32 = 312;
 const STAR_ON_GITHUB_ID: usize = 1001;
 const CLOSE_ID: usize = 1002;
 const GITHUB_URL: &str = "https://github.com/PhilippPolterauer/volty-rs";
@@ -225,7 +225,7 @@ unsafe fn create_controls(
     if version.is_null() {
         return Err(io::Error::last_os_error().into());
     }
-    set_control_font(version, state.fonts.body);
+    set_control_font(version, state.fonts.body_small);
 
     let description = create_child(
         window,
@@ -235,14 +235,14 @@ unsafe fn create_controls(
         WS_CHILD | WS_VISIBLE,
         166,
         98,
-        300,
-        48,
+        310,
+        56,
         0,
     );
     if description.is_null() {
         return Err(io::Error::last_os_error().into());
     }
-    set_control_font(description, state.fonts.body);
+    set_control_font(description, state.fonts.body_small);
 
     let separator_text = to_wide("");
     if create_child(
@@ -252,7 +252,7 @@ unsafe fn create_controls(
         &separator_text,
         WS_CHILD | WS_VISIBLE | SS_ETCHEDHORZ,
         24,
-        184,
+        188,
         436,
         2,
         0,
@@ -269,19 +269,19 @@ unsafe fn create_controls(
         &status_text,
         WS_CHILD | WS_VISIBLE,
         30,
-        154,
+        158,
         436,
-        22,
+        20,
         0,
     );
     if state.status.is_null() {
         return Err(io::Error::last_os_error().into());
     }
-    set_control_font(state.status, state.fonts.body);
+    set_control_font(state.status, state.fonts.body_small);
 
     for (id, text, x, width) in [
-        (STAR_ON_GITHUB_ID, &star_text, 24, 160),
-        (CLOSE_ID, &close_text, 376, 84),
+        (STAR_ON_GITHUB_ID, &star_text, 24, 144),
+        (CLOSE_ID, &close_text, 384, 76),
     ] {
         let button = create_child(
             window,
@@ -290,15 +290,15 @@ unsafe fn create_controls(
             text,
             WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON as u32,
             x,
-            205,
+            220,
             width,
-            36,
+            32,
             id,
         );
         if button.is_null() {
             return Err(io::Error::last_os_error().into());
         }
-        set_control_font(button, state.fonts.body);
+        set_control_font(button, state.fonts.body_small);
     }
 
     Ok(())
