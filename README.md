@@ -337,7 +337,7 @@ for one-minute resource measurements and polling-path limitations.
 
 ## Releases
 
-Push a version tag such as `v0.1.0` to run the Windows release workflow. It
+Push a version tag such as `v0.2.0` to run the Windows release workflow. It
 tests the workspace, verifies the tag against the `volty-tray` package version,
 and publishes a standalone `x86_64-pc-windows-msvc` executable with a SHA-256
 checksum to the GitHub Release. No installer or sidecar runtime files are

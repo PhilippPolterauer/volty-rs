@@ -7,18 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-10-26
+
 ### Added
 
-- Added Windows Bluetooth LE battery monitoring and device discovery in the tray app.
-- Added SQLite-backed device state and prioritized HID polling.
-- Added a design plan for Bluetooth headphone battery support and extended the battery protocol abstractions toward that work.
+- Added Windows Bluetooth battery monitoring and device discovery, including support for compatible headphones.
+- Added SQLite-backed monitored-device preferences and recent-device state with prioritized HID polling.
+- Added a tray action to reset Volty configuration and local state.
+- Added a configurable UI polling interval and sustained-run performance assessment.
 
 ### Changed
 
-- Consolidated battery management in the shared `volty-battery` crate, removing duplicate protocol implementations and unused build scripts.
-- Refactored battery notification and configuration handling.
-- Removed the standalone diagnostic command executor; mouse battery queries stay in protocol backends.
-- Clarified HID battery support and project documentation.
+- Restored Ctrl+C handling when launched from a terminal while keeping Explorer launches console-free.
+- Improved Bluetooth discovery, HFP service handling, and diagnostics.
+- Consolidated battery readings in the shared `volty-battery` crate and refined HID++ battery support.
+- Refined battery notification and configuration handling, About-window layout, and font rendering.
+- Updated device-support and Bluetooth documentation.
 
 ## [0.1.0] - 2026-10-26
 
