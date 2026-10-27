@@ -1,33 +1,25 @@
-use std::{error::Error, ffi::c_void, io, mem, ptr};
+use std::{error::Error, io, mem, ptr};
 
 use windows_sys::Win32::{
-    Foundation::{
-        GetLastError, GlobalFree, ERROR_CLASS_ALREADY_EXISTS, HANDLE, HINSTANCE, HWND, LPARAM,
-        LRESULT, WPARAM,
-    },
-    Graphics::Gdi::{GetSysColorBrush, COLOR_WINDOW},
+    Foundation::{GlobalFree, HANDLE, HINSTANCE, HWND, LPARAM, LRESULT, WPARAM},
     System::{
         DataExchange::{CloseClipboard, EmptyClipboard, OpenClipboard, SetClipboardData},
         LibraryLoader::GetModuleHandleW,
         Memory::{GlobalAlloc, GlobalLock, GlobalUnlock, GMEM_MOVEABLE},
         SystemServices::SS_ETCHEDHORZ,
     },
-    UI::{
-        Shell::ShellExecuteW,
-        WindowsAndMessaging::{
-            CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetClientRect,
-            GetMessageW, GetWindowLongPtrW, MoveWindow, PostQuitMessage, RegisterClassW,
-            SetWindowLongPtrW, SetWindowTextW, ShowWindow, TranslateMessage, BS_PUSHBUTTON,
-            CREATESTRUCTW, CW_USEDEFAULT, ES_AUTOVSCROLL, ES_MULTILINE, ES_NOHIDESEL, ES_READONLY,
-            GWLP_USERDATA, MINMAXINFO, MSG, SW_SHOWNORMAL, WM_CLOSE, WM_COMMAND, WM_CTLCOLOREDIT,
-            WM_CTLCOLORSTATIC, WM_DESTROY, WM_GETMINMAXINFO, WM_NCCREATE, WM_SIZE, WNDCLASSW,
-            WS_CHILD, WS_EX_CLIENTEDGE, WS_OVERLAPPEDWINDOW, WS_TABSTOP, WS_VISIBLE, WS_VSCROLL,
-        },
+    UI::WindowsAndMessaging::{
+        CreateWindowExW, DestroyWindow, GetClientRect, MoveWindow, SetWindowTextW, BS_PUSHBUTTON,
+        CW_USEDEFAULT, ES_AUTOVSCROLL, ES_MULTILINE, ES_NOHIDESEL, ES_READONLY, MINMAXINFO,
+        SW_SHOW, WM_CLOSE, WM_COMMAND, WM_CTLCOLOREDIT, WM_CTLCOLORSTATIC, WM_DESTROY,
+        WM_GETMINMAXINFO, WM_NCCREATE, WM_SIZE, WS_CHILD, WS_EX_CLIENTEDGE, WS_OVERLAPPEDWINDOW,
+        WS_TABSTOP, WS_VISIBLE, WS_VSCROLL,
     },
 };
 
-use crate::native_ui::{
-    application_icon, edit_control_color, set_control_font, static_control_color, FontSet,
+use crate::{
+    native_ui::{edit_control_color, set_control_font, static_control_color, FontSet},
+    win32::{self, ControlSpec},
 };
 
 const WINDOW_CLASS: &str = "VoltyDiagnoseWindow";
@@ -49,34 +41,17 @@ struct DiagnoseWindow {
 }
 
 pub fn show_diagnose_window(report: &str) -> Result<(), Box<dyn Error>> {
-    let class_name = to_wide(WINDOW_CLASS);
-    let title = to_wide("Volty Diagnose");
+    let class_name = win32::to_wide(WINDOW_CLASS);
+    let title = win32::to_wide("Volty Diagnose");
     let instance = unsafe { GetModuleHandleW(ptr::null()) };
     if instance.is_null() {
         return Err(io::Error::last_os_error().into());
     }
-
-    let class = WNDCLASSW {
-        style: 0,
-        lpfnWndProc: Some(window_proc),
-        cbClsExtra: 0,
-        cbWndExtra: 0,
-        hInstance: instance,
-        hIcon: application_icon(instance, 32)?,
-        hCursor: ptr::null_mut(),
-        hbrBackground: unsafe { GetSysColorBrush(COLOR_WINDOW) },
-        lpszMenuName: ptr::null(),
-        lpszClassName: class_name.as_ptr(),
-    };
-    if unsafe { RegisterClassW(&class) } == 0
-        && unsafe { GetLastError() } != ERROR_CLASS_ALREADY_EXISTS
-    {
-        return Err(io::Error::last_os_error().into());
-    }
+    win32::register_window_class(&class_name, window_proc, instance, 32)?;
 
     let fonts = FontSet::new()?;
     let mut state = Box::new(DiagnoseWindow {
-        report: to_wide(report),
+        report: win32::to_wide(report),
         report_view: ptr::null_mut(),
         status: ptr::null_mut(),
         copy_button: ptr::null_mut(),
@@ -105,99 +80,86 @@ pub fn show_diagnose_window(report: &str) -> Result<(), Box<dyn Error>> {
         return Err(io::Error::last_os_error().into());
     }
 
-    let controls_result = unsafe { create_controls(window, instance, &mut state) };
+    let controls_result = create_controls(window, instance, &mut state);
     if let Err(error) = controls_result {
         unsafe { DestroyWindow(window) };
         return Err(error);
     }
     state.create_complete = true;
-
-    unsafe {
-        ShowWindow(window, windows_sys::Win32::UI::WindowsAndMessaging::SW_SHOW);
-        let mut message: MSG = mem::zeroed();
-        loop {
-            match GetMessageW(&mut message, ptr::null_mut(), 0, 0) {
-                -1 => {
-                    let error = io::Error::last_os_error();
-                    state.create_complete = false;
-                    DestroyWindow(window);
-                    return Err(error.into());
-                }
-                0 => break,
-                _ => {
-                    TranslateMessage(&message);
-                    DispatchMessageW(&message);
-                }
-            }
-        }
-    }
+    win32::run_message_loop(window, SW_SHOW, &mut state.create_complete)?;
     Ok(())
 }
 
-unsafe fn create_controls(
+fn create_controls(
     window: HWND,
     instance: HINSTANCE,
     state: &mut DiagnoseWindow,
 ) -> Result<(), Box<dyn Error>> {
-    let static_class = to_wide("STATIC");
-    let edit_class = to_wide("EDIT");
-    let button_class = to_wide("BUTTON");
-    let heading_text = to_wide("Diagnostic report");
-    let description_text = to_wide("Review the report before sharing.");
-    let status_text = to_wide("Nothing is uploaded automatically.");
-    let copy_text = to_wide("Copy Log");
-    let issue_text = to_wide("Open Issue");
-    let close_text = to_wide("Close");
+    let static_class = win32::to_wide("STATIC");
+    let edit_class = win32::to_wide("EDIT");
+    let button_class = win32::to_wide("BUTTON");
+    let heading_text = win32::to_wide("Diagnostic report");
+    let description_text = win32::to_wide("Review the report before sharing.");
+    let status_text = win32::to_wide("Nothing is uploaded automatically.");
+    let copy_text = win32::to_wide("Copy Log");
+    let issue_text = win32::to_wide("Open Issue");
+    let close_text = win32::to_wide("Close");
 
-    let heading = create_child(
+    let heading = win32::create_control(
         window,
         instance,
-        &static_class,
-        &heading_text,
-        0,
-        WS_CHILD | WS_VISIBLE,
-        24,
-        20,
-        820,
-        38,
-        0,
+        ControlSpec {
+            class: &static_class,
+            text: &heading_text,
+            extended_style: 0,
+            style: WS_CHILD | WS_VISIBLE,
+            x: 24,
+            y: 20,
+            width: 820,
+            height: 38,
+            id: 0,
+        },
     );
     if heading.is_null() {
         return Err(io::Error::last_os_error().into());
     }
     set_control_font(heading, state.fonts.heading);
 
-    let description = create_child(
+    let description = win32::create_control(
         window,
         instance,
-        &static_class,
-        &description_text,
-        0,
-        WS_CHILD | WS_VISIBLE,
-        26,
-        64,
-        820,
-        24,
-        0,
+        ControlSpec {
+            class: &static_class,
+            text: &description_text,
+            extended_style: 0,
+            style: WS_CHILD | WS_VISIBLE,
+            x: 26,
+            y: 64,
+            width: 820,
+            height: 24,
+            id: 0,
+        },
     );
     if description.is_null() {
         return Err(io::Error::last_os_error().into());
     }
     set_control_font(description, state.fonts.body);
 
-    let separator_text = to_wide("");
-    if create_child(
+    let empty_text = win32::to_wide("");
+    if win32::create_control(
         window,
         instance,
-        &static_class,
-        &separator_text,
-        0,
-        WS_CHILD | WS_VISIBLE | SS_ETCHEDHORZ,
-        24,
-        96,
-        900,
-        2,
-        0,
+        ControlSpec {
+            class: &static_class,
+            text: &empty_text,
+            extended_style: 0,
+            style: WS_CHILD | WS_VISIBLE | SS_ETCHEDHORZ,
+            x: 24,
+            y: 96,
+            width: 900,
+            height: 2,
+            id: 0,
+        },
     )
     .is_null()
     {
@@ -212,36 +174,40 @@ unsafe fn create_controls(
         | ES_READONLY as u32
         | ES_AUTOVSCROLL as u32
         | ES_NOHIDESEL as u32;
-    state.report_view = create_child(
+    state.report_view = win32::create_control(
         window,
         instance,
-        &edit_class,
-        &state.report,
-        WS_EX_CLIENTEDGE,
-        edit_style,
-        24,
-        108,
-        900,
-        500,
-        0,
+        ControlSpec {
+            class: &edit_class,
+            text: &state.report,
+            extended_style: WS_EX_CLIENTEDGE,
+            style: edit_style,
+            x: 24,
+            y: 108,
+            width: 900,
+            height: 500,
+            id: 0,
+        },
     );
     if state.report_view.is_null() {
         return Err(io::Error::last_os_error().into());
     }
     set_control_font(state.report_view, state.fonts.monospace);
 
-    state.status = create_child(
+    state.status = win32::create_control(
         window,
         instance,
-        &static_class,
-        &status_text,
-        0,
-        WS_CHILD | WS_VISIBLE,
-        24,
-        636,
-        420,
-        28,
-        0,
+        ControlSpec {
+            class: &static_class,
+            text: &status_text,
+            extended_style: 0,
+            style: WS_CHILD | WS_VISIBLE,
+            x: 24,
+            y: 636,
+            width: 420,
+            height: 28,
+            id: 0,
+        },
     );
     if state.status.is_null() {
         return Err(io::Error::last_os_error().into());
@@ -260,18 +226,20 @@ unsafe fn create_controls(
         } else {
             110
         };
-        let button = create_child(
+        let button = win32::create_control(
             window,
             instance,
-            &button_class,
-            text,
-            0,
-            WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON as u32,
-            0,
-            0,
-            width,
-            36,
-            id,
+            ControlSpec {
+                class: &button_class,
+                text,
+                extended_style: 0,
+                style: WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON as u32,
+                x: 0,
+                y: 0,
+                width,
+                height: 36,
+                id,
+            },
         );
         if button.is_null() {
             return Err(io::Error::last_os_error().into());
@@ -289,35 +257,6 @@ unsafe fn create_controls(
     Ok(())
 }
 
-unsafe fn create_child(
-    parent: HWND,
-    instance: HINSTANCE,
-    class: &[u16],
-    text: &[u16],
-    extended_style: u32,
-    style: u32,
-    x: i32,
-    y: i32,
-    width: i32,
-    height: i32,
-    id: usize,
-) -> HWND {
-    CreateWindowExW(
-        extended_style,
-        class.as_ptr(),
-        text.as_ptr(),
-        style,
-        x,
-        y,
-        width,
-        height,
-        parent,
-        id as *mut c_void,
-        instance,
-        ptr::null(),
-    )
-}
-
 unsafe extern "system" fn window_proc(
     window: HWND,
     message: u32,
@@ -325,75 +264,82 @@ unsafe extern "system" fn window_proc(
     lparam: LPARAM,
 ) -> LRESULT {
     if message == WM_NCCREATE {
-        let create = &*(lparam as *const CREATESTRUCTW);
-        SetWindowLongPtrW(window, GWLP_USERDATA, create.lpCreateParams as isize);
+        unsafe { win32::attach_window_state(window, lparam) };
     }
 
     match message {
         WM_CTLCOLORSTATIC => static_control_color(wparam),
         WM_CTLCOLOREDIT => edit_control_color(wparam),
         WM_GETMINMAXINFO => {
-            let limits = &mut *(lparam as *mut MINMAXINFO);
+            // SAFETY: WM_GETMINMAXINFO supplies a pointer to a writable MINMAXINFO structure.
+            let limits = unsafe { &mut *(lparam as *mut MINMAXINFO) };
             limits.ptMinTrackSize.x = 720;
             limits.ptMinTrackSize.y = 560;
             0
         }
         WM_SIZE => {
-            let state_ptr = GetWindowLongPtrW(window, GWLP_USERDATA) as *mut DiagnoseWindow;
-            if !state_ptr.is_null() && !(*state_ptr).report_view.is_null() {
-                if let Err(error) = layout_controls(window, &*state_ptr) {
-                    let status = to_wide(&format!("Could not resize the report view: {error}"));
-                    SetWindowTextW((*state_ptr).status, status.as_ptr());
+            let state_ptr = win32::window_state::<DiagnoseWindow>(window);
+            if !state_ptr.is_null() {
+                // SAFETY: the window owns the boxed state until its message loop exits.
+                let state = unsafe { &*state_ptr };
+                if !state.report_view.is_null() {
+                    if let Err(error) = layout_controls(window, state) {
+                        let status =
+                            win32::to_wide(&format!("Could not resize the report view: {error}"));
+                        unsafe { SetWindowTextW(state.status, status.as_ptr()) };
+                    }
                 }
             }
             0
         }
         WM_COMMAND => {
-            let id = (wparam & 0xffff) as usize;
-            let state_ptr = GetWindowLongPtrW(window, GWLP_USERDATA) as *mut DiagnoseWindow;
+            let id = wparam & 0xffff;
+            let state_ptr = win32::window_state::<DiagnoseWindow>(window);
             if state_ptr.is_null() {
-                return DefWindowProcW(window, message, wparam, lparam);
+                return win32::default_window_proc(window, message, wparam, lparam);
             }
-            let state = &mut *state_ptr;
+            // SAFETY: the window owns the boxed state until its message loop exits.
+            let state = unsafe { &mut *state_ptr };
             let status = match id {
                 COPY_LOG_ID => match copy_to_clipboard(window, &state.report) {
                     Ok(()) => "Diagnostic log copied to the clipboard.".to_owned(),
                     Err(error) => format!("Could not copy diagnostic log: {error}"),
                 },
-                OPEN_ISSUE_ID => match open_issue() {
+                OPEN_ISSUE_ID => match win32::open_url(ISSUE_URL) {
                     Ok(()) => {
                         "Issue draft opened. Copy the log and paste it into the draft.".to_owned()
                     }
                     Err(error) => format!("Could not open GitHub issue page: {error}"),
                 },
                 CLOSE_ID => {
-                    DestroyWindow(window);
+                    unsafe { DestroyWindow(window) };
                     return 0;
                 }
-                _ => return DefWindowProcW(window, message, wparam, lparam),
+                _ => return win32::default_window_proc(window, message, wparam, lparam),
             };
-            let status = to_wide(&status);
-            SetWindowTextW(state.status, status.as_ptr());
+            let status = win32::to_wide(&status);
+            unsafe { SetWindowTextW(state.status, status.as_ptr()) };
             0
         }
         WM_CLOSE => {
-            DestroyWindow(window);
+            unsafe { DestroyWindow(window) };
             0
         }
         WM_DESTROY => {
-            let state_ptr = GetWindowLongPtrW(window, GWLP_USERDATA) as *mut DiagnoseWindow;
-            if !state_ptr.is_null() && (*state_ptr).create_complete {
-                PostQuitMessage(0);
+            let state_ptr = win32::window_state::<DiagnoseWindow>(window);
+            if !state_ptr.is_null() {
+                // SAFETY: the window owns the boxed state until its message loop exits.
+                win32::quit_after_creation((*state_ptr).create_complete);
             }
             0
         }
-        _ => DefWindowProcW(window, message, wparam, lparam),
+        _ => win32::default_window_proc(window, message, wparam, lparam),
     }
 }
 
-unsafe fn layout_controls(window: HWND, state: &DiagnoseWindow) -> Result<(), io::Error> {
-    let mut client = mem::zeroed();
-    if GetClientRect(window, &mut client) == 0 {
+fn layout_controls(window: HWND, state: &DiagnoseWindow) -> Result<(), io::Error> {
+    let mut client = unsafe { mem::zeroed() };
+    if unsafe { GetClientRect(window, &mut client) } == 0 {
         return Err(io::Error::last_os_error());
     }
 
@@ -427,7 +373,7 @@ unsafe fn layout_controls(window: HWND, state: &DiagnoseWindow) -> Result<(), io
         (state.issue_button, issue_x, footer_y, issue_width, 36),
         (state.close_button, close_x, footer_y, close_width, 36),
     ] {
-        if MoveWindow(control, x, y, control_width, control_height, 1) == 0 {
+        if unsafe { MoveWindow(control, x, y, control_width, control_height, 1) } == 0 {
             return Err(io::Error::last_os_error());
         }
     }
@@ -435,68 +381,41 @@ unsafe fn layout_controls(window: HWND, state: &DiagnoseWindow) -> Result<(), io
     Ok(())
 }
 
-unsafe fn copy_to_clipboard(window: HWND, report: &[u16]) -> Result<(), io::Error> {
-    let bytes = report.len() * mem::size_of::<u16>();
-    let memory = GlobalAlloc(GMEM_MOVEABLE, bytes);
+fn copy_to_clipboard(window: HWND, report: &[u16]) -> Result<(), io::Error> {
+    let memory = unsafe { GlobalAlloc(GMEM_MOVEABLE, mem::size_of_val(report)) };
     if memory.is_null() {
         return Err(io::Error::last_os_error());
     }
-    let destination = GlobalLock(memory) as *mut u16;
+    let destination = unsafe { GlobalLock(memory) as *mut u16 };
     if destination.is_null() {
-        GlobalFree(memory);
+        unsafe { GlobalFree(memory) };
         return Err(io::Error::last_os_error());
     }
-    ptr::copy_nonoverlapping(report.as_ptr(), destination, report.len());
-    GlobalUnlock(memory);
+    // SAFETY: GlobalLock returned a writable buffer at least as large as the report slice.
+    unsafe { ptr::copy_nonoverlapping(report.as_ptr(), destination, report.len()) };
+    unsafe { GlobalUnlock(memory) };
 
-    if OpenClipboard(window) == 0 {
-        GlobalFree(memory);
+    if unsafe { OpenClipboard(window) } == 0 {
+        unsafe { GlobalFree(memory) };
         return Err(io::Error::last_os_error());
     }
 
-    let mut transferred = false;
-    let mut error = None;
-    if EmptyClipboard() == 0 {
-        error = Some(io::Error::last_os_error());
-    } else if SetClipboardData(CLIPBOARD_UNICODE_TEXT, memory as HANDLE).is_null() {
-        error = Some(io::Error::last_os_error());
-    } else {
-        transferred = true;
-    }
-    let close_succeeded = CloseClipboard() != 0;
-
-    if !transferred {
-        GlobalFree(memory);
-    }
-    match error {
-        Some(error) => Err(error),
-        None if !close_succeeded => Err(io::Error::last_os_error()),
-        None => Ok(()),
-    }
-}
-
-fn open_issue() -> Result<(), io::Error> {
-    let verb = to_wide("open");
-    let target = to_wide(ISSUE_URL);
-    let result = unsafe {
-        ShellExecuteW(
-            ptr::null_mut(),
-            verb.as_ptr(),
-            target.as_ptr(),
-            ptr::null(),
-            ptr::null(),
-            SW_SHOWNORMAL,
-        )
-    } as isize;
-    if result <= 32 {
-        Err(io::Error::other(format!(
-            "ShellExecuteW failed with code {result}"
-        )))
+    let set_result = if unsafe { EmptyClipboard() } == 0
+        || unsafe { SetClipboardData(CLIPBOARD_UNICODE_TEXT, memory as HANDLE) }.is_null()
+    {
+        Err(io::Error::last_os_error())
     } else {
         Ok(())
-    }
-}
+    };
+    let close_succeeded = unsafe { CloseClipboard() } != 0;
 
-fn to_wide(value: &str) -> Vec<u16> {
-    value.encode_utf16().chain(Some(0)).collect()
+    if set_result.is_err() {
+        unsafe { GlobalFree(memory) };
+    }
+    set_result?;
+    if !close_succeeded {
+        return Err(io::Error::last_os_error());
+    }
+
+    Ok(())
 }

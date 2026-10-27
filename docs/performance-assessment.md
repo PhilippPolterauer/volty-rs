@@ -7,7 +7,7 @@
 
 The observed process had a small, stable footprint over the one-minute sample: working set varied by 0.05 MB, private bytes by 0.08 MB, and CPU time did not measurably increase at the sampling precision used. This is consistent with an idle tray application, but it is not a general benchmark or proof of long-term stability.
 
-Source inspection shows that the device poller waits between scans rather than continuously looping. At a 10-second successful-poll interval, it can run up to six scans per minute when scans complete quickly, versus at most one every two minutes with the default interval. This increases per-device query activity, but does not imply a twelve-fold increase in total process CPU. Bluetooth is disabled in the default Cargo feature set. When enabled, its paired-device GATT scan has a 30-second budget, but the earlier classic Bluetooth and SetupAPI scans have no single overall deadline. Those paths can dominate scan time on slow or unusually large device inventories.
+Source inspection shows that the device poller waits between scans rather than continuously looping. At a 10-second successful-poll interval, it can run up to six scans per minute when scans complete quickly, versus at most one every two minutes with the default interval. This increases per-device query activity, but does not imply a twelve-fold increase in total process CPU. Bluetooth is disabled in the default Cargo feature set. When enabled, its classic Bluetooth property, SetupAPI, and paired-device GATT phases share a 30-second overall scan budget, with individual Windows Runtime operations still capped at five seconds. Slow or unusually large device inventories may therefore return partial results with a budget warning.
 
 ## Observed process
 
@@ -40,11 +40,15 @@ Each scan repeats the same HID discovery and battery-query work, so average devi
 
 The UI loop's new 250 ms default reduces idle checks from about ten to four per second compared with the previous 100 ms value. The tradeoff is up to 250 ms before the loop processes queued tray actions or completed readings; device polling itself remains on its worker thread.
 
+The battery ETA uses a per-device discharge history, defaulting to a 10-minute window (configurable from 1 to 180 minutes). With 10-second polling, this retains about 60 samples per device. The estimate needs a full window of usable readings, resets while charging or after a level increase, and requires no additional device I/O.
+
+Battery ETA uses a bounded per-device history, defaulting to a 10-minute window (configurable from 1 to 180 minutes). With 10-second polling, that is about 60 samples per device. The estimate is unavailable until the window is populated and is cleared on charging or an increasing percentage; this adds small in-memory state but no additional device I/O.
+
 ### Optional Bluetooth path
 
 Bluetooth is not enabled by default in the tray crate. ([Cargo.toml](../crates/volty-tray/Cargo.toml))
 
-When enabled, each device query performs classic Bluetooth property discovery, SetupAPI device-property discovery, and paired BLE discovery sequentially. Individual Windows Runtime operations time out after five seconds; the paired BLE/GATT scan has a 30-second total budget. The classic property/HFP and SetupAPI phases do not share that budget, so their total duration can scale with the number of devices and Windows response times. The work is on the device-poller thread, not the tray UI thread, but it can delay the next battery update. ([windows_backend.rs](../crates/volty-bluetooth/src/windows_backend.rs#L44), [windows_backend.rs](../crates/volty-bluetooth/src/windows_backend.rs#L45), [windows_backend.rs](../crates/volty-bluetooth/src/windows_backend.rs#L69), [windows_backend.rs](../crates/volty-bluetooth/src/windows_backend.rs#L519))
+When enabled, each device query performs classic Bluetooth property discovery, SetupAPI device-property discovery, and paired BLE discovery sequentially under one shared 30-second overall scan budget. Individual Windows Runtime operations still time out after five seconds. If the budget is exhausted, phases stop and return results gathered so far with a warning. The work is on the device-poller thread, not the tray UI thread, but it can delay the next battery update. ([windows_backend.rs](../crates/volty-bluetooth/src/windows_backend.rs#L44), [windows_backend.rs](../crates/volty-bluetooth/src/windows_backend.rs#L45), [windows_backend.rs](../crates/volty-bluetooth/src/windows_backend.rs#L69), [windows_backend.rs](../crates/volty-bluetooth/src/windows_backend.rs#L519))
 
 ## Conclusion and follow-up
 

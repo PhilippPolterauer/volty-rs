@@ -43,6 +43,7 @@ supported.
 ## ✨ Features
 
 * **HID++ Battery Monitoring:** Polls supported Logitech interfaces and paired-device indexes, prioritizes recently successful receiver slots from a machine-local SQLite cache, and uses each device's HID++ name when available.
+* **Battery Runtime Estimate:** Estimates time remaining from the recent discharge rate, using a configurable history window (10 minutes by default).
 * **Experimental Bluetooth integration:** Opt-in via the `bluetooth` Cargo feature and currently not working as intended or tested; it is disabled in default builds.
 * **Configurable Color Coding:** The default tray map is green above 30%, yellow from 16–30%, and red at 15% or below. Thresholds and colors can be overridden in the TOML configuration.
 * **Threshold Alerts:** One-time native Windows toast notification per discharge cycle when battery hits warning thresholds.
@@ -70,8 +71,8 @@ Boot** in the tray menu. If enabled, Windows starts Volty from the executable's
 current location, so keep the file there. Volty monitors supported Logitech
 HID++ devices while running. Bluetooth is disabled in the default build and is
 currently not working as intended or tested. Its tray icon shows the lowest
-reported battery level;
-hover over the icon for device names and reported charging status.
+reported battery level; hover over it for device names, charging status, and
+an estimated time remaining after enough discharge history has accumulated.
 
 ![Volty tray icon showing a monitored device's battery and charging status](./docs/tray.png)
 
@@ -232,6 +233,7 @@ low_battery_threshold = 20 # 1-100 percent
 poll_interval_seconds = 120 # 10-3600 seconds after a successful reading
 retry_interval_seconds = 15 # 5-300 seconds after an error
 ui_poll_interval_ms = 250 # 50-1000 milliseconds between tray-loop checks
+battery_eta_window_minutes = 10 # 1-180 minutes of discharge history
 notifications_enabled = true
 log_level = "info" # error, warn, info, debug, or trace
 
@@ -249,6 +251,9 @@ log_level = "info" # error, warn, info, debug, or trace
 Settings are stored per-user and do not require administrator privileges.
 Volty watches the file for changes, and **Refresh Now** also reloads it.
 Invalid settings are reported while the last valid configuration stays active.
+Battery ETA appears after a full configured history window of discharging
+readings; it is hidden while charging or when the recent level trend cannot
+produce a reliable estimate.
 The default tray color map matches the green/yellow/red ranges above; uncomment
 `[battery_color_map]` to override its cutoffs or colors. Any omitted values
 retain their defaults. The red and yellow cutoffs can be set from 0–99 and

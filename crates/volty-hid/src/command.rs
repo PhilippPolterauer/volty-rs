@@ -146,6 +146,13 @@ impl std::error::Error for CommandError {
     }
 }
 
+struct CommandContext<'a> {
+    profile: &'a CommandProfile,
+    command_name: &'a str,
+    device_index: u8,
+    timeout: Duration,
+}
+
 /// Executes validated profile commands over an injected transport.
 ///
 /// Feature indexes are resolved from the device for each feature call. A
@@ -185,6 +192,12 @@ impl<T: HidppTransport> CommandExecutor<T> {
         if command.access == Access::StateChanging && !allow_state_changes {
             return Err(self.error(profile, command_name, CommandErrorKind::StateChangingDenied));
         }
+        let context = CommandContext {
+            profile,
+            command_name,
+            device_index,
+            timeout: command.timeout,
+        };
 
         let started = Instant::now();
         let mut request_frames = Vec::new();
@@ -192,11 +205,8 @@ impl<T: HidppTransport> CommandExecutor<T> {
         let (response, feature) = match command.operation {
             Operation::FeatureLookup => {
                 let (feature, response) = self.lookup_feature(
-                    profile,
-                    command_name,
+                    &context,
                     command.feature_id,
-                    device_index,
-                    command.timeout,
                     &mut request_frames,
                     &mut response_frames,
                 )?;
@@ -204,37 +214,24 @@ impl<T: HidppTransport> CommandExecutor<T> {
             }
             Operation::FeatureCall => {
                 let (feature, _) = self.lookup_feature(
-                    profile,
-                    command_name,
+                    &context,
                     command.feature_id,
-                    device_index,
-                    command.timeout,
                     &mut request_frames,
                     &mut response_frames,
                 )?;
                 let request = self.feature_call_frame(
-                    profile,
-                    command_name,
-                    device_index,
+                    &context,
                     feature.runtime_index,
                     command.function_index,
                     command.report,
                     &command.request_params,
                 )?;
-                let raw_request = request.encode().map_err(|error| {
-                    self.error(profile, command_name, CommandErrorKind::Protocol(error))
-                })?;
-                request_frames.push(raw_request);
-                let response =
-                    self.transport
-                        .transact(&request, command.timeout)
-                        .map_err(|error| {
-                            self.error(profile, command_name, CommandErrorKind::Transport(error))
-                        })?;
-                let raw_response = response.encode().map_err(|error| {
-                    self.error(profile, command_name, CommandErrorKind::Protocol(error))
-                })?;
-                response_frames.push(raw_response);
+                let response = self.transact(
+                    &context,
+                    &request,
+                    &mut request_frames,
+                    &mut response_frames,
+                )?;
                 (response, Some(feature))
             }
         };
@@ -267,52 +264,36 @@ impl<T: HidppTransport> CommandExecutor<T> {
 
     fn lookup_feature(
         &mut self,
-        profile: &CommandProfile,
-        command_name: &str,
+        context: &CommandContext<'_>,
         logical_id: u16,
-        device_index: u8,
-        timeout: Duration,
         request_frames: &mut Vec<Vec<u8>>,
         response_frames: &mut Vec<Vec<u8>>,
     ) -> Result<(FeatureMapping, HidppFrame), CommandError> {
-        let software_id = self.software_id(profile, command_name)?;
+        let software_id = self.software_id(context.profile, context.command_name)?;
         let mut params = [0u8; 16];
         params[0] = (logical_id >> 8) as u8;
         params[1] = logical_id as u8;
         let request = HidppFrame::long(
-            device_index,
+            context.device_index,
             FEATURE_ROOT_INDEX,
             ROOT_GET_FEATURE_FUNCTION,
             software_id,
             params,
         );
-        let raw_request = request.encode().map_err(|error| {
-            self.error(profile, command_name, CommandErrorKind::Protocol(error))
-        })?;
-        request_frames.push(raw_request);
-        let response = self
-            .transport
-            .transact(&request, timeout)
-            .map_err(|error| {
-                self.error(profile, command_name, CommandErrorKind::Transport(error))
-            })?;
-        let raw_response = response.encode().map_err(|error| {
-            self.error(profile, command_name, CommandErrorKind::Protocol(error))
-        })?;
-        response_frames.push(raw_response);
+        let response = self.transact(context, &request, request_frames, response_frames)?;
 
         if response.params.len() < 3 {
             return Err(self.error(
-                profile,
-                command_name,
+                context.profile,
+                context.command_name,
                 CommandErrorKind::MalformedFeatureLookup,
             ));
         }
         let runtime_index = response.params[0];
         if runtime_index == 0 && logical_id != 0 {
             return Err(self.error(
-                profile,
-                command_name,
+                context.profile,
+                context.command_name,
                 CommandErrorKind::FeatureNotFound(logical_id),
             ));
         }
@@ -327,21 +308,19 @@ impl<T: HidppTransport> CommandExecutor<T> {
 
     fn feature_call_frame(
         &mut self,
-        profile: &CommandProfile,
-        command_name: &str,
-        device_index: u8,
+        context: &CommandContext<'_>,
         runtime_index: u8,
         function_index: u8,
         report: FrameFormat,
         request_params: &[u8],
     ) -> Result<HidppFrame, CommandError> {
-        let software_id = self.software_id(profile, command_name)?;
+        let software_id = self.software_id(context.profile, context.command_name)?;
         let params = match report {
             FrameFormat::Short => {
                 let mut params = [0u8; 3];
                 params[..request_params.len()].copy_from_slice(request_params);
                 HidppFrame::short(
-                    device_index,
+                    context.device_index,
                     runtime_index,
                     function_index,
                     software_id,
@@ -352,7 +331,7 @@ impl<T: HidppTransport> CommandExecutor<T> {
                 let mut params = [0u8; 16];
                 params[..request_params.len()].copy_from_slice(request_params);
                 HidppFrame::long(
-                    device_index,
+                    context.device_index,
                     runtime_index,
                     function_index,
                     software_id,
@@ -361,6 +340,42 @@ impl<T: HidppTransport> CommandExecutor<T> {
             }
         };
         Ok(params)
+    }
+
+    fn transact(
+        &mut self,
+        context: &CommandContext<'_>,
+        request: &HidppFrame,
+        request_frames: &mut Vec<Vec<u8>>,
+        response_frames: &mut Vec<Vec<u8>>,
+    ) -> Result<HidppFrame, CommandError> {
+        let raw_request = request.encode().map_err(|error| {
+            self.error(
+                context.profile,
+                context.command_name,
+                CommandErrorKind::Protocol(error),
+            )
+        })?;
+        request_frames.push(raw_request);
+        let response = self
+            .transport
+            .transact(request, context.timeout)
+            .map_err(|error| {
+                self.error(
+                    context.profile,
+                    context.command_name,
+                    CommandErrorKind::Transport(error),
+                )
+            })?;
+        let raw_response = response.encode().map_err(|error| {
+            self.error(
+                context.profile,
+                context.command_name,
+                CommandErrorKind::Protocol(error),
+            )
+        })?;
+        response_frames.push(raw_response);
+        Ok(response)
     }
 
     fn software_id(

@@ -736,7 +736,7 @@ mod tests {
         assert!(!format!("{interface:?}").contains("private-hid-path"));
         assert!(!format!("{selector:?}").contains("private-hid-path"));
         assert_eq!(
-            select_hid_interface_from(&[interface.clone()], &selector).unwrap(),
+            select_hid_interface_from(std::slice::from_ref(&interface), &selector).unwrap(),
             interface
         );
 

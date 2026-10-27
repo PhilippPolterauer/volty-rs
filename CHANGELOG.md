@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Split the tray application into focused modules (`app/*`, `tray/*`, shared `win32` helpers) and decomposed the monolithic event loop and device query.
+- Bluetooth scans now share a single overall time budget across the classic, SetupAPI, and BLE phases; partial results are kept with a warning.
+- The log file now rotates at 5 MiB, keeping one `.1` backup.
+- Resolved all Clippy warnings and removed runtime `unwrap` panics in HID selection and report parsing.
+
 ## [0.2.0] - 2026-10-26
 
 ### Added

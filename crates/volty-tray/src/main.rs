@@ -20,6 +20,8 @@ mod report;
 mod state;
 #[cfg(windows)]
 mod tray;
+#[cfg(windows)]
+mod win32;
 
 fn main() {
     #[cfg(windows)]

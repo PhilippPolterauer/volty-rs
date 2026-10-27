@@ -12,6 +12,7 @@ pub const DEFAULT_LOW_BATTERY_THRESHOLD: u8 = 20;
 pub const DEFAULT_POLL_INTERVAL_SECONDS: u64 = 120;
 pub const DEFAULT_RETRY_INTERVAL_SECONDS: u64 = 15;
 pub const DEFAULT_UI_POLL_INTERVAL_MS: u64 = 250;
+pub const DEFAULT_BATTERY_ETA_WINDOW_MINUTES: u64 = 10;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BatteryColorMap {
@@ -88,6 +89,7 @@ pub struct AppConfig {
     pub poll_interval_seconds: u64,
     pub retry_interval_seconds: u64,
     pub ui_poll_interval_ms: u64,
+    pub battery_eta_window_minutes: u64,
     pub notifications_enabled: bool,
     pub log_level: LogLevel,
     pub battery_color_map: BatteryColorMap,
@@ -100,6 +102,7 @@ impl Default for AppConfig {
             poll_interval_seconds: DEFAULT_POLL_INTERVAL_SECONDS,
             retry_interval_seconds: DEFAULT_RETRY_INTERVAL_SECONDS,
             ui_poll_interval_ms: DEFAULT_UI_POLL_INTERVAL_MS,
+            battery_eta_window_minutes: DEFAULT_BATTERY_ETA_WINDOW_MINUTES,
             notifications_enabled: true,
             log_level: LogLevel::Info,
             battery_color_map: BatteryColorMap::default(),
@@ -135,7 +138,7 @@ impl AppConfig {
 
     fn ensure_config_file_at(path: impl AsRef<Path>) -> Result<PathBuf, ConfigError> {
         let path = path.as_ref();
-        if path.exists() {
+        if config_file_exists(path)? {
             return Ok(path.to_path_buf());
         }
 
@@ -150,6 +153,8 @@ impl AppConfig {
              # retry_interval_seconds = {}\n\
              # Milliseconds between tray-loop checks (50-1000).\n\
              # ui_poll_interval_ms = {}\n\
+             # Minutes of discharge history used to estimate battery runtime (1-180).\n\
+             # battery_eta_window_minutes = {}\n\
              # Set to false to disable low-battery toast notifications.\n\
              # notifications_enabled = {}\n\
              # error, warn, info, debug, or trace.\n\
@@ -167,6 +172,7 @@ impl AppConfig {
             defaults.poll_interval_seconds,
             defaults.retry_interval_seconds,
             defaults.ui_poll_interval_ms,
+            defaults.battery_eta_window_minutes,
             defaults.notifications_enabled,
             defaults.log_level.as_str().to_ascii_lowercase()
         );
@@ -231,11 +237,20 @@ pub fn load_legacy_monitored_devices() -> Result<BTreeMap<String, bool>, ConfigE
     load_legacy_monitored_devices_from(path)
 }
 
+fn config_file_exists(path: &Path) -> Result<bool, ConfigError> {
+    path.try_exists().map_err(|error| {
+        ConfigError::new(format!(
+            "could not inspect configuration {}: {error}",
+            path.display()
+        ))
+    })
+}
+
 fn load_legacy_monitored_devices_from(
     path: impl AsRef<Path>,
 ) -> Result<BTreeMap<String, bool>, ConfigError> {
     let path = path.as_ref();
-    if !path.exists() {
+    if !config_file_exists(path)? {
         return Ok(BTreeMap::new());
     }
     let contents = fs::read_to_string(path).map_err(|error| {
@@ -287,7 +302,7 @@ pub fn remove_legacy_monitored_devices() -> Result<(), ConfigError> {
 
 fn remove_legacy_monitored_devices_from(path: impl AsRef<Path>) -> Result<(), ConfigError> {
     let path = path.as_ref();
-    if !path.exists() {
+    if !config_file_exists(path)? {
         return Ok(());
     }
     let contents = fs::read_to_string(path).map_err(|error| {
@@ -367,6 +382,10 @@ fn parse_toml(contents: &str, path: &Path) -> Result<AppConfig, ConfigError> {
             "ui_poll_interval_ms" => {
                 config.ui_poll_interval_ms =
                     parse_interval(value, "ui_poll_interval_ms", 50, 1000, "milliseconds", path)?;
+            }
+            "battery_eta_window_minutes" => {
+                config.battery_eta_window_minutes =
+                    parse_interval(value, "battery_eta_window_minutes", 1, 180, "minutes", path)?;
             }
             "notifications_enabled" => {
                 config.notifications_enabled = value.as_bool().ok_or_else(|| {
@@ -540,6 +559,7 @@ mod tests {
     fn toml_config_accepts_defaults_and_threshold_values() {
         let path = Path::new("config.toml");
         assert_eq!(AppConfig::default().ui_poll_interval_ms, 250);
+        assert_eq!(AppConfig::default().battery_eta_window_minutes, 10);
         assert_eq!(
             parse_toml("# Volty configuration\n", path).unwrap(),
             AppConfig::default()
@@ -553,7 +573,7 @@ mod tests {
         );
         assert_eq!(
             parse_toml(
-                "low_battery_threshold = 80\npoll_interval_seconds = 300\nretry_interval_seconds = 30\nui_poll_interval_ms = 250\nnotifications_enabled = false\nlog_level = \"debug\"\n",
+                "low_battery_threshold = 80\npoll_interval_seconds = 300\nretry_interval_seconds = 30\nui_poll_interval_ms = 250\nbattery_eta_window_minutes = 20\nnotifications_enabled = false\nlog_level = \"debug\"\n",
                 path
             )
             .unwrap(),
@@ -562,6 +582,7 @@ mod tests {
                 poll_interval_seconds: 300,
                 retry_interval_seconds: 30,
                 ui_poll_interval_ms: 250,
+                battery_eta_window_minutes: 20,
                 notifications_enabled: false,
                 log_level: LogLevel::Debug,
                 battery_color_map: BatteryColorMap::default(),
@@ -634,6 +655,12 @@ mod tests {
             "ui_poll_interval_ms = 49",
             "ui_poll_interval_ms = 1001",
             "ui_poll_interval_ms = \"250\"",
+            "battery_eta_window_minutes = 0",
+            "battery_eta_window_minutes = 181",
+            "battery_eta_window_minutes = \"10\"",
+            "battery_eta_window_minutes = 0",
+            "battery_eta_window_minutes = 181",
+            "battery_eta_window_minutes = \"10\"",
             "notifications_enabled = \"true\"",
             "log_level = 5",
             "log_level = \"verbose\"",
@@ -676,12 +703,12 @@ mod tests {
 
         assert_eq!(AppConfig::load_from(&path).unwrap(), AppConfig::default());
         let created_path = path.as_path();
-        let contents = fs::read_to_string(&created_path).unwrap();
+        let contents = fs::read_to_string(created_path).unwrap();
         assert!(contents.lines().all(|line| line.starts_with('#')));
 
-        fs::remove_file(&created_path).unwrap();
+        fs::remove_file(created_path).unwrap();
         assert_eq!(AppConfig::load_from(&path).unwrap(), AppConfig::default());
-        let recreated_contents = fs::read_to_string(&created_path).unwrap();
+        let recreated_contents = fs::read_to_string(created_path).unwrap();
         assert!(recreated_contents.lines().all(|line| line.starts_with('#')));
 
         fs::remove_dir_all(directory).unwrap();

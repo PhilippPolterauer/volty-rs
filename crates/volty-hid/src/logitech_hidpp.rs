@@ -634,11 +634,13 @@ mod transport_tests {
         ];
         let expected = FrameIdentity::from(&request);
         let last = FrameIdentity::from(wrong.last().unwrap());
-        let mut io = MockIo::default();
-        io.reads = wrong
-            .drain(..)
-            .map(|frame| frame.encode().unwrap())
-            .collect();
+        let mut io = MockIo {
+            reads: wrong
+                .drain(..)
+                .map(|frame| frame.encode().unwrap())
+                .collect(),
+            ..MockIo::default()
+        };
         assert!(matches!(
             transact_io(&mut io, &request, Duration::from_secs(1)),
             Err(HidppError::NoMatchingResponse {

@@ -1,31 +1,21 @@
-use std::{error::Error, ffi::c_void, io, mem, ptr};
+use std::{error::Error, io, mem, ptr};
 
 use windows_sys::Win32::{
-    Foundation::{
-        GetLastError, ERROR_CLASS_ALREADY_EXISTS, HINSTANCE, HWND, LPARAM, LRESULT, POINT, WPARAM,
-    },
-    Graphics::Gdi::{
-        GetMonitorInfoW, GetSysColorBrush, MonitorFromPoint, COLOR_WINDOW, MONITORINFO,
-        MONITOR_DEFAULTTONEAREST,
-    },
-    System::{
-        LibraryLoader::GetModuleHandleW,
-        SystemServices::{SS_ETCHEDHORZ, SS_ICON},
-    },
-    UI::{
-        Shell::ShellExecuteW,
-        WindowsAndMessaging::{
-            CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetCursorPos,
-            GetMessageW, GetWindowLongPtrW, PostQuitMessage, RegisterClassW, SendMessageW,
-            SetWindowLongPtrW, SetWindowTextW, ShowWindow, TranslateMessage, BS_PUSHBUTTON,
-            CREATESTRUCTW, GWLP_USERDATA, MSG, STM_SETICON, SW_SHOWNORMAL, WM_CLOSE, WM_COMMAND,
-            WM_CTLCOLORSTATIC, WM_DESTROY, WM_NCCREATE, WNDCLASSW, WS_CAPTION, WS_CHILD,
-            WS_OVERLAPPED, WS_SYSMENU, WS_TABSTOP, WS_VISIBLE,
-        },
+    Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, POINT, WPARAM},
+    Graphics::Gdi::{GetMonitorInfoW, MonitorFromPoint, MONITORINFO, MONITOR_DEFAULTTONEAREST},
+    System::LibraryLoader::GetModuleHandleW,
+    System::SystemServices::{SS_ETCHEDHORZ, SS_ICON},
+    UI::WindowsAndMessaging::{
+        CreateWindowExW, DestroyWindow, GetCursorPos, SendMessageW, SetWindowTextW, BS_PUSHBUTTON,
+        STM_SETICON, SW_SHOWNORMAL, WM_CLOSE, WM_COMMAND, WM_CTLCOLORSTATIC, WM_DESTROY,
+        WM_NCCREATE, WS_CAPTION, WS_CHILD, WS_OVERLAPPED, WS_SYSMENU, WS_TABSTOP, WS_VISIBLE,
     },
 };
 
-use crate::native_ui::{application_icon, set_control_font, static_control_color, FontSet};
+use crate::{
+    native_ui::{application_icon, set_control_font, static_control_color, FontSet},
+    win32::{self, ControlSpec},
+};
 
 const WINDOW_CLASS: &str = "VoltyAboutWindow";
 const WINDOW_WIDTH: i32 = 500;
@@ -41,30 +31,13 @@ struct AboutWindow {
 }
 
 pub fn show_about_window() -> Result<(), Box<dyn Error>> {
-    let class_name = to_wide(WINDOW_CLASS);
-    let title = to_wide("About Volty");
+    let class_name = win32::to_wide(WINDOW_CLASS);
+    let title = win32::to_wide("About Volty");
     let instance = unsafe { GetModuleHandleW(ptr::null()) };
     if instance.is_null() {
         return Err(io::Error::last_os_error().into());
     }
-
-    let class = WNDCLASSW {
-        style: 0,
-        lpfnWndProc: Some(window_proc),
-        cbClsExtra: 0,
-        cbWndExtra: 0,
-        hInstance: instance,
-        hIcon: application_icon(instance, 32)?,
-        hCursor: ptr::null_mut(),
-        hbrBackground: unsafe { GetSysColorBrush(COLOR_WINDOW) },
-        lpszMenuName: ptr::null(),
-        lpszClassName: class_name.as_ptr(),
-    };
-    if unsafe { RegisterClassW(&class) } == 0
-        && unsafe { GetLastError() } != ERROR_CLASS_ALREADY_EXISTS
-    {
-        return Err(io::Error::last_os_error().into());
-    }
+    win32::register_window_class(&class_name, window_proc, instance, 32)?;
 
     let (window_x, window_y) = centered_window_position(WINDOW_WIDTH, WINDOW_HEIGHT)?;
     let fonts = FontSet::new()?;
@@ -93,56 +66,35 @@ pub fn show_about_window() -> Result<(), Box<dyn Error>> {
         return Err(io::Error::last_os_error().into());
     }
 
-    if let Err(error) = unsafe { create_controls(window, instance, &mut state) } {
+    if let Err(error) = create_controls(window, instance, &mut state) {
         unsafe { DestroyWindow(window) };
         return Err(error);
     }
     state.create_complete = true;
-
-    unsafe {
-        ShowWindow(window, SW_SHOWNORMAL);
-        let mut message: MSG = mem::zeroed();
-        loop {
-            match GetMessageW(&mut message, ptr::null_mut(), 0, 0) {
-                -1 => {
-                    let error = io::Error::last_os_error();
-                    state.create_complete = false;
-                    DestroyWindow(window);
-                    return Err(error.into());
-                }
-                0 => break,
-                _ => {
-                    TranslateMessage(&message);
-                    DispatchMessageW(&message);
-                }
-            }
-        }
-    }
+    win32::run_message_loop(window, SW_SHOWNORMAL, &mut state.create_complete)?;
     Ok(())
 }
 
 fn centered_window_position(width: i32, height: i32) -> io::Result<(i32, i32)> {
-    unsafe {
-        let mut cursor = POINT { x: 0, y: 0 };
-        if GetCursorPos(&mut cursor) == 0 {
-            return Err(io::Error::last_os_error());
-        }
-
-        let monitor = MonitorFromPoint(cursor, MONITOR_DEFAULTTONEAREST);
-        if monitor.is_null() {
-            return Err(io::Error::last_os_error());
-        }
-
-        let mut info: MONITORINFO = mem::zeroed();
-        info.cbSize = mem::size_of::<MONITORINFO>() as u32;
-        if GetMonitorInfoW(monitor, &mut info) == 0 {
-            return Err(io::Error::last_os_error());
-        }
-
-        Ok(center_in_work_area(&info.rcWork, width, height))
+    let mut cursor = POINT { x: 0, y: 0 };
+    if unsafe { GetCursorPos(&mut cursor) } == 0 {
+        return Err(io::Error::last_os_error());
     }
-}
 
+    let monitor = unsafe { MonitorFromPoint(cursor, MONITOR_DEFAULTTONEAREST) };
+    if monitor.is_null() {
+        return Err(io::Error::last_os_error());
+    }
+
+    // SAFETY: MONITORINFO is a plain Win32 structure whose fields are initialized by GetMonitorInfoW.
+    let mut info: MONITORINFO = unsafe { mem::zeroed() };
+    info.cbSize = mem::size_of::<MONITORINFO>() as u32;
+    if unsafe { GetMonitorInfoW(monitor, &mut info) } == 0 {
+        return Err(io::Error::last_os_error());
+    }
+
+    Ok(center_in_work_area(&info.rcWork, width, height))
+}
 fn center_in_work_area(
     work_area: &windows_sys::Win32::Foundation::RECT,
     width: i32,
@@ -154,125 +106,144 @@ fn center_in_work_area(
     )
 }
 
-unsafe fn create_controls(
+fn create_controls(
     window: HWND,
     instance: HINSTANCE,
     state: &mut AboutWindow,
 ) -> Result<(), Box<dyn Error>> {
-    let static_class = to_wide("STATIC");
-    let button_class = to_wide("BUTTON");
-    let heading_text = to_wide("Volty");
-    let version_text = to_wide(&format!("VERSION {}", env!("CARGO_PKG_VERSION")));
-    let description_text = to_wide(
+    let static_class = win32::to_wide("STATIC");
+    let button_class = win32::to_wide("BUTTON");
+    let heading_text = win32::to_wide("Volty");
+    let version_text = win32::to_wide(&format!("VERSION {}", env!("CARGO_PKG_VERSION")));
+    let description_text = win32::to_wide(
         "A low-overhead Windows system-tray battery monitor for supported HID devices, written in Rust.",
     );
-    let status_text = to_wide("");
-    let empty_text = to_wide("");
-    let star_text = to_wide("Star on GitHub");
-    let close_text = to_wide("Close");
+    let status_text = win32::to_wide("");
+    let empty_text = win32::to_wide("");
+    let star_text = win32::to_wide("Star on GitHub");
+    let close_text = win32::to_wide("Close");
 
-    let icon = create_child(
+    let icon = win32::create_control(
         window,
         instance,
-        &static_class,
-        &empty_text,
-        WS_CHILD | WS_VISIBLE | SS_ICON,
-        24,
-        24,
-        128,
-        128,
-        0,
+        ControlSpec {
+            class: &static_class,
+            text: &empty_text,
+            extended_style: 0,
+            style: WS_CHILD | WS_VISIBLE | SS_ICON,
+            x: 24,
+            y: 24,
+            width: 128,
+            height: 128,
+            id: 0,
+        },
     );
     if icon.is_null() {
         return Err(io::Error::last_os_error().into());
     }
-    SendMessageW(
-        icon,
-        STM_SETICON,
-        application_icon(instance, 128)? as usize,
-        0,
-    );
+    unsafe {
+        SendMessageW(
+            icon,
+            STM_SETICON,
+            application_icon(instance, 128)? as usize,
+            0,
+        );
+    }
 
-    let heading = create_child(
+    let heading = win32::create_control(
         window,
         instance,
-        &static_class,
-        &heading_text,
-        WS_CHILD | WS_VISIBLE,
-        164,
-        22,
-        300,
-        38,
-        0,
+        ControlSpec {
+            class: &static_class,
+            text: &heading_text,
+            extended_style: 0,
+            style: WS_CHILD | WS_VISIBLE,
+            x: 164,
+            y: 22,
+            width: 300,
+            height: 38,
+            id: 0,
+        },
     );
     if heading.is_null() {
         return Err(io::Error::last_os_error().into());
     }
     set_control_font(heading, state.fonts.heading);
 
-    let version = create_child(
+    let version = win32::create_control(
         window,
         instance,
-        &static_class,
-        &version_text,
-        WS_CHILD | WS_VISIBLE,
-        166,
-        65,
-        300,
-        22,
-        0,
+        ControlSpec {
+            class: &static_class,
+            text: &version_text,
+            extended_style: 0,
+            style: WS_CHILD | WS_VISIBLE,
+            x: 166,
+            y: 65,
+            width: 300,
+            height: 22,
+            id: 0,
+        },
     );
     if version.is_null() {
         return Err(io::Error::last_os_error().into());
     }
     set_control_font(version, state.fonts.body_small);
 
-    let description = create_child(
+    let description = win32::create_control(
         window,
         instance,
-        &static_class,
-        &description_text,
-        WS_CHILD | WS_VISIBLE,
-        166,
-        98,
-        310,
-        56,
-        0,
+        ControlSpec {
+            class: &static_class,
+            text: &description_text,
+            extended_style: 0,
+            style: WS_CHILD | WS_VISIBLE,
+            x: 166,
+            y: 98,
+            width: 310,
+            height: 56,
+            id: 0,
+        },
     );
     if description.is_null() {
         return Err(io::Error::last_os_error().into());
     }
     set_control_font(description, state.fonts.body_small);
 
-    let separator_text = to_wide("");
-    if create_child(
+    if win32::create_control(
         window,
         instance,
-        &static_class,
-        &separator_text,
-        WS_CHILD | WS_VISIBLE | SS_ETCHEDHORZ,
-        24,
-        188,
-        436,
-        2,
-        0,
+        ControlSpec {
+            class: &static_class,
+            text: &empty_text,
+            extended_style: 0,
+            style: WS_CHILD | WS_VISIBLE | SS_ETCHEDHORZ,
+            x: 24,
+            y: 188,
+            width: 436,
+            height: 2,
+            id: 0,
+        },
     )
     .is_null()
     {
         return Err(io::Error::last_os_error().into());
     }
 
-    state.status = create_child(
+    state.status = win32::create_control(
         window,
         instance,
-        &static_class,
-        &status_text,
-        WS_CHILD | WS_VISIBLE,
-        30,
-        158,
-        436,
-        20,
-        0,
+        ControlSpec {
+            class: &static_class,
+            text: &status_text,
+            extended_style: 0,
+            style: WS_CHILD | WS_VISIBLE,
+            x: 30,
+            y: 158,
+            width: 436,
+            height: 20,
+            id: 0,
+        },
     );
     if state.status.is_null() {
         return Err(io::Error::last_os_error().into());
@@ -283,17 +254,20 @@ unsafe fn create_controls(
         (STAR_ON_GITHUB_ID, &star_text, 24, 144),
         (CLOSE_ID, &close_text, 384, 76),
     ] {
-        let button = create_child(
+        let button = win32::create_control(
             window,
             instance,
-            &button_class,
-            text,
-            WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON as u32,
-            x,
-            220,
-            width,
-            32,
-            id,
+            ControlSpec {
+                class: &button_class,
+                text,
+                extended_style: 0,
+                style: WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON as u32,
+                x,
+                y: 220,
+                width,
+                height: 32,
+                id,
+            },
         );
         if button.is_null() {
             return Err(io::Error::last_os_error().into());
@@ -304,34 +278,6 @@ unsafe fn create_controls(
     Ok(())
 }
 
-unsafe fn create_child(
-    parent: HWND,
-    instance: HINSTANCE,
-    class: &[u16],
-    text: &[u16],
-    style: u32,
-    x: i32,
-    y: i32,
-    width: i32,
-    height: i32,
-    id: usize,
-) -> HWND {
-    CreateWindowExW(
-        0,
-        class.as_ptr(),
-        text.as_ptr(),
-        style,
-        x,
-        y,
-        width,
-        height,
-        parent,
-        id as *mut c_void,
-        instance,
-        ptr::null(),
-    )
-}
-
 unsafe extern "system" fn window_proc(
     window: HWND,
     message: u32,
@@ -339,81 +285,57 @@ unsafe extern "system" fn window_proc(
     lparam: LPARAM,
 ) -> LRESULT {
     if message == WM_NCCREATE {
-        let create = &*(lparam as *const CREATESTRUCTW);
-        SetWindowLongPtrW(window, GWLP_USERDATA, create.lpCreateParams as isize);
+        unsafe { win32::attach_window_state(window, lparam) };
     }
 
     match message {
         WM_CTLCOLORSTATIC => static_control_color(wparam),
         WM_COMMAND => {
-            let id = (wparam & 0xffff) as usize;
+            let id = wparam & 0xffff;
             match id {
                 STAR_ON_GITHUB_ID => {
-                    let status = match open_github() {
+                    let status = match win32::open_url(GITHUB_URL) {
                         Ok(()) => "Opening GitHub...",
                         Err(error) => {
-                            let message = to_wide(&format!("Could not open GitHub: {error}"));
-                            let state_ptr =
-                                GetWindowLongPtrW(window, GWLP_USERDATA) as *mut AboutWindow;
+                            let message =
+                                win32::to_wide(&format!("Could not open GitHub: {error}"));
+                            let state_ptr = win32::window_state::<AboutWindow>(window);
                             if !state_ptr.is_null() {
-                                SetWindowTextW((*state_ptr).status, message.as_ptr());
+                                // SAFETY: the window owns the boxed state until its message loop exits.
+                                unsafe { SetWindowTextW((*state_ptr).status, message.as_ptr()) };
                             }
                             return 0;
                         }
                     };
-                    let message = to_wide(status);
-                    let state_ptr = GetWindowLongPtrW(window, GWLP_USERDATA) as *mut AboutWindow;
+                    let message = win32::to_wide(status);
+                    let state_ptr = win32::window_state::<AboutWindow>(window);
                     if !state_ptr.is_null() {
-                        SetWindowTextW((*state_ptr).status, message.as_ptr());
+                        // SAFETY: the window owns the boxed state until its message loop exits.
+                        unsafe { SetWindowTextW((*state_ptr).status, message.as_ptr()) };
                     }
                     0
                 }
                 CLOSE_ID => {
-                    DestroyWindow(window);
+                    unsafe { DestroyWindow(window) };
                     0
                 }
-                _ => DefWindowProcW(window, message, wparam, lparam),
+                _ => win32::default_window_proc(window, message, wparam, lparam),
             }
         }
         WM_CLOSE => {
-            DestroyWindow(window);
+            unsafe { DestroyWindow(window) };
             0
         }
         WM_DESTROY => {
-            let state_ptr = GetWindowLongPtrW(window, GWLP_USERDATA) as *mut AboutWindow;
-            if !state_ptr.is_null() && (*state_ptr).create_complete {
-                PostQuitMessage(0);
+            let state_ptr = win32::window_state::<AboutWindow>(window);
+            if !state_ptr.is_null() {
+                // SAFETY: the window owns the boxed state until its message loop exits.
+                win32::quit_after_creation(unsafe { (*state_ptr).create_complete });
             }
             0
         }
-        _ => DefWindowProcW(window, message, wparam, lparam),
+        _ => win32::default_window_proc(window, message, wparam, lparam),
     }
-}
-
-fn open_github() -> Result<(), io::Error> {
-    let verb = to_wide("open");
-    let target = to_wide(GITHUB_URL);
-    let result = unsafe {
-        ShellExecuteW(
-            ptr::null_mut(),
-            verb.as_ptr(),
-            target.as_ptr(),
-            ptr::null(),
-            ptr::null(),
-            SW_SHOWNORMAL,
-        )
-    } as isize;
-    if result <= 32 {
-        Err(io::Error::other(format!(
-            "ShellExecuteW failed with code {result}"
-        )))
-    } else {
-        Ok(())
-    }
-}
-
-fn to_wide(value: &str) -> Vec<u16> {
-    value.encode_utf16().chain(Some(0)).collect()
 }
 
 #[cfg(test)]

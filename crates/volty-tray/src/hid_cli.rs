@@ -241,11 +241,7 @@ fn selector(options: &Options) -> Result<volty_hid::HidInterfaceSelector, CliErr
             .map(|value| parse_hex_number(value, "--usage"))
             .transpose()?,
         interface_number: option(options, &["--interface", "--interface-number"])
-            .map(|value| {
-                parse_number(value, "--interface").and_then(|value| {
-                    i32::try_from(value).map_err(|_| error("invalid interface number"))
-                })
-            })
+            .map(|value| parse_number(value, "--interface").map(i32::from))
             .transpose()?,
         path: option(options, &["--path"]).map(str::to_owned),
     })
@@ -336,7 +332,11 @@ fn select_interface(
         0 => Err(error(
             "no HID interface matched; run `volty hid inspect` and provide an interface selector",
         )),
-        1 => Ok(matches.into_iter().next().unwrap()),
+        1 => {
+            matches.into_iter().next().ok_or_else(|| {
+                error("no HID interface matched; run `volty hid inspect` and provide an interface selector")
+            })
+        }
         _ => {
             let choices = matches
                 .iter()
@@ -440,8 +440,13 @@ fn raw(options: Options) -> Result<(), CliError> {
     let report_type = required(&options, "--report-type")?;
     let params = parse_hex_bytes(required(&options, "--params")?)?;
     let frame = match report_type {
-        "short" if params.len() == 3 => {
-            let params: [u8; 3] = params.try_into().unwrap();
+        "short" => {
+            let params: [u8; 3] = params.try_into().map_err(|params: Vec<u8>| {
+                error(format!(
+                    "short reports require exactly 3 parameter bytes, got {}",
+                    params.len()
+                ))
+            })?;
             volty_hid::HidppFrame::short(
                 device_index,
                 feature_index,
@@ -450,8 +455,13 @@ fn raw(options: Options) -> Result<(), CliError> {
                 params,
             )
         }
-        "long" if params.len() == 16 => {
-            let params: [u8; 16] = params.try_into().unwrap();
+        "long" => {
+            let params: [u8; 16] = params.try_into().map_err(|params: Vec<u8>| {
+                error(format!(
+                    "long reports require exactly 16 parameter bytes, got {}",
+                    params.len()
+                ))
+            })?;
             volty_hid::HidppFrame::long(
                 device_index,
                 feature_index,
@@ -459,18 +469,6 @@ fn raw(options: Options) -> Result<(), CliError> {
                 volty_hid::HIDPP_SOFTWARE_ID,
                 params,
             )
-        }
-        "short" => {
-            return Err(error(format!(
-                "short reports require exactly 3 parameter bytes, got {}",
-                params.len()
-            )))
-        }
-        "long" => {
-            return Err(error(format!(
-                "long reports require exactly 16 parameter bytes, got {}",
-                params.len()
-            )))
         }
         _ => return Err(error("--report-type must be 'short' or 'long'")),
     };

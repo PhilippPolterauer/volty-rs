@@ -14,7 +14,7 @@ pub fn application_icon(instance: HINSTANCE, size: i32) -> io::Result<HICON> {
     let icon = unsafe {
         LoadImageW(
             instance,
-            1usize as *const u16,
+            std::ptr::without_provenance::<u16>(1),
             IMAGE_ICON,
             size,
             size,
@@ -78,30 +78,28 @@ impl FontSet {
 
 impl Drop for FontSet {
     fn drop(&mut self) {
-        unsafe {
-            DeleteObject(self.body);
-            DeleteObject(self.body_small);
-            DeleteObject(self.heading);
-            DeleteObject(self.monospace);
-        }
+        unsafe { DeleteObject(self.body) };
+        unsafe { DeleteObject(self.body_small) };
+        unsafe { DeleteObject(self.heading) };
+        unsafe { DeleteObject(self.monospace) };
     }
 }
 
-pub unsafe fn set_control_font(control: HWND, font: windows_sys::Win32::Graphics::Gdi::HFONT) {
-    SendMessageW(control, WM_SETFONT, font as usize, 1);
+pub fn set_control_font(control: HWND, font: windows_sys::Win32::Graphics::Gdi::HFONT) {
+    unsafe { SendMessageW(control, WM_SETFONT, font as usize, 1) };
 }
 
-pub unsafe fn static_control_color(hdc: WPARAM) -> LRESULT {
+pub fn static_control_color(hdc: WPARAM) -> LRESULT {
     let hdc = hdc as windows_sys::Win32::Graphics::Gdi::HDC;
-    SetBkMode(hdc, TRANSPARENT as i32);
-    SetTextColor(hdc, GetSysColor(COLOR_WINDOWTEXT) as COLORREF);
-    GetSysColorBrush(COLOR_WINDOW) as LRESULT
+    unsafe { SetBkMode(hdc, TRANSPARENT as i32) };
+    unsafe { SetTextColor(hdc, GetSysColor(COLOR_WINDOWTEXT) as COLORREF) };
+    unsafe { GetSysColorBrush(COLOR_WINDOW) as LRESULT }
 }
 
-pub unsafe fn edit_control_color(hdc: WPARAM) -> LRESULT {
+pub fn edit_control_color(hdc: WPARAM) -> LRESULT {
     let hdc = hdc as windows_sys::Win32::Graphics::Gdi::HDC;
-    SetTextColor(hdc, GetSysColor(COLOR_WINDOWTEXT) as COLORREF);
-    GetSysColorBrush(COLOR_WINDOW) as LRESULT
+    unsafe { SetTextColor(hdc, GetSysColor(COLOR_WINDOWTEXT) as COLORREF) };
+    unsafe { GetSysColorBrush(COLOR_WINDOW) as LRESULT }
 }
 
 fn create_font(
@@ -110,7 +108,7 @@ fn create_font(
     face_name: &str,
 ) -> io::Result<windows_sys::Win32::Graphics::Gdi::HFONT> {
     let face_label = face_name;
-    let face_name: Vec<u16> = face_name.encode_utf16().chain(Some(0)).collect();
+    let face_name = crate::win32::to_wide(face_name);
     let font = unsafe {
         CreateFontW(
             height,

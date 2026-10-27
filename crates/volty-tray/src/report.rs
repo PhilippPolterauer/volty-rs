@@ -74,6 +74,7 @@ fn render_diagnostic_report(
          Poll interval: {} seconds\n\
          Retry interval: {} seconds\n\
          UI poll interval: {} milliseconds\n\
+         Battery ETA window: {} minutes\n\
          Log level: {}\n\
          Low-battery notifications: {}\n\
          Tray color map: red <= {}% ({}), yellow <= {}% ({}), green > {}% ({})\n\
@@ -90,6 +91,7 @@ fn render_diagnostic_report(
         config.poll_interval_seconds,
         config.retry_interval_seconds,
         config.ui_poll_interval_ms,
+        config.battery_eta_window_minutes,
         config.log_level.as_str(),
         if config.notifications_enabled {
             "enabled"
@@ -197,6 +199,8 @@ mod tests {
         assert!(report.contains("Volty Diagnose Log"));
         assert!(report.contains("Low-battery threshold: 20%"));
         assert!(report.contains("UI poll interval: 250 milliseconds"));
+        assert!(report.contains("Battery ETA window: 10 minutes"));
+        assert!(report.contains("Battery ETA window: 10 minutes"));
         assert!(report.contains(
             "Tray color map: red <= 15% (#d23030), yellow <= 30% (#ebbe23), green > 30% (#2daa4b)"
         ));
