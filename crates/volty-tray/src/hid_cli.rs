@@ -47,9 +47,9 @@ pub fn run(args: &[String]) -> Result<(), CliError> {
     }
 
     match command {
-        "inspect" => inspect(options),
-        "features" => features(options),
-        "raw" => raw(options),
+        "inspect" => inspect(&options),
+        "features" => features(&options),
+        "raw" => raw(&options),
         _ => Err(error(format!(
             "unknown HID command '{command}'\n{HID_USAGE}"
         ))),
@@ -274,11 +274,9 @@ fn format_interface(info: &volty_hid::HidInterfaceInfo) -> String {
         info.vendor_id,
         info.product_id,
         info.usage_page
-            .map(|value| format!("0x{value:04x}"))
-            .unwrap_or_else(|| "unknown".to_owned()),
+            .map_or_else(|| "unknown".to_owned(), |value| format!("0x{value:04x}")),
         info.usage
-            .map(|value| format!("0x{value:04x}"))
-            .unwrap_or_else(|| "unknown".to_owned()),
+            .map_or_else(|| "unknown".to_owned(), |value| format!("0x{value:04x}")),
         info.interface_number,
         info.bus_type,
         info.product_string.as_deref().unwrap_or("unknown"),
@@ -287,10 +285,10 @@ fn format_interface(info: &volty_hid::HidInterfaceInfo) -> String {
 }
 
 #[cfg(windows)]
-fn inspect(options: Options) -> Result<(), CliError> {
-    reject_state_flag(&options)?;
+fn inspect(options: &Options) -> Result<(), CliError> {
+    reject_state_flag(options)?;
     check_options(
-        &options,
+        options,
         &[
             "--vid",
             "--vendor-id",
@@ -303,7 +301,7 @@ fn inspect(options: Options) -> Result<(), CliError> {
             "--path",
         ],
     )?;
-    let selector = selector(&options)?;
+    let selector = selector(options)?;
     let interfaces = enumerate_interfaces()?;
     let mut count = 0;
     for info in interfaces
@@ -362,10 +360,10 @@ fn device_index(options: &Options) -> Result<u8, CliError> {
 }
 
 #[cfg(windows)]
-fn features(options: Options) -> Result<(), CliError> {
-    reject_state_flag(&options)?;
+fn features(options: &Options) -> Result<(), CliError> {
+    reject_state_flag(options)?;
     check_options(
-        &options,
+        options,
         &[
             "--device-index",
             "--vid",
@@ -379,8 +377,8 @@ fn features(options: Options) -> Result<(), CliError> {
             "--path",
         ],
     )?;
-    let device_index = device_index(&options)?;
-    let selector = selector(&options)?;
+    let device_index = device_index(options)?;
+    let selector = selector(options)?;
     let interface = select_interface(&selector)?;
     let mut session =
         volty_hid::HidppSession::open(&selector).map_err(|error| error.to_string())?;
@@ -405,9 +403,9 @@ fn features(options: Options) -> Result<(), CliError> {
 }
 
 #[cfg(windows)]
-fn raw(options: Options) -> Result<(), CliError> {
+fn raw(options: &Options) -> Result<(), CliError> {
     check_options(
-        &options,
+        options,
         &[
             "--device-index",
             "--feature-index",
@@ -431,14 +429,14 @@ fn raw(options: Options) -> Result<(), CliError> {
         ));
     }
 
-    let device_index = device_index(&options)?;
-    let feature_index = parse_byte(required(&options, "--feature-index")?, "--feature-index")?;
-    let function_index = parse_byte(required(&options, "--function-index")?, "--function-index")?;
+    let device_index = device_index(options)?;
+    let feature_index = parse_byte(required(options, "--feature-index")?, "--feature-index")?;
+    let function_index = parse_byte(required(options, "--function-index")?, "--function-index")?;
     if function_index > 0x0f {
         return Err(error("--function-index must be in 0..=15"));
     }
-    let report_type = required(&options, "--report-type")?;
-    let params = parse_hex_bytes(required(&options, "--params")?)?;
+    let report_type = required(options, "--report-type")?;
+    let params = parse_hex_bytes(required(options, "--params")?)?;
     let frame = match report_type {
         "short" => {
             let params: [u8; 3] = params.try_into().map_err(|params: Vec<u8>| {
@@ -474,7 +472,7 @@ fn raw(options: Options) -> Result<(), CliError> {
     };
     let request = frame.encode().map_err(|error| error.to_string())?;
 
-    let selector = selector(&options)?;
+    let selector = selector(options)?;
     select_interface(&selector)?;
     let mut session =
         volty_hid::HidppSession::open(&selector).map_err(|error| error.to_string())?;

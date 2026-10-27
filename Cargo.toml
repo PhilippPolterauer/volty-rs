@@ -7,6 +7,10 @@ members = [
 ]
 resolver = "2"
 
+[workspace.dependencies]
+toml = "0.8"
+volty-battery = { path = "crates/volty-battery" }
+
 [workspace.package]
 edition = "2021"
 license = "MIT"

@@ -148,6 +148,136 @@ pub struct TrayController {
     battery_color_map: BatteryColorMap,
 }
 
+struct TrayMenu {
+    menu: Menu,
+    status_item: MenuItem,
+    monitored_devices_menu: Submenu,
+    monitored_devices_empty_item: MenuItem,
+    start_on_boot_item: CheckMenuItem,
+}
+
+struct TrayMenuItems {
+    status_item: MenuItem,
+    discover_item: MenuItem,
+    configuration_item: MenuItem,
+    open_log_item: MenuItem,
+    diagnose_item: MenuItem,
+    start_on_boot_item: CheckMenuItem,
+    monitored_devices_menu: Submenu,
+    monitored_devices_empty_item: MenuItem,
+    about_item: MenuItem,
+    reset_item: MenuItem,
+    quit_item: MenuItem,
+}
+
+fn create_tray_menu(start_on_boot: bool) -> Result<TrayMenu, TrayError> {
+    let status_item = MenuItem::with_id(
+        MenuItemId::Status.as_id(),
+        "Searching for supported devices",
+        false,
+        None,
+    );
+    let discover_item = MenuItem::with_id(
+        MenuItemId::Discover.as_id(),
+        "Discover Devices Now",
+        true,
+        None,
+    );
+    let configuration_item = MenuItem::with_id(
+        MenuItemId::Configuration.as_id(),
+        "Open Configuration",
+        true,
+        None,
+    );
+    let open_log_item = MenuItem::with_id(MenuItemId::LogFile.as_id(), "Open Log File", true, None);
+    let diagnose_item = MenuItem::with_id(
+        MenuItemId::Diagnose.as_id(),
+        "Diagnose / Report an Issue",
+        true,
+        None,
+    );
+    let start_on_boot_item = CheckMenuItem::with_id(
+        MenuItemId::StartOnBoot.as_id(),
+        "Start on Boot",
+        true,
+        start_on_boot,
+        None,
+    );
+    let monitored_devices_menu = Submenu::with_id(
+        MenuItemId::MonitoredDevices.as_id(),
+        "Monitored Devices",
+        true,
+    );
+    let monitored_devices_empty_item =
+        MenuItem::new("No supported devices discovered", false, None);
+    monitored_devices_menu
+        .append(&monitored_devices_empty_item)
+        .map_err(|error| {
+            TrayError::new(format!(
+                "could not add empty monitored-devices status: {error}"
+            ))
+        })?;
+    let items = TrayMenuItems {
+        status_item,
+        discover_item,
+        configuration_item,
+        open_log_item,
+        diagnose_item,
+        start_on_boot_item,
+        monitored_devices_menu,
+        monitored_devices_empty_item,
+        about_item: MenuItem::with_id(MenuItemId::About.as_id(), "About Volty", true, None),
+        reset_item: MenuItem::with_id(MenuItemId::ResetVolty.as_id(), "Reset Volty...", true, None),
+        quit_item: MenuItem::with_id(MenuItemId::Quit.as_id(), "Quit", true, None),
+    };
+    let menu = Menu::new();
+    append_tray_menu_items(&menu, &items)?;
+    Ok(TrayMenu {
+        menu,
+        status_item: items.status_item,
+        monitored_devices_menu: items.monitored_devices_menu,
+        monitored_devices_empty_item: items.monitored_devices_empty_item,
+        start_on_boot_item: items.start_on_boot_item,
+    })
+}
+
+fn append_tray_menu_items(menu: &Menu, items: &TrayMenuItems) -> Result<(), TrayError> {
+    menu.append(&items.status_item)
+        .map_err(|error| TrayError::new(format!("could not add tray status: {error}")))?;
+    menu.append(&PredefinedMenuItem::separator())
+        .map_err(|error| TrayError::new(format!("could not add tray separator: {error}")))?;
+    menu.append(&items.monitored_devices_menu)
+        .map_err(|error| {
+            TrayError::new(format!("could not add monitored-devices menu: {error}"))
+        })?;
+    menu.append(&PredefinedMenuItem::separator())
+        .map_err(|error| TrayError::new(format!("could not add tray separator: {error}")))?;
+    menu.append(&items.discover_item).map_err(|error| {
+        TrayError::new(format!("could not add device-discovery action: {error}"))
+    })?;
+    menu.append(&items.configuration_item)
+        .map_err(|error| TrayError::new(format!("could not add configuration action: {error}")))?;
+    menu.append(&items.open_log_item)
+        .map_err(|error| TrayError::new(format!("could not add log-file action: {error}")))?;
+    menu.append(&items.diagnose_item)
+        .map_err(|error| TrayError::new(format!("could not add Diagnose action: {error}")))?;
+    menu.append(&items.start_on_boot_item)
+        .map_err(|error| TrayError::new(format!("could not add start-on-boot action: {error}")))?;
+    menu.append(&PredefinedMenuItem::separator())
+        .map_err(|error| TrayError::new(format!("could not add tray separator: {error}")))?;
+    menu.append(&items.about_item)
+        .map_err(|error| TrayError::new(format!("could not add About action: {error}")))?;
+    menu.append(&PredefinedMenuItem::separator())
+        .map_err(|error| TrayError::new(format!("could not add tray separator: {error}")))?;
+    menu.append(&items.reset_item)
+        .map_err(|error| TrayError::new(format!("could not add reset action: {error}")))?;
+    menu.append(&PredefinedMenuItem::separator())
+        .map_err(|error| TrayError::new(format!("could not add tray separator: {error}")))?;
+    menu.append(&items.quit_item)
+        .map_err(|error| TrayError::new(format!("could not add quit action: {error}")))?;
+    Ok(())
+}
+
 impl TrayController {
     /// Creates the tray icon and menu.
     ///
@@ -155,113 +285,26 @@ impl TrayController {
     /// other platforms the check item starts unchecked and the action reports
     /// that autostart is unsupported when selected.
     pub fn new() -> Result<Self, TrayError> {
-        let start_on_boot = start_on_boot_for_first_run()?;
-        let status_item = MenuItem::with_id(
-            MenuItemId::Status.as_id(),
-            "Searching for supported devices",
-            false,
-            None,
-        );
-        let discover_item = MenuItem::with_id(
-            MenuItemId::Discover.as_id(),
-            "Discover Devices Now",
-            true,
-            None,
-        );
-        let configuration_item = MenuItem::with_id(
-            MenuItemId::Configuration.as_id(),
-            "Open Configuration",
-            true,
-            None,
-        );
-        let open_log_item =
-            MenuItem::with_id(MenuItemId::LogFile.as_id(), "Open Log File", true, None);
-        let diagnose_item = MenuItem::with_id(
-            MenuItemId::Diagnose.as_id(),
-            "Diagnose / Report an Issue",
-            true,
-            None,
-        );
-        let start_on_boot_item = CheckMenuItem::with_id(
-            MenuItemId::StartOnBoot.as_id(),
-            "Start on Boot",
-            true,
-            start_on_boot,
-            None,
-        );
-        let monitored_devices_menu = Submenu::with_id(
-            MenuItemId::MonitoredDevices.as_id(),
-            "Monitored Devices",
-            true,
-        );
-        let monitored_devices_empty_item =
-            MenuItem::new("No supported devices discovered", false, None);
-        monitored_devices_menu
-            .append(&monitored_devices_empty_item)
-            .map_err(|error| {
-                TrayError::new(format!(
-                    "could not add empty monitored-devices status: {error}"
-                ))
-            })?;
-        let about_item = MenuItem::with_id(MenuItemId::About.as_id(), "About Volty", true, None);
-        let reset_item =
-            MenuItem::with_id(MenuItemId::ResetVolty.as_id(), "Reset Volty...", true, None);
-        let quit_item = MenuItem::with_id(MenuItemId::Quit.as_id(), "Quit", true, None);
-        let menu = Menu::new();
-        menu.append(&status_item)
-            .map_err(|error| TrayError::new(format!("could not add tray status: {error}")))?;
-        menu.append(&PredefinedMenuItem::separator())
-            .map_err(|error| TrayError::new(format!("could not add tray separator: {error}")))?;
-        menu.append(&monitored_devices_menu).map_err(|error| {
-            TrayError::new(format!("could not add monitored-devices menu: {error}"))
-        })?;
-        menu.append(&PredefinedMenuItem::separator())
-            .map_err(|error| TrayError::new(format!("could not add tray separator: {error}")))?;
-        menu.append(&discover_item).map_err(|error| {
-            TrayError::new(format!("could not add device-discovery action: {error}"))
-        })?;
-        menu.append(&configuration_item).map_err(|error| {
-            TrayError::new(format!("could not add configuration action: {error}"))
-        })?;
-        menu.append(&open_log_item)
-            .map_err(|error| TrayError::new(format!("could not add log-file action: {error}")))?;
-        menu.append(&diagnose_item)
-            .map_err(|error| TrayError::new(format!("could not add Diagnose action: {error}")))?;
-        menu.append(&start_on_boot_item).map_err(|error| {
-            TrayError::new(format!("could not add start-on-boot action: {error}"))
-        })?;
-        menu.append(&PredefinedMenuItem::separator())
-            .map_err(|error| TrayError::new(format!("could not add tray separator: {error}")))?;
-        menu.append(&about_item)
-            .map_err(|error| TrayError::new(format!("could not add About action: {error}")))?;
-        menu.append(&PredefinedMenuItem::separator())
-            .map_err(|error| TrayError::new(format!("could not add tray separator: {error}")))?;
-        menu.append(&reset_item)
-            .map_err(|error| TrayError::new(format!("could not add reset action: {error}")))?;
-        menu.append(&PredefinedMenuItem::separator())
-            .map_err(|error| TrayError::new(format!("could not add tray separator: {error}")))?;
-        menu.append(&quit_item)
-            .map_err(|error| TrayError::new(format!("could not add quit action: {error}")))?;
-
+        let tray_menu = create_tray_menu(start_on_boot_for_first_run()?)?;
         let icon = TrayIconBuilder::new()
             .with_tooltip("Volty — Searching for supported devices")
             .with_icon(unknown_battery_icon_at_size(ICON_SIZE)?)
-            .with_menu(Box::new(menu.clone()))
+            .with_menu(Box::new(tray_menu.menu.clone()))
             .build()
             .map_err(|error| TrayError::new(format!("could not create tray icon: {error}")))?;
         let (actions_tx, actions_rx) = mpsc::channel();
 
         Ok(Self {
             icon,
-            menu,
-            status_item,
+            menu: tray_menu.menu,
+            status_item: tray_menu.status_item,
             device_status_items: Vec::new(),
-            monitored_devices_menu,
-            monitored_devices_empty_item: Some(monitored_devices_empty_item),
+            monitored_devices_menu: tray_menu.monitored_devices_menu,
+            monitored_devices_empty_item: Some(tray_menu.monitored_devices_empty_item),
             monitored_device_items: Vec::new(),
             known_monitored_devices: Vec::new(),
             next_monitored_device_menu_id: 0,
-            start_on_boot_item,
+            start_on_boot_item: tray_menu.start_on_boot_item,
             actions_tx,
             actions_rx,
             percentage: None,
@@ -342,15 +385,11 @@ impl TrayController {
         &mut self,
         devices: &[DeviceMonitorEntry],
     ) -> Result<(), TrayError> {
-        let mut devices = devices.to_vec();
-        devices.sort_by(|left, right| {
-            left.name
-                .cmp(&right.name)
-                .then_with(|| left.identity.cmp(&right.identity))
-        });
-        if devices == self.known_monitored_devices {
+        let Some(devices) =
+            sorted_monitored_devices_if_changed(&self.known_monitored_devices, devices)
+        else {
             return Ok(());
-        }
+        };
 
         self.clear_monitored_device_items()?;
         if devices.is_empty() {
@@ -563,6 +602,19 @@ impl TrayController {
     }
 }
 
+fn sorted_monitored_devices_if_changed(
+    known_devices: &[DeviceMonitorEntry],
+    devices: &[DeviceMonitorEntry],
+) -> Option<Vec<DeviceMonitorEntry>> {
+    let mut devices = devices.to_vec();
+    devices.sort_by(|left, right| {
+        left.name
+            .cmp(&right.name)
+            .then_with(|| left.identity.cmp(&right.identity))
+    });
+    (devices != known_devices).then_some(devices)
+}
+
 fn tooltip_for_devices(summary: &str, device_statuses: &[String]) -> String {
     let details = device_statuses.join("; ");
     if details.encode_utf16().count() <= MAX_TOOLTIP_UTF16_UNITS {
@@ -635,6 +687,47 @@ mod tests {
             MenuItemId::parse("volty.monitored-device.not-a-number"),
             None
         );
+        assert_eq!(MenuItemId::parse("volty.monitored-device."), None);
+        assert_eq!(
+            MenuItemId::parse(&format!("volty.monitored-device.{}", u64::MAX)),
+            Some(MenuItemId::MonitoredDevice(u64::MAX))
+        );
+        assert_eq!(
+            MenuItemId::parse("volty.monitored-device.18446744073709551616"),
+            None
+        );
+    }
+
+    fn monitor_entry(identity: &str, name: &str, monitored: bool) -> DeviceMonitorEntry {
+        DeviceMonitorEntry {
+            identity: identity.to_owned(),
+            name: name.to_owned(),
+            monitored,
+        }
+    }
+
+    #[test]
+    fn monitored_device_refresh_sorts_entries_and_detects_only_real_changes() {
+        let sorted = vec![
+            monitor_entry("a", "Mouse A", true),
+            monitor_entry("z", "Mouse A", false),
+            monitor_entry("b", "Mouse B", true),
+        ];
+        let incoming = vec![sorted[2].clone(), sorted[1].clone(), sorted[0].clone()];
+
+        assert_eq!(
+            sorted_monitored_devices_if_changed(&sorted, &incoming),
+            None
+        );
+
+        let mut changed = incoming;
+        changed[1].monitored = true;
+        let mut expected = sorted.clone();
+        expected[1].monitored = true;
+        assert_eq!(
+            sorted_monitored_devices_if_changed(&sorted, &changed),
+            Some(expected)
+        );
     }
 
     #[test]
@@ -648,6 +741,27 @@ mod tests {
             tooltip_for_devices("2 devices monitored", &statuses),
             statuses.join("; ")
         );
+    }
+
+    #[test]
+    fn tooltip_respects_utf16_length_boundaries() {
+        let exact_ascii = vec!["x".repeat(MAX_TOOLTIP_UTF16_UNITS)];
+        assert_eq!(tooltip_for_devices("summary", &exact_ascii), exact_ascii[0]);
+
+        let exact_unicode = vec![format!("{}{}", "🙂".repeat(32), "x".repeat(63))];
+        assert_eq!(
+            exact_unicode[0].encode_utf16().count(),
+            MAX_TOOLTIP_UTF16_UNITS
+        );
+        assert_eq!(
+            tooltip_for_devices("summary", &exact_unicode),
+            exact_unicode[0]
+        );
+
+        let overflow = vec![format!("{}{}", "🙂".repeat(32), "x".repeat(64))];
+        let tooltip = tooltip_for_devices("summary", &overflow);
+        assert!(tooltip.contains("right-click for all device stats"));
+        assert!(tooltip.encode_utf16().count() <= MAX_TOOLTIP_UTF16_UNITS);
     }
 
     #[test]

@@ -109,13 +109,18 @@ Volty launches; logs are retained.
 volty-rs/
 ├── crates/
 │   ├── volty-battery/         # Protocol-neutral normalized battery readings
-│   ├── volty-bluetooth/       # Windows Bluetooth battery discovery backend
+│   ├── volty-bluetooth/       # Windows Bluetooth backend (classic, SetupAPI, BLE phases under a shared scan budget)
 │   ├── volty-hid/             # Zero-UI, zero-Win32 protocol crate
 │   │   ├── src/
-│   │   │   ├── lib.rs         # Public API and optional HID device access
+│   │   │   ├── lib.rs         # Module root and public re-exports
+│   │   │   ├── interface.rs   # HID interface metadata and selectors
+│   │   │   ├── hid.rs         # Optional hidapi device enumeration and sessions
+│   │   │   ├── device.rs      # Device name and feature queries
 │   │   │   ├── protocol.rs    # Protocol/model traits and support catalog
+│   │   │   ├── profile.rs     # Device profile parsing
+│   │   │   ├── command.rs     # HID++ feature commands
 │   │   │   ├── logitech_hidpp.rs # HID++ 2.0 transport and battery backend
-│   │   │   ├── battery.rs     # HID++ battery decoding
+│   │   │   └── battery.rs     # HID++ battery decoding
 │   │   └── Cargo.toml
 │   │
 │   └── volty-tray/            # Windows binary application
@@ -126,13 +131,16 @@ volty-rs/
 │       ├── src/
 │       │   ├── main.rs        # CLI dispatch and single-instance guard
 │       │   ├── hid_cli.rs     # On-demand HID++ interface/feature diagnostics
-│       │   ├── app.rs         # Polling state machine and worker
+│       │   ├── app.rs         # Event loop and application state
+│       │   ├── app/           # Polling worker, battery ETA, device cache, notifications, labels
 │       │   ├── config.rs      # Per-user TOML settings
 │       │   ├── state.rs       # Local SQLite device and notification runtime state
-│       │   ├── tray.rs        # Dynamic icon generation & context menu
+│       │   ├── tray.rs        # Tray controller and context menu
+│       │   ├── tray/          # Icon rendering and start-on-boot registry handling
 │       │   ├── about.rs       # About window
 │       │   ├── diagnose.rs    # Native diagnostic window and clipboard actions
-│       │   ├── native_ui.rs   # Shared native Windows UI helpers
+│       │   ├── win32.rs       # Shared Win32 window and control helpers
+│       │   ├── native_ui.rs   # Native message boxes and icon helpers
 │       │   ├── report.rs      # Local diagnostic report generation
 │       │   ├── logging.rs     # Level-filtered local log file
 │       │   └── notify.rs      # Windows toast dispatcher

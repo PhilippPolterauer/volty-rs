@@ -39,8 +39,7 @@ use crate::{
     report::generate_diagnostic_report,
     state::{local_state_path, DeviceState},
     tray::{
-        confirm_reset, reset_startup_preferences, set_start_on_boot_enabled, start_on_boot_enabled,
-        TrayAction, TrayController,
+        confirm_reset, reset_startup_preferences, start_on_boot_enabled, TrayAction, TrayController,
     },
 };
 
@@ -261,7 +260,7 @@ impl App {
             TrayAction::SetDeviceMonitored {
                 identity,
                 monitored,
-            } => self.set_device_monitored(identity, monitored)?,
+            } => self.set_device_monitored(&identity, monitored)?,
             TrayAction::About => {
                 if let Err(error) = show_about_window() {
                     self.report_error("About window error", &error.to_string())?;
@@ -349,18 +348,18 @@ impl App {
     }
     fn set_device_monitored(
         &mut self,
-        identity: String,
+        identity: &str,
         monitored: bool,
     ) -> Result<(), Box<dyn Error>> {
-        let was_monitored = is_device_monitored(&self.monitored_devices, &identity);
+        let was_monitored = is_device_monitored(&self.monitored_devices, identity);
         if was_monitored == monitored {
             self.tray
-                .set_device_monitored_checked(&identity, was_monitored);
+                .set_device_monitored_checked(identity, was_monitored);
             return Ok(());
         }
 
         let save_result = match self.monitor_state.as_mut() {
-            Some(state) => state.set_device_monitored(&identity, monitored),
+            Some(state) => state.set_device_monitored(identity, monitored),
             None => Err(io::Error::new(
                 io::ErrorKind::NotConnected,
                 "local SQLite monitoring state is unavailable",
@@ -369,7 +368,8 @@ impl App {
         };
         match save_result {
             Ok(()) => {
-                self.monitored_devices.insert(identity.clone(), monitored);
+                self.monitored_devices
+                    .insert(identity.to_owned(), monitored);
                 let refresh_failed = request_device_discovery(&self.commands, monitored).is_err();
                 self.notifications
                     .retain_monitored_devices(&self.monitored_devices);
@@ -383,8 +383,7 @@ impl App {
                     .discovered_devices
                     .iter()
                     .find(|(device, _)| device.config_id() == identity)
-                    .map(|(_, name)| name.clone())
-                    .unwrap_or_else(|| "device".to_owned());
+                    .map_or_else(|| "device".to_owned(), |(_, name)| name.clone());
                 self.record_event(
                     LogLevel::Info,
                     &format!(
@@ -404,7 +403,7 @@ impl App {
             }
             Err(error) => {
                 self.tray
-                    .set_device_monitored_checked(&identity, was_monitored);
+                    .set_device_monitored_checked(identity, was_monitored);
                 self.report_error("Device monitoring state error", &error.to_string())?;
             }
         }
@@ -486,11 +485,10 @@ impl App {
         self.config_reload_due = None;
         self.tray
             .set_battery_color_map(self.active_config.battery_color_map)?;
-        let reset_status = self
-            .notification_config_error
-            .as_ref()
-            .map(|error| format!("Configuration error: {error}"))
-            .unwrap_or_else(|| "Searching for supported devices".to_owned());
+        let reset_status = self.notification_config_error.as_ref().map_or_else(
+            || "Searching for supported devices".to_owned(),
+            |error| format!("Configuration error: {error}"),
+        );
         self.tray.reset_status(&reset_status)?;
         self.tray.update_monitored_devices(&[])?;
 
@@ -655,7 +653,7 @@ impl App {
                 identity,
                 name,
                 error,
-            } => self.handle_device_name(identity, name, error),
+            } => self.handle_device_name(&identity, name, error),
             PollUpdate::Warning(message) => {
                 self.poll_had_warning = true;
                 self.record_event(LogLevel::Warn, &message)?;
@@ -728,18 +726,18 @@ impl App {
 
     fn handle_device_name(
         &mut self,
-        identity: DeviceIdentity,
+        identity: &DeviceIdentity,
         name: String,
         error: Option<String>,
     ) -> Result<(), Box<dyn Error>> {
         let device_name = identity.display_name(&name);
-        let is_discovered = self.discovered_devices.contains_key(&identity);
+        let is_discovered = self.discovered_devices.contains_key(identity);
         self.discovered_devices
             .insert(identity.clone(), device_name.clone());
         let has_pending_reading = if let Some(reading) = self
             .pending_readings
             .iter_mut()
-            .find(|reading| reading.identity == identity)
+            .find(|reading| reading.identity == *identity)
         {
             reading.name = name.clone();
             true
@@ -754,7 +752,7 @@ impl App {
                 ),
             )?;
         }
-        if let Some(reading) = self.latest_readings.get_mut(&identity) {
+        if let Some(reading) = self.latest_readings.get_mut(identity) {
             reading.name = name;
         }
         update_monitored_device_menu(
@@ -796,9 +794,10 @@ impl App {
         }
         self.readings_seen_this_poll.clear();
         self.poll_had_warning = false;
+        let readings = std::mem::take(&mut self.pending_readings);
         apply_poll_result(
             &mut self.tray,
-            std::mem::take(&mut self.pending_readings),
+            &readings,
             result,
             self.notification_config_error.as_deref(),
             &mut self.diagnostic_log,

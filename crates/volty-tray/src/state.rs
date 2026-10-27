@@ -258,6 +258,12 @@ mod tests {
             );
             assert_eq!(
                 state
+                    .known_device_indices("receiver-a", &[1, 3, 3, 1, 0xff])
+                    .unwrap(),
+                [0xff, 3, 1]
+            );
+            assert_eq!(
+                state
                     .ordered_device_indices("receiver-a", &defaults)
                     .unwrap(),
                 [0xff, 3, 1, 2, 4, 5, 6]
@@ -303,6 +309,20 @@ mod tests {
 
         {
             let mut state = DeviceState::open(&path).unwrap();
+            assert_eq!(
+                state
+                    .set_device_monitored("", true)
+                    .unwrap_err()
+                    .to_string(),
+                "device identity must not be empty"
+            );
+            assert_eq!(
+                state
+                    .set_discharge_notification_sent("", true)
+                    .unwrap_err()
+                    .to_string(),
+                "device identity must not be empty"
+            );
             state.import_legacy_monitored_devices(&legacy).unwrap();
             state.set_device_monitored("device-a", true).unwrap();
             assert_eq!(

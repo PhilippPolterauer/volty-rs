@@ -47,6 +47,9 @@ pub struct BluetoothScan {
 }
 
 /// Decode the single-octet value defined by the BLE Battery Level characteristic.
+///
+/// # Errors
+/// Returns an error when the payload is not exactly one byte or its value is outside the valid 0–100 range.
 pub fn decode_battery_level(value: &[u8]) -> Result<u8, BluetoothError> {
     let [level] = value else {
         return Err(error(format!(
@@ -88,12 +91,18 @@ mod windows_backend;
 /// its battery property, including through present Bluetooth PnP nodes, and
 /// from Windows-paired BLE devices. Paired BLE devices may be read even when
 /// Windows does not report an active BLE connection.
+///
+/// # Errors
+/// Returns an error if Windows Runtime initialization fails.
 #[cfg(windows)]
 pub fn scan_battery_devices() -> Result<BluetoothScan, BluetoothError> {
     windows_backend::scan_battery_devices()
 }
 
 /// Bluetooth battery discovery is available only on Windows.
+///
+/// # Errors
+/// Always returns an error because Bluetooth battery reads require Windows.
 #[cfg(not(windows))]
 pub fn scan_battery_devices() -> Result<BluetoothScan, BluetoothError> {
     Err(error(
@@ -103,7 +112,11 @@ pub fn scan_battery_devices() -> Result<BluetoothScan, BluetoothError> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{
+        battery_status, decode_battery_level, decode_windows_battery_life, normalize_device_name,
+        FALLBACK_DEVICE_NAME,
+    };
+    use volty_battery::{BatterySource, BatteryState};
 
     #[test]
     fn battery_level_accepts_the_full_specified_range() {

@@ -1,4 +1,4 @@
-use super::*;
+use super::{DeviceIdentity, DeviceReading};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::time::{Duration, Instant};
 use volty_battery::{BatteryState, BatteryStatus};

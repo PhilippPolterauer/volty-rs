@@ -296,6 +296,59 @@ mod tests {
     }
 
     #[test]
+    fn one_hundred_percent_resets_a_discharge_latch() {
+        let mut engine = NotificationEngine::from_config(AppConfig::default()).unwrap();
+        assert!(engine.consume_discharge_alert(10));
+        assert_eq!(
+            engine
+                .update_with(
+                    "Test device",
+                    BatterySample {
+                        percentage: 100,
+                        charging: false,
+                        full: false,
+                    },
+                    |_, _| panic!("a full battery must not dispatch a notification"),
+                )
+                .unwrap(),
+            NotificationOutcome::CycleReset
+        );
+        assert!(engine.consume_discharge_alert(10));
+    }
+
+    #[test]
+    fn failed_dispatch_consumes_the_discharge_latch() {
+        let mut engine = NotificationEngine::from_config(AppConfig::default()).unwrap();
+        let error = engine
+            .update_with(
+                "Test device",
+                BatterySample {
+                    percentage: 10,
+                    charging: false,
+                    full: false,
+                },
+                |_, _| Err(NotificationError::new("dispatch failed")),
+            )
+            .unwrap_err();
+
+        assert_eq!(error.to_string(), "dispatch failed");
+        assert_eq!(
+            engine
+                .update_with(
+                    "Test device",
+                    BatterySample {
+                        percentage: 10,
+                        charging: false,
+                        full: false,
+                    },
+                    |_, _| panic!("a failed dispatch must not be retried in the same cycle"),
+                )
+                .unwrap(),
+            NotificationOutcome::AlreadyNotified
+        );
+    }
+
+    #[test]
     fn above_threshold_sample_reports_skipped_notification() {
         let mut engine = NotificationEngine::from_config(AppConfig::default()).unwrap();
         let outcome = engine

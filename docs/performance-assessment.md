@@ -28,9 +28,9 @@ The process had been running for about 2 minutes 18 seconds at the end of sampli
 
 ### Polling and idle behavior
 
-- The default successful-poll wait is 120 seconds, with a configurable range of 10-3600 seconds; the default retry wait is 15 seconds. The worker waits after each query completes, so query duration adds to the start-to-start interval. ([config.rs](../crates/volty-tray/src/config.rs#L12), [app.rs](../crates/volty-tray/src/app.rs#L1336))
-- Device discovery runs on a dedicated worker thread. The tray loop sleeps between checks using configurable `ui_poll_interval_ms` (50-1000 ms), defaulting to 250 ms rather than busy-spinning. This is four loop checks per second by default, with up to 250 ms additional delay before processing queued UI work. ([app.rs](../crates/volty-tray/src/app.rs#L1042), [config.rs](../crates/volty-tray/src/config.rs#L14))
-- The in-memory diagnostic log is capped at 200 entries. The file logger appends and flushes each accepted entry without rotating the file. This is negligible for a single minute at normal log levels, but sustained trace logging can accumulate disk usage over a much longer run. ([app.rs](../crates/volty-tray/src/app.rs#L32), [logging.rs](../crates/volty-tray/src/logging.rs#L38))
+- The default successful-poll wait is 120 seconds, with a configurable range of 10-3600 seconds; the default retry wait is 15 seconds. The worker waits after each query completes, so query duration adds to the start-to-start interval. ([config.rs](../crates/volty-tray/src/config.rs#L12), [app/poll.rs](../crates/volty-tray/src/app/poll.rs#L88))
+- Device discovery runs on a dedicated worker thread. The tray loop sleeps between checks using configurable `ui_poll_interval_ms` (50-1000 ms), defaulting to 250 ms rather than busy-spinning. This is four loop checks per second by default, with up to 250 ms additional delay before processing queued UI work. ([app.rs](../crates/volty-tray/src/app.rs#L224), [config.rs](../crates/volty-tray/src/config.rs#L14))
+- The in-memory diagnostic log is capped at 200 entries. The file logger appends and flushes each accepted entry and rotates at 5 MiB, keeping one `.1` backup, so sustained trace logging is bounded to roughly 10 MiB of disk. ([app.rs](../crates/volty-tray/src/app.rs#L47), [logging.rs](../crates/volty-tray/src/logging.rs#L10))
 
 ### 10-second successful-poll scenario
 
@@ -48,7 +48,7 @@ Battery ETA uses a bounded per-device history, defaulting to a 10-minute window 
 
 Bluetooth is not enabled by default in the tray crate. ([Cargo.toml](../crates/volty-tray/Cargo.toml))
 
-When enabled, each device query performs classic Bluetooth property discovery, SetupAPI device-property discovery, and paired BLE discovery sequentially under one shared 30-second overall scan budget. Individual Windows Runtime operations still time out after five seconds. If the budget is exhausted, phases stop and return results gathered so far with a warning. The work is on the device-poller thread, not the tray UI thread, but it can delay the next battery update. ([windows_backend.rs](../crates/volty-bluetooth/src/windows_backend.rs#L44), [windows_backend.rs](../crates/volty-bluetooth/src/windows_backend.rs#L45), [windows_backend.rs](../crates/volty-bluetooth/src/windows_backend.rs#L69), [windows_backend.rs](../crates/volty-bluetooth/src/windows_backend.rs#L519))
+When enabled, each device query performs classic Bluetooth property discovery, SetupAPI device-property discovery, and paired BLE discovery sequentially under one shared 30-second overall scan budget. Individual Windows Runtime operations still time out after five seconds. If the budget is exhausted, phases stop and return results gathered so far with a warning. The work is on the device-poller thread, not the tray UI thread, but it can delay the next battery update. ([budget.rs](../crates/volty-bluetooth/src/windows_backend/budget.rs#L5), [budget.rs](../crates/volty-bluetooth/src/windows_backend/budget.rs#L6), [ble.rs](../crates/volty-bluetooth/src/windows_backend/ble.rs#L25))
 
 ## Conclusion and follow-up
 

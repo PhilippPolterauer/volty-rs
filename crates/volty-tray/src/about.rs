@@ -1,25 +1,54 @@
 use std::{error::Error, io, mem, ptr};
 
 use windows_sys::Win32::{
-    Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, POINT, WPARAM},
+    Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM},
     Graphics::Gdi::{GetMonitorInfoW, MonitorFromPoint, MONITORINFO, MONITOR_DEFAULTTONEAREST},
     System::LibraryLoader::GetModuleHandleW,
     System::SystemServices::{SS_ETCHEDHORZ, SS_ICON},
     UI::WindowsAndMessaging::{
-        CreateWindowExW, DestroyWindow, GetCursorPos, SendMessageW, SetWindowTextW, BS_PUSHBUTTON,
-        STM_SETICON, SW_SHOWNORMAL, WM_CLOSE, WM_COMMAND, WM_CTLCOLORSTATIC, WM_DESTROY,
-        WM_NCCREATE, WS_CAPTION, WS_CHILD, WS_OVERLAPPED, WS_SYSMENU, WS_TABSTOP, WS_VISIBLE,
+        CreateWindowExW, DestroyWindow, GetCursorPos, SendMessageW, STM_SETICON, SW_SHOWNORMAL,
+        WM_CLOSE, WM_COMMAND, WM_CTLCOLORSTATIC, WM_DESTROY, WM_NCCREATE, WS_CAPTION,
+        WS_OVERLAPPED, WS_SYSMENU, WS_VISIBLE,
     },
 };
 
 use crate::{
     native_ui::{application_icon, set_control_font, static_control_color, FontSet},
-    win32::{self, ControlSpec},
+    win32,
 };
 
 const WINDOW_CLASS: &str = "VoltyAboutWindow";
 const WINDOW_WIDTH: i32 = 500;
 const WINDOW_HEIGHT: i32 = 312;
+const ICON_SIZE: i32 = 128;
+const ICON_X: i32 = 24;
+const ICON_Y: i32 = 24;
+const HEADING_X: i32 = 164;
+const HEADING_Y: i32 = 22;
+const HEADING_WIDTH: i32 = 300;
+const HEADING_HEIGHT: i32 = 38;
+const VERSION_X: i32 = 166;
+const VERSION_Y: i32 = 65;
+const VERSION_WIDTH: i32 = 300;
+const VERSION_HEIGHT: i32 = 22;
+const DESCRIPTION_X: i32 = 166;
+const DESCRIPTION_Y: i32 = 98;
+const DESCRIPTION_WIDTH: i32 = 310;
+const DESCRIPTION_HEIGHT: i32 = 56;
+const DIVIDER_X: i32 = 24;
+const DIVIDER_Y: i32 = 188;
+const DIVIDER_WIDTH: i32 = 436;
+const DIVIDER_HEIGHT: i32 = 2;
+const STATUS_X: i32 = 30;
+const STATUS_Y: i32 = 158;
+const STATUS_WIDTH: i32 = 436;
+const STATUS_HEIGHT: i32 = 20;
+const STAR_BUTTON_X: i32 = 24;
+const STAR_BUTTON_WIDTH: i32 = 144;
+const CLOSE_BUTTON_X: i32 = 384;
+const CLOSE_BUTTON_WIDTH: i32 = 76;
+const BUTTON_Y: i32 = 220;
+const BUTTON_HEIGHT: i32 = 32;
 const STAR_ON_GITHUB_ID: usize = 1001;
 const CLOSE_ID: usize = 1002;
 const GITHUB_URL: &str = "https://github.com/PhilippPolterauer/volty-rs";
@@ -59,7 +88,7 @@ pub fn show_about_window() -> Result<(), Box<dyn Error>> {
             ptr::null_mut(),
             ptr::null_mut(),
             instance,
-            (&mut *state as *mut AboutWindow).cast(),
+            ptr::from_mut(state.as_mut()).cast(),
         )
     };
     if window.is_null() {
@@ -77,7 +106,7 @@ pub fn show_about_window() -> Result<(), Box<dyn Error>> {
 
 fn centered_window_position(width: i32, height: i32) -> io::Result<(i32, i32)> {
     let mut cursor = POINT { x: 0, y: 0 };
-    if unsafe { GetCursorPos(&mut cursor) } == 0 {
+    if unsafe { GetCursorPos(ptr::addr_of_mut!(cursor)) } == 0 {
         return Err(io::Error::last_os_error());
     }
 
@@ -86,20 +115,19 @@ fn centered_window_position(width: i32, height: i32) -> io::Result<(i32, i32)> {
         return Err(io::Error::last_os_error());
     }
 
-    // SAFETY: MONITORINFO is a plain Win32 structure whose fields are initialized by GetMonitorInfoW.
+    // SAFETY: MONITORINFO is a plain Win32 structure whose fields GetMonitorInfoW initializes.
     let mut info: MONITORINFO = unsafe { mem::zeroed() };
-    info.cbSize = mem::size_of::<MONITORINFO>() as u32;
-    if unsafe { GetMonitorInfoW(monitor, &mut info) } == 0 {
+    info.cbSize = mem::size_of::<MONITORINFO>()
+        .try_into()
+        .map_err(|_| io::Error::other("MONITORINFO size exceeds u32"))?;
+    if unsafe { GetMonitorInfoW(monitor, ptr::addr_of_mut!(info)) } == 0 {
         return Err(io::Error::last_os_error());
     }
 
     Ok(center_in_work_area(&info.rcWork, width, height))
 }
-fn center_in_work_area(
-    work_area: &windows_sys::Win32::Foundation::RECT,
-    width: i32,
-    height: i32,
-) -> (i32, i32) {
+
+fn center_in_work_area(work_area: &RECT, width: i32, height: i32) -> (i32, i32) {
     (
         work_area.left + (work_area.right - work_area.left - width) / 2,
         work_area.top + (work_area.bottom - work_area.top - height) / 2,
@@ -111,170 +139,165 @@ fn create_controls(
     instance: HINSTANCE,
     state: &mut AboutWindow,
 ) -> Result<(), Box<dyn Error>> {
-    let static_class = win32::to_wide("STATIC");
-    let button_class = win32::to_wide("BUTTON");
-    let heading_text = win32::to_wide("Volty");
-    let version_text = win32::to_wide(&format!("VERSION {}", env!("CARGO_PKG_VERSION")));
-    let description_text = win32::to_wide(
-        "A low-overhead Windows system-tray battery monitor for supported HID devices, written in Rust.",
-    );
-    let status_text = win32::to_wide("");
-    let empty_text = win32::to_wide("");
-    let star_text = win32::to_wide("Star on GitHub");
-    let close_text = win32::to_wide("Close");
+    create_about_content(window, instance, state)?;
+    create_about_buttons(window, instance, state)?;
+    Ok(())
+}
 
-    let icon = win32::create_control(
+fn create_about_content(
+    window: HWND,
+    instance: HINSTANCE,
+    state: &mut AboutWindow,
+) -> Result<(), Box<dyn Error>> {
+    create_about_icon(window, instance)?;
+    create_about_text(window, instance, state)?;
+    create_about_divider(window, instance)?;
+    create_about_status(window, instance, state)?;
+    Ok(())
+}
+
+fn create_about_icon(window: HWND, instance: HINSTANCE) -> io::Result<()> {
+    let empty_text = win32::to_wide("");
+    let icon = win32::create_static_control(
         window,
         instance,
-        ControlSpec {
-            class: &static_class,
-            text: &empty_text,
-            extended_style: 0,
-            style: WS_CHILD | WS_VISIBLE | SS_ICON,
-            x: 24,
-            y: 24,
-            width: 128,
-            height: 128,
-            id: 0,
+        &empty_text,
+        WS_VISIBLE | SS_ICON,
+        win32::ControlRect {
+            x: ICON_X,
+            y: ICON_Y,
+            width: ICON_SIZE,
+            height: ICON_SIZE,
         },
-    );
-    if icon.is_null() {
-        return Err(io::Error::last_os_error().into());
-    }
+    )?;
+    // SAFETY: the icon control is valid and STM_SETICON accepts the shared application icon handle.
     unsafe {
         SendMessageW(
             icon,
             STM_SETICON,
-            application_icon(instance, 128)? as usize,
+            application_icon(instance, ICON_SIZE)?.expose_provenance(),
             0,
         );
     }
+    Ok(())
+}
 
-    let heading = win32::create_control(
-        window,
-        instance,
-        ControlSpec {
-            class: &static_class,
-            text: &heading_text,
-            extended_style: 0,
-            style: WS_CHILD | WS_VISIBLE,
-            x: 164,
-            y: 22,
-            width: 300,
-            height: 38,
-            id: 0,
-        },
+fn create_about_text(window: HWND, instance: HINSTANCE, state: &AboutWindow) -> io::Result<()> {
+    let heading = win32::to_wide("Volty");
+    let version = win32::to_wide(&format!("VERSION {}", env!("CARGO_PKG_VERSION")));
+    let description = win32::to_wide(
+        "A low-overhead Windows system-tray battery monitor for supported HID devices, written in Rust.",
     );
-    if heading.is_null() {
-        return Err(io::Error::last_os_error().into());
-    }
-    set_control_font(heading, state.fonts.heading);
 
-    let version = win32::create_control(
+    let control = win32::create_static_control(
         window,
         instance,
-        ControlSpec {
-            class: &static_class,
-            text: &version_text,
-            extended_style: 0,
-            style: WS_CHILD | WS_VISIBLE,
-            x: 166,
-            y: 65,
-            width: 300,
-            height: 22,
-            id: 0,
+        &heading,
+        WS_VISIBLE,
+        win32::ControlRect {
+            x: HEADING_X,
+            y: HEADING_Y,
+            width: HEADING_WIDTH,
+            height: HEADING_HEIGHT,
         },
-    );
-    if version.is_null() {
-        return Err(io::Error::last_os_error().into());
-    }
-    set_control_font(version, state.fonts.body_small);
+    )?;
+    set_control_font(control, state.fonts.heading);
 
-    let description = win32::create_control(
+    let control = win32::create_static_control(
         window,
         instance,
-        ControlSpec {
-            class: &static_class,
-            text: &description_text,
-            extended_style: 0,
-            style: WS_CHILD | WS_VISIBLE,
-            x: 166,
-            y: 98,
-            width: 310,
-            height: 56,
-            id: 0,
+        &version,
+        WS_VISIBLE,
+        win32::ControlRect {
+            x: VERSION_X,
+            y: VERSION_Y,
+            width: VERSION_WIDTH,
+            height: VERSION_HEIGHT,
         },
-    );
-    if description.is_null() {
-        return Err(io::Error::last_os_error().into());
-    }
-    set_control_font(description, state.fonts.body_small);
+    )?;
+    set_control_font(control, state.fonts.body_small);
 
-    if win32::create_control(
+    let control = win32::create_static_control(
         window,
         instance,
-        ControlSpec {
-            class: &static_class,
-            text: &empty_text,
-            extended_style: 0,
-            style: WS_CHILD | WS_VISIBLE | SS_ETCHEDHORZ,
-            x: 24,
-            y: 188,
-            width: 436,
-            height: 2,
-            id: 0,
+        &description,
+        WS_VISIBLE,
+        win32::ControlRect {
+            x: DESCRIPTION_X,
+            y: DESCRIPTION_Y,
+            width: DESCRIPTION_WIDTH,
+            height: DESCRIPTION_HEIGHT,
         },
-    )
-    .is_null()
-    {
-        return Err(io::Error::last_os_error().into());
-    }
+    )?;
+    set_control_font(control, state.fonts.body_small);
+    Ok(())
+}
 
-    state.status = win32::create_control(
+fn create_about_divider(window: HWND, instance: HINSTANCE) -> io::Result<()> {
+    let empty_text = win32::to_wide("");
+    win32::create_static_control(
         window,
         instance,
-        ControlSpec {
-            class: &static_class,
-            text: &status_text,
-            extended_style: 0,
-            style: WS_CHILD | WS_VISIBLE,
-            x: 30,
-            y: 158,
-            width: 436,
-            height: 20,
-            id: 0,
+        &empty_text,
+        WS_VISIBLE | SS_ETCHEDHORZ,
+        win32::ControlRect {
+            x: DIVIDER_X,
+            y: DIVIDER_Y,
+            width: DIVIDER_WIDTH,
+            height: DIVIDER_HEIGHT,
         },
-    );
-    if state.status.is_null() {
-        return Err(io::Error::last_os_error().into());
-    }
+    )?;
+    Ok(())
+}
+
+fn create_about_status(
+    window: HWND,
+    instance: HINSTANCE,
+    state: &mut AboutWindow,
+) -> io::Result<()> {
+    let status_text = win32::to_wide("");
+    state.status = win32::create_static_control(
+        window,
+        instance,
+        &status_text,
+        WS_VISIBLE,
+        win32::ControlRect {
+            x: STATUS_X,
+            y: STATUS_Y,
+            width: STATUS_WIDTH,
+            height: STATUS_HEIGHT,
+        },
+    )?;
     set_control_font(state.status, state.fonts.body_small);
+    Ok(())
+}
 
+fn create_about_buttons(window: HWND, instance: HINSTANCE, state: &AboutWindow) -> io::Result<()> {
+    let star_text = win32::to_wide("Star on GitHub");
+    let close_text = win32::to_wide("Close");
     for (id, text, x, width) in [
-        (STAR_ON_GITHUB_ID, &star_text, 24, 144),
-        (CLOSE_ID, &close_text, 384, 76),
+        (
+            STAR_ON_GITHUB_ID,
+            &star_text,
+            STAR_BUTTON_X,
+            STAR_BUTTON_WIDTH,
+        ),
+        (CLOSE_ID, &close_text, CLOSE_BUTTON_X, CLOSE_BUTTON_WIDTH),
     ] {
-        let button = win32::create_control(
+        let button = win32::create_button_control(
             window,
             instance,
-            ControlSpec {
-                class: &button_class,
-                text,
-                extended_style: 0,
-                style: WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON as u32,
+            text,
+            id,
+            win32::ControlRect {
                 x,
-                y: 220,
+                y: BUTTON_Y,
                 width,
-                height: 32,
-                id,
+                height: BUTTON_HEIGHT,
             },
-        );
-        if button.is_null() {
-            return Err(io::Error::last_os_error().into());
-        }
+        )?;
         set_control_font(button, state.fonts.body_small);
     }
-
     Ok(())
 }
 
@@ -285,57 +308,57 @@ unsafe extern "system" fn window_proc(
     lparam: LPARAM,
 ) -> LRESULT {
     if message == WM_NCCREATE {
+        // SAFETY: WM_NCCREATE supplies a CREATESTRUCTW in lParam for this window.
         unsafe { win32::attach_window_state(window, lparam) };
     }
 
     match message {
         WM_CTLCOLORSTATIC => static_control_color(wparam),
-        WM_COMMAND => {
-            let id = wparam & 0xffff;
-            match id {
-                STAR_ON_GITHUB_ID => {
-                    let status = match win32::open_url(GITHUB_URL) {
-                        Ok(()) => "Opening GitHub...",
-                        Err(error) => {
-                            let message =
-                                win32::to_wide(&format!("Could not open GitHub: {error}"));
-                            let state_ptr = win32::window_state::<AboutWindow>(window);
-                            if !state_ptr.is_null() {
-                                // SAFETY: the window owns the boxed state until its message loop exits.
-                                unsafe { SetWindowTextW((*state_ptr).status, message.as_ptr()) };
-                            }
-                            return 0;
-                        }
-                    };
-                    let message = win32::to_wide(status);
-                    let state_ptr = win32::window_state::<AboutWindow>(window);
-                    if !state_ptr.is_null() {
-                        // SAFETY: the window owns the boxed state until its message loop exits.
-                        unsafe { SetWindowTextW((*state_ptr).status, message.as_ptr()) };
-                    }
-                    0
-                }
-                CLOSE_ID => {
-                    unsafe { DestroyWindow(window) };
-                    0
-                }
-                _ => win32::default_window_proc(window, message, wparam, lparam),
-            }
-        }
-        WM_CLOSE => {
-            unsafe { DestroyWindow(window) };
-            0
-        }
-        WM_DESTROY => {
-            let state_ptr = win32::window_state::<AboutWindow>(window);
-            if !state_ptr.is_null() {
-                // SAFETY: the window owns the boxed state until its message loop exits.
-                win32::quit_after_creation(unsafe { (*state_ptr).create_complete });
-            }
-            0
-        }
+        WM_COMMAND => handle_command(window, message, wparam, lparam),
+        WM_CLOSE => destroy_window(window),
+        WM_DESTROY => handle_destroy(window),
         _ => win32::default_window_proc(window, message, wparam, lparam),
     }
+}
+
+fn handle_command(window: HWND, message: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+    match wparam & 0xffff {
+        STAR_ON_GITHUB_ID => {
+            let status = match win32::open_url(GITHUB_URL) {
+                Ok(()) => "Opening GitHub...".to_owned(),
+                Err(error) => format!("Could not open GitHub: {error}"),
+            };
+            set_status_text(window, &status);
+            0
+        }
+        CLOSE_ID => destroy_window(window),
+        _ => win32::default_window_proc(window, message, wparam, lparam),
+    }
+}
+
+fn set_status_text(window: HWND, status: &str) {
+    let state_ptr = win32::window_state::<AboutWindow>(window);
+    if state_ptr.is_null() {
+        return;
+    }
+    let text = win32::to_wide(status);
+    // SAFETY: GWLP_USERDATA is the boxed state for this live window.
+    let state = unsafe { &*state_ptr };
+    win32::set_window_text(state.status, &text);
+}
+
+fn destroy_window(window: HWND) -> LRESULT {
+    unsafe { DestroyWindow(window) };
+    0
+}
+
+fn handle_destroy(window: HWND) -> LRESULT {
+    let state_ptr = win32::window_state::<AboutWindow>(window);
+    if !state_ptr.is_null() {
+        // SAFETY: GWLP_USERDATA remains the boxed state until the message loop exits.
+        win32::quit_after_creation(unsafe { (*state_ptr).create_complete });
+    }
+    0
 }
 
 #[cfg(test)]

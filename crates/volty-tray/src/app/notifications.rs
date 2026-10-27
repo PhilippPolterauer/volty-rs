@@ -1,6 +1,15 @@
-use super::*;
+use super::{
+    battery_is_full, battery_source_label, battery_status_label, format_device_name,
+    is_device_monitored, record_event, AppConfig, DeviceIdentity, DeviceReading, DeviceState,
+    FileLogger, LogLevel,
+};
 use crate::notify::{BatterySample, NotificationEngine, NotificationOutcome};
-use std::collections::hash_map::Entry;
+use std::{
+    collections::{hash_map::Entry, BTreeMap, HashMap, HashSet, VecDeque},
+    error::Error,
+    io,
+    time::Instant,
+};
 use volty_battery::BatteryState;
 pub(super) struct DeviceNotifications {
     config: AppConfig,
@@ -116,87 +125,28 @@ pub(super) fn process_device_reading(
             percentage.map_or_else(|| "unknown".to_owned(), |value| format!("{value}%"))
         ),
     )?;
+
     let charging = matches!(
         reading.battery.state,
         BatteryState::Charging | BatteryState::ChargingNearlyFull | BatteryState::ChargingSlow
     );
     let full = battery_is_full(&reading.battery);
     if percentage.is_some() || charging || full {
-        let sample = BatterySample {
-            // Percentage is irrelevant while charging/full because the engine
-            // resets that device's discharge-cycle guard before checking the threshold.
-            percentage: percentage.unwrap_or(0),
-            charging,
-            full,
-        };
-        let threshold = notifications.config.low_battery_threshold;
-        let enabled = notifications.config.notifications_enabled;
-        record_event(
+        process_notification(
+            notifications,
+            state,
+            reading,
+            BatterySample {
+                // Percentage is irrelevant while charging/full because the engine
+                // resets that device's discharge-cycle guard before checking the threshold.
+                percentage: percentage.unwrap_or(0),
+                charging,
+                full,
+            },
             diagnostic_log,
             file_logger,
             started,
-            LogLevel::Trace,
-            &format!(
-                "Evaluating low-battery notification for {device_name}: battery={}%, charging={charging}, full={full}, enabled={enabled}, threshold={threshold}%",
-                sample.percentage
-            ),
         )?;
-        let notification_result =
-            notifications.update(reading.identity.clone(), &device_name, sample);
-        if let Err(error) = notifications.persist_pending_alerts(state) {
-            record_event(
-                diagnostic_log,
-                file_logger,
-                started,
-                LogLevel::Warn,
-                &format!(
-                    "Could not persist low-battery notification cycle for {device_name}: {error}"
-                ),
-            )?;
-        }
-        match notification_result {
-            Ok(outcome) => {
-                let detail = match outcome {
-                    NotificationOutcome::NotificationsDisabled => {
-                        "skipped: disabled in configuration"
-                    }
-                    NotificationOutcome::AboveThreshold => {
-                        "skipped: battery is above the threshold"
-                    }
-                    NotificationOutcome::AlreadyNotified => {
-                        "skipped: already delivered during this discharge cycle"
-                    }
-                    NotificationOutcome::Unchanged => "no notification due",
-                    NotificationOutcome::CycleReset => "discharge cycle reset",
-                    NotificationOutcome::Notified => "delivered successfully",
-                };
-                record_event(
-                    diagnostic_log,
-                    file_logger,
-                    started,
-                    if outcome == NotificationOutcome::Notified {
-                        LogLevel::Info
-                    } else {
-                        LogLevel::Trace
-                    },
-                    &format!(
-                        "Low-battery notification for {device_name} at {}% (threshold={threshold}%): {detail}",
-                        sample.percentage
-                    ),
-                )?;
-            }
-            Err(error) => {
-                let error = error.to_string();
-                record_event(
-                    diagnostic_log,
-                    file_logger,
-                    started,
-                    LogLevel::Error,
-                    &format!("Notification error for {device_name}: {error}"),
-                )?;
-                reading.notification_error = Some(error);
-            }
-        }
     } else {
         record_event(
             diagnostic_log,
@@ -209,6 +159,102 @@ pub(super) fn process_device_reading(
         )?;
     }
     Ok(())
+}
+
+fn process_notification(
+    notifications: &mut DeviceNotifications,
+    state: Option<&mut DeviceState>,
+    reading: &mut DeviceReading,
+    sample: BatterySample,
+    diagnostic_log: &mut VecDeque<String>,
+    file_logger: &mut FileLogger,
+    started: Instant,
+) -> io::Result<()> {
+    let device_name = format_device_name(&reading.name, reading.device_index);
+    let threshold = notifications.config.low_battery_threshold;
+    let enabled = notifications.config.notifications_enabled;
+    record_event(
+        diagnostic_log,
+        file_logger,
+        started,
+        LogLevel::Trace,
+        &format!(
+            "Evaluating low-battery notification for {device_name}: battery={}%, charging={}, full={}, enabled={enabled}, threshold={threshold}%",
+            sample.percentage, sample.charging, sample.full
+        ),
+    )?;
+
+    let notification_result = notifications.update(reading.identity.clone(), &device_name, sample);
+    if let Err(error) = notifications.persist_pending_alerts(state) {
+        record_event(
+            diagnostic_log,
+            file_logger,
+            started,
+            LogLevel::Warn,
+            &format!("Could not persist low-battery notification cycle for {device_name}: {error}"),
+        )?;
+    }
+    record_notification_outcome(
+        notification_result,
+        reading,
+        sample,
+        threshold,
+        diagnostic_log,
+        file_logger,
+        started,
+    )
+}
+
+fn record_notification_outcome(
+    notification_result: Result<NotificationOutcome, Box<dyn Error>>,
+    reading: &mut DeviceReading,
+    sample: BatterySample,
+    threshold: u8,
+    diagnostic_log: &mut VecDeque<String>,
+    file_logger: &mut FileLogger,
+    started: Instant,
+) -> io::Result<()> {
+    let device_name = format_device_name(&reading.name, reading.device_index);
+    match notification_result {
+        Ok(outcome) => {
+            let detail = match outcome {
+                NotificationOutcome::NotificationsDisabled => "skipped: disabled in configuration",
+                NotificationOutcome::AboveThreshold => "skipped: battery is above the threshold",
+                NotificationOutcome::AlreadyNotified => {
+                    "skipped: already delivered during this discharge cycle"
+                }
+                NotificationOutcome::Unchanged => "no notification due",
+                NotificationOutcome::CycleReset => "discharge cycle reset",
+                NotificationOutcome::Notified => "delivered successfully",
+            };
+            record_event(
+                diagnostic_log,
+                file_logger,
+                started,
+                if outcome == NotificationOutcome::Notified {
+                    LogLevel::Info
+                } else {
+                    LogLevel::Trace
+                },
+                &format!(
+                    "Low-battery notification for {device_name} at {}% (threshold={threshold}%): {detail}",
+                    sample.percentage
+                ),
+            )
+        }
+        Err(error) => {
+            let error = error.to_string();
+            record_event(
+                diagnostic_log,
+                file_logger,
+                started,
+                LogLevel::Error,
+                &format!("Notification error for {device_name}: {error}"),
+            )?;
+            reading.notification_error = Some(error);
+            Ok(())
+        }
+    }
 }
 #[cfg(test)]
 mod tests {

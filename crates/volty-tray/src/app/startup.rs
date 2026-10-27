@@ -1,12 +1,17 @@
-use super::*;
 use crate::{
-    config::{load_legacy_monitored_devices, remove_legacy_monitored_devices},
+    config::{
+        config_path, load_legacy_monitored_devices, remove_legacy_monitored_devices, AppConfig,
+    },
     state::DeviceState,
+    tray::{set_start_on_boot_enabled, start_on_boot_enabled},
 };
 use notify::{Event, RecommendedWatcher, RecursiveMode, Watcher};
 use std::{
-    fs,
+    collections::BTreeMap,
+    error::Error,
+    fs, io,
     path::{Path, PathBuf},
+    sync::mpsc::{self, Receiver},
 };
 
 pub(super) struct StartupState {

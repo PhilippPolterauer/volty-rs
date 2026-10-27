@@ -22,6 +22,7 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: x86_64-pc-windows-msvc
+          components: clippy, rustfmt
 
       - name: Verify tag matches package version
         shell: pwsh
@@ -39,6 +40,12 @@ jobs:
           if ($env:GITHUB_REF_NAME -ne $expectedTag) {
             throw "Release tag '$env:GITHUB_REF_NAME' must match package version '$expectedTag'."
           }
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Lint workspace
+        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
 
       - name: Test workspace
         run: cargo test --workspace --locked

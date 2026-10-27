@@ -237,149 +237,187 @@ impl Command {
         if description.trim().is_empty() {
             return Err(field_error(path, "description", "must not be empty"));
         }
-
-        let access = match required_string(table, "access", path)?.as_str() {
-            "read_only" => Access::ReadOnly,
-            "state_changing" => Access::StateChanging,
-            other => {
-                return Err(field_error(
-                    path,
-                    "access",
-                    format!("unknown access {other:?}; expected read_only or state_changing"),
-                ))
-            }
-        };
-
-        let operation = match required_string(table, "operation", path)?.as_str() {
-            "feature_lookup" => Operation::FeatureLookup,
-            "feature_call" => Operation::FeatureCall,
-            other => {
-                return Err(field_error(
-                    path,
-                    "operation",
-                    format!("unknown operation {other:?}"),
-                ))
-            }
-        };
-
-        // Both operations need a logical ID: a lookup command queries this ID
-        // directly, while a call resolves it afresh before every feature call.
-        let feature_id = required_integer(table, "feature_id", path)?;
-        if !(0..=u16::MAX as i64).contains(&feature_id) {
-            return Err(field_error(
-                path,
-                "feature_id",
-                "must be in the range 0..=65535",
-            ));
-        }
-
-        let function_index = required_integer(table, "function_index", path)?;
-        if !(0..=15).contains(&function_index) {
-            return Err(field_error(
-                path,
-                "function_index",
-                "must fit in the HID++ function nibble (0..=15)",
-            ));
-        }
-
-        let report = match required_string(table, "report", path)?.as_str() {
-            "short" => FrameFormat::Short,
-            "long" => FrameFormat::Long,
-            other => {
-                return Err(field_error(
-                    path,
-                    "report",
-                    format!("unknown report {other:?}; expected short or long"),
-                ))
-            }
-        };
-        let capacity = match report {
-            FrameFormat::Short => 3,
-            FrameFormat::Long => 16,
-        };
-        let request_params = required_byte_array(table, "request_params", path)?;
-        if request_params.len() > capacity {
-            return Err(field_error(
-                path,
-                "request_params",
-                format!(
-                    "{} parameter bytes exceed the {report:?} report capacity of {capacity}",
-                    request_params.len()
-                ),
-            ));
-        }
-
-        let timeout_ms = required_integer(table, "timeout_ms", path)?;
-        if !(1..=120_000).contains(&timeout_ms) {
-            return Err(field_error(
-                path,
-                "timeout_ms",
-                "must be in the range 1..=120000 milliseconds",
-            ));
-        }
-
-        let decoder_value = table
-            .get("decoder")
-            .ok_or_else(|| field_error(path, "decoder", "is required"))?;
-        let decoder = Decoder::from_value(decoder_value, path)?;
-
-        if operation == Operation::FeatureLookup {
-            if report != FrameFormat::Long {
-                return Err(field_error(
-                    path,
-                    "report",
-                    "feature_lookup always uses the long root report",
-                ));
-            }
-            if function_index != 0 {
-                return Err(field_error(
-                    path,
-                    "function_index",
-                    "feature_lookup always uses root function 0",
-                ));
-            }
-            if !request_params.is_empty() {
-                return Err(field_error(
-                    path,
-                    "request_params",
-                    "feature_lookup fills its own logical feature ID; use an empty list",
-                ));
-            }
-        }
+        let access = parse_access(table, path)?;
+        let operation = parse_operation(table, path)?;
+        let feature_id = parse_feature_id(table, path)?;
+        let function_index = parse_function_index(table, path)?;
+        let report = parse_report(table, path)?;
+        let request_params = parse_request_params(table, path, report)?;
+        let timeout = parse_timeout(table, path)?;
+        let decoder = Decoder::from_value(
+            table
+                .get("decoder")
+                .ok_or_else(|| field_error(path, "decoder", "is required"))?,
+            path,
+        )?;
+        validate_feature_lookup(operation, report, function_index, &request_params, path)?;
 
         Ok(Self {
             description,
             access,
             operation,
-            feature_id: feature_id as u16,
-            function_index: function_index as u8,
+            feature_id,
+            function_index,
             report,
             request_params,
-            timeout: Duration::from_millis(timeout_ms as u64),
+            timeout,
             decoder,
         })
     }
+}
+
+fn parse_access(
+    table: &toml::map::Map<String, toml::Value>,
+    path: &str,
+) -> Result<Access, ProfileError> {
+    match required_string(table, "access", path)?.as_str() {
+        "read_only" => Ok(Access::ReadOnly),
+        "state_changing" => Ok(Access::StateChanging),
+        other => Err(field_error(
+            path,
+            "access",
+            format!("unknown access {other:?}; expected read_only or state_changing"),
+        )),
+    }
+}
+
+fn parse_operation(
+    table: &toml::map::Map<String, toml::Value>,
+    path: &str,
+) -> Result<Operation, ProfileError> {
+    match required_string(table, "operation", path)?.as_str() {
+        "feature_lookup" => Ok(Operation::FeatureLookup),
+        "feature_call" => Ok(Operation::FeatureCall),
+        other => Err(field_error(
+            path,
+            "operation",
+            format!("unknown operation {other:?}"),
+        )),
+    }
+}
+
+fn parse_feature_id(
+    table: &toml::map::Map<String, toml::Value>,
+    path: &str,
+) -> Result<u16, ProfileError> {
+    let feature_id = required_integer(table, "feature_id", path)?;
+    if !(0..=u16::MAX as i64).contains(&feature_id) {
+        return Err(field_error(
+            path,
+            "feature_id",
+            "must be in the range 0..=65535",
+        ));
+    }
+    Ok(feature_id as u16)
+}
+
+fn parse_function_index(
+    table: &toml::map::Map<String, toml::Value>,
+    path: &str,
+) -> Result<u8, ProfileError> {
+    let function_index = required_integer(table, "function_index", path)?;
+    if !(0..=15).contains(&function_index) {
+        return Err(field_error(
+            path,
+            "function_index",
+            "must fit in the HID++ function nibble (0..=15)",
+        ));
+    }
+    Ok(function_index as u8)
+}
+
+fn parse_report(
+    table: &toml::map::Map<String, toml::Value>,
+    path: &str,
+) -> Result<FrameFormat, ProfileError> {
+    match required_string(table, "report", path)?.as_str() {
+        "short" => Ok(FrameFormat::Short),
+        "long" => Ok(FrameFormat::Long),
+        other => Err(field_error(
+            path,
+            "report",
+            format!("unknown report {other:?}; expected short or long"),
+        )),
+    }
+}
+
+fn parse_request_params(
+    table: &toml::map::Map<String, toml::Value>,
+    path: &str,
+    report: FrameFormat,
+) -> Result<Vec<u8>, ProfileError> {
+    let capacity = match report {
+        FrameFormat::Short => 3,
+        FrameFormat::Long => 16,
+    };
+    let request_params = required_byte_array(table, "request_params", path)?;
+    if request_params.len() > capacity {
+        return Err(field_error(
+            path,
+            "request_params",
+            format!(
+                "{} parameter bytes exceed the {report:?} report capacity of {capacity}",
+                request_params.len()
+            ),
+        ));
+    }
+    Ok(request_params)
+}
+
+fn parse_timeout(
+    table: &toml::map::Map<String, toml::Value>,
+    path: &str,
+) -> Result<Duration, ProfileError> {
+    let timeout_ms = required_integer(table, "timeout_ms", path)?;
+    if !(1..=120_000).contains(&timeout_ms) {
+        return Err(field_error(
+            path,
+            "timeout_ms",
+            "must be in the range 1..=120000 milliseconds",
+        ));
+    }
+    Ok(Duration::from_millis(timeout_ms as u64))
+}
+
+fn validate_feature_lookup(
+    operation: Operation,
+    report: FrameFormat,
+    function_index: u8,
+    request_params: &[u8],
+    path: &str,
+) -> Result<(), ProfileError> {
+    if operation != Operation::FeatureLookup {
+        return Ok(());
+    }
+    if report != FrameFormat::Long {
+        return Err(field_error(
+            path,
+            "report",
+            "feature_lookup always uses the long root report",
+        ));
+    }
+    if function_index != 0 {
+        return Err(field_error(
+            path,
+            "function_index",
+            "feature_lookup always uses root function 0",
+        ));
+    }
+    if !request_params.is_empty() {
+        return Err(field_error(
+            path,
+            "request_params",
+            "feature_lookup fills its own logical feature ID; use an empty list",
+        ));
+    }
+    Ok(())
 }
 
 impl Decoder {
     fn from_value(value: &toml::Value, command_path: &str) -> Result<Self, ProfileError> {
         let field = format!("{command_path}.decoder");
         if let Some(name) = value.as_str() {
-            return match name {
-                "raw" => Ok(Self::Raw {
-                    offset: 0,
-                    length: None,
-                }),
-                "unified_battery_status" => Ok(Self::UnifiedBatteryStatus {
-                    percentage: true,
-                    rechargeable: false,
-                    reported_levels: 0,
-                }),
-                other => Err(ProfileError::new(
-                    field,
-                    format!("unknown decoder {other:?}"),
-                )),
-            };
+            return parse_named_decoder(name, &field);
         }
 
         let table = value
@@ -387,142 +425,11 @@ impl Decoder {
             .ok_or_else(|| ProfileError::new(&field, "expected a decoder name or table"))?;
         let decoder_type = required_string(table, "type", &field)?;
         match decoder_type.as_str() {
-            "raw" => {
-                reject_unknown(table, &["type", "offset", "length"], &field)?;
-                let offset = optional_usize(table, "offset", 0, &field)?;
-                let length = optional_usize_option(table, "length", &field)?;
-                Ok(Self::Raw { offset, length })
-            }
-            "unsigned_integer" => {
-                reject_unknown(table, &["type", "offset", "length", "endianness"], &field)?;
-                let offset = optional_usize(table, "offset", 0, &field)?;
-                let length = required_integer(table, "length", &field)?;
-                if !matches!(length, 1 | 2 | 4 | 8) {
-                    return Err(ProfileError::new(
-                        format!("{field}.length"),
-                        "must be one of 1, 2, 4, or 8 bytes",
-                    ));
-                }
-                let endianness = match required_string(table, "endianness", &field)?.as_str() {
-                    "big" => Endianness::Big,
-                    "little" => Endianness::Little,
-                    other => {
-                        return Err(ProfileError::new(
-                            format!("{field}.endianness"),
-                            format!("unknown byte order {other:?}; expected big or little"),
-                        ))
-                    }
-                };
-                Ok(Self::UnsignedInteger {
-                    offset,
-                    length: length as usize,
-                    endianness,
-                })
-            }
-            "bit_flags" => {
-                reject_unknown(table, &["type", "offset", "flags"], &field)?;
-                let offset = optional_usize(table, "offset", 0, &field)?;
-                let flags_value = table
-                    .get("flags")
-                    .ok_or_else(|| ProfileError::new(format!("{field}.flags"), "is required"))?;
-                let flags_table = flags_value.as_table().ok_or_else(|| {
-                    ProfileError::new(
-                        format!("{field}.flags"),
-                        "expected a table of flag bit positions",
-                    )
-                })?;
-                if flags_table.is_empty() {
-                    return Err(ProfileError::new(
-                        format!("{field}.flags"),
-                        "must contain at least one named flag",
-                    ));
-                }
-                let mut flags = BTreeMap::new();
-                for (name, bit_value) in flags_table {
-                    if name.trim().is_empty() {
-                        return Err(ProfileError::new(
-                            format!("{field}.flags"),
-                            "flag names must not be empty",
-                        ));
-                    }
-                    let bit = bit_value.as_integer().ok_or_else(|| {
-                        ProfileError::new(
-                            format!("{field}.flags.{name}"),
-                            "expected an integer bit position",
-                        )
-                    })?;
-                    if !(0..=7).contains(&bit) {
-                        return Err(ProfileError::new(
-                            format!("{field}.flags.{name}"),
-                            "bit position must be in the range 0..=7",
-                        ));
-                    }
-                    flags.insert(name.clone(), bit as u8);
-                }
-                Ok(Self::BitFlags { offset, flags })
-            }
-            "enum" => {
-                reject_unknown(table, &["type", "offset", "values"], &field)?;
-                let offset = optional_usize(table, "offset", 0, &field)?;
-                let values_value = table
-                    .get("values")
-                    .ok_or_else(|| ProfileError::new(format!("{field}.values"), "is required"))?;
-                let values_table = values_value.as_table().ok_or_else(|| {
-                    ProfileError::new(
-                        format!("{field}.values"),
-                        "expected a table of integer values",
-                    )
-                })?;
-                if values_table.is_empty() {
-                    return Err(ProfileError::new(
-                        format!("{field}.values"),
-                        "must contain at least one enum value",
-                    ));
-                }
-                let mut values = BTreeMap::new();
-                for (raw_value, label) in values_table {
-                    let numeric_value = raw_value.parse::<u64>().map_err(|_| {
-                        ProfileError::new(
-                            format!("{field}.values.{raw_value}"),
-                            "enum keys must be unsigned decimal integers",
-                        )
-                    })?;
-                    let label = label.as_str().ok_or_else(|| {
-                        ProfileError::new(
-                            format!("{field}.values.{raw_value}"),
-                            "expected a string label",
-                        )
-                    })?;
-                    if label.trim().is_empty() {
-                        return Err(ProfileError::new(
-                            format!("{field}.values.{raw_value}"),
-                            "enum labels must not be empty",
-                        ));
-                    }
-                    if values.insert(numeric_value, label.to_owned()).is_some() {
-                        return Err(ProfileError::new(
-                            format!("{field}.values"),
-                            format!("duplicate enum numeric value {numeric_value}"),
-                        ));
-                    }
-                }
-                Ok(Self::Enum { offset, values })
-            }
-            "unified_battery_status" => {
-                reject_unknown(
-                    table,
-                    &["type", "percentage", "rechargeable", "reported_levels"],
-                    &field,
-                )?;
-                let percentage = optional_bool(table, "percentage", true, &field)?;
-                let rechargeable = optional_bool(table, "rechargeable", false, &field)?;
-                let reported_levels = optional_u8(table, "reported_levels", 0, &field)?;
-                Ok(Self::UnifiedBatteryStatus {
-                    percentage,
-                    rechargeable,
-                    reported_levels,
-                })
-            }
+            "raw" => parse_raw_decoder(table, &field),
+            "unsigned_integer" => parse_unsigned_integer_decoder(table, &field),
+            "bit_flags" => parse_bit_flags_decoder(table, &field),
+            "enum" => parse_enum_decoder(table, &field),
+            "unified_battery_status" => parse_unified_battery_decoder(table, &field),
             other => Err(ProfileError::new(
                 field,
                 format!("unknown decoder type {other:?}"),
@@ -531,6 +438,181 @@ impl Decoder {
     }
 }
 
+fn parse_named_decoder(name: &str, field: &str) -> Result<Decoder, ProfileError> {
+    match name {
+        "raw" => Ok(Decoder::Raw {
+            offset: 0,
+            length: None,
+        }),
+        "unified_battery_status" => Ok(Decoder::UnifiedBatteryStatus {
+            percentage: true,
+            rechargeable: false,
+            reported_levels: 0,
+        }),
+        other => Err(ProfileError::new(
+            field,
+            format!("unknown decoder {other:?}"),
+        )),
+    }
+}
+
+fn parse_raw_decoder(
+    table: &toml::map::Map<String, toml::Value>,
+    field: &str,
+) -> Result<Decoder, ProfileError> {
+    reject_unknown(table, &["type", "offset", "length"], field)?;
+    let offset = optional_usize(table, "offset", 0, field)?;
+    let length = optional_usize_option(table, "length", field)?;
+    Ok(Decoder::Raw { offset, length })
+}
+
+fn parse_unsigned_integer_decoder(
+    table: &toml::map::Map<String, toml::Value>,
+    field: &str,
+) -> Result<Decoder, ProfileError> {
+    reject_unknown(table, &["type", "offset", "length", "endianness"], field)?;
+    let offset = optional_usize(table, "offset", 0, field)?;
+    let length = required_integer(table, "length", field)?;
+    if !matches!(length, 1 | 2 | 4 | 8) {
+        return Err(ProfileError::new(
+            format!("{field}.length"),
+            "must be one of 1, 2, 4, or 8 bytes",
+        ));
+    }
+    let endianness = match required_string(table, "endianness", field)?.as_str() {
+        "big" => Endianness::Big,
+        "little" => Endianness::Little,
+        other => {
+            return Err(ProfileError::new(
+                format!("{field}.endianness"),
+                format!("unknown byte order {other:?}; expected big or little"),
+            ))
+        }
+    };
+    Ok(Decoder::UnsignedInteger {
+        offset,
+        length: length as usize,
+        endianness,
+    })
+}
+
+fn parse_bit_flags_decoder(
+    table: &toml::map::Map<String, toml::Value>,
+    field: &str,
+) -> Result<Decoder, ProfileError> {
+    reject_unknown(table, &["type", "offset", "flags"], field)?;
+    let offset = optional_usize(table, "offset", 0, field)?;
+    let flags_value = table
+        .get("flags")
+        .ok_or_else(|| ProfileError::new(format!("{field}.flags"), "is required"))?;
+    let flags_table = flags_value.as_table().ok_or_else(|| {
+        ProfileError::new(
+            format!("{field}.flags"),
+            "expected a table of flag bit positions",
+        )
+    })?;
+    if flags_table.is_empty() {
+        return Err(ProfileError::new(
+            format!("{field}.flags"),
+            "must contain at least one named flag",
+        ));
+    }
+
+    let mut flags = BTreeMap::new();
+    for (name, bit_value) in flags_table {
+        if name.trim().is_empty() {
+            return Err(ProfileError::new(
+                format!("{field}.flags"),
+                "flag names must not be empty",
+            ));
+        }
+        let bit = bit_value.as_integer().ok_or_else(|| {
+            ProfileError::new(
+                format!("{field}.flags.{name}"),
+                "expected an integer bit position",
+            )
+        })?;
+        if !(0..=7).contains(&bit) {
+            return Err(ProfileError::new(
+                format!("{field}.flags.{name}"),
+                "bit position must be in the range 0..=7",
+            ));
+        }
+        flags.insert(name.clone(), bit as u8);
+    }
+    Ok(Decoder::BitFlags { offset, flags })
+}
+
+fn parse_enum_decoder(
+    table: &toml::map::Map<String, toml::Value>,
+    field: &str,
+) -> Result<Decoder, ProfileError> {
+    reject_unknown(table, &["type", "offset", "values"], field)?;
+    let offset = optional_usize(table, "offset", 0, field)?;
+    let values_value = table
+        .get("values")
+        .ok_or_else(|| ProfileError::new(format!("{field}.values"), "is required"))?;
+    let values_table = values_value.as_table().ok_or_else(|| {
+        ProfileError::new(
+            format!("{field}.values"),
+            "expected a table of integer values",
+        )
+    })?;
+    if values_table.is_empty() {
+        return Err(ProfileError::new(
+            format!("{field}.values"),
+            "must contain at least one enum value",
+        ));
+    }
+
+    let mut values = BTreeMap::new();
+    for (raw_value, label) in values_table {
+        let numeric_value = raw_value.parse::<u64>().map_err(|_| {
+            ProfileError::new(
+                format!("{field}.values.{raw_value}"),
+                "enum keys must be unsigned decimal integers",
+            )
+        })?;
+        let label = label.as_str().ok_or_else(|| {
+            ProfileError::new(
+                format!("{field}.values.{raw_value}"),
+                "expected a string label",
+            )
+        })?;
+        if label.trim().is_empty() {
+            return Err(ProfileError::new(
+                format!("{field}.values.{raw_value}"),
+                "enum labels must not be empty",
+            ));
+        }
+        if values.insert(numeric_value, label.to_owned()).is_some() {
+            return Err(ProfileError::new(
+                format!("{field}.values"),
+                format!("duplicate enum numeric value {numeric_value}"),
+            ));
+        }
+    }
+    Ok(Decoder::Enum { offset, values })
+}
+
+fn parse_unified_battery_decoder(
+    table: &toml::map::Map<String, toml::Value>,
+    field: &str,
+) -> Result<Decoder, ProfileError> {
+    reject_unknown(
+        table,
+        &["type", "percentage", "rechargeable", "reported_levels"],
+        field,
+    )?;
+    let percentage = optional_bool(table, "percentage", true, field)?;
+    let rechargeable = optional_bool(table, "rechargeable", false, field)?;
+    let reported_levels = optional_u8(table, "reported_levels", 0, field)?;
+    Ok(Decoder::UnifiedBatteryStatus {
+        percentage,
+        rechargeable,
+        reported_levels,
+    })
+}
 fn reject_unknown(
     table: &toml::map::Map<String, toml::Value>,
     allowed: &[&str],

@@ -1,9 +1,11 @@
 [package]
 name = "volty-tray"
 version = "0.2.0"
+publish = false
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
+description = "Windows system tray application for Volty"
 
 [features]
 default = []
@@ -14,14 +16,14 @@ name = "volty"
 path = "src/main.rs"
 
 [dependencies]
-toml = "0.8"
+toml.workspace = true
 toml_edit = "0.20"
 
 [build-dependencies]
 winres = "0.1"
 
 [target.'cfg(windows)'.dependencies]
-volty-battery = { path = "../volty-battery" }
+volty-battery.workspace = true
 volty-bluetooth = { path = "../volty-bluetooth", optional = true }
 volty-hid = { path = "../volty-hid", features = ["hidapi"] }
 tray-icon = "0.14"

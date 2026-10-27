@@ -1,9 +1,10 @@
 [package]
 name = "volty-hid"
 version = "0.2.0"
+publish = false
 edition.workspace = true
 description = "HID++ 2.0 frame and Logitech battery helpers"
-license = "MIT OR Apache-2.0"
+license.workspace = true
 rust-version.workspace = true
 
 [features]
@@ -12,5 +13,5 @@ hidapi = ["dep:hidapi"]
 
 [dependencies]
 hidapi = { version = "2.6", optional = true }
-volty-battery = { path = "../volty-battery" }
-toml = "0.8"
+volty-battery.workspace = true
+toml.workspace = true

@@ -1,9 +1,17 @@
-use super::*;
+use super::{
+    append_config_error, battery_status_label, format_device_name, record_event, DeviceIdentity,
+    DeviceReading, FileLogger, LogLevel,
+};
 use super::{battery_eta::battery_eta_label, poll::PollResult};
-use crate::tray::DeviceMonitorEntry;
+use crate::tray::{DeviceMonitorEntry, TrayController};
+use std::{
+    collections::{BTreeMap, HashMap, VecDeque},
+    io,
+    time::Instant,
+};
 pub(super) fn apply_poll_result(
     tray: &mut TrayController,
-    readings: Vec<DeviceReading>,
+    readings: &[DeviceReading],
     result: PollResult,
     notification_config_error: Option<&str>,
     diagnostic_log: &mut VecDeque<String>,
@@ -43,7 +51,7 @@ pub(super) fn apply_poll_result(
 
     update_tray_devices(
         tray,
-        &readings,
+        readings,
         notification_config_error,
         diagnostic_log,
         file_logger,

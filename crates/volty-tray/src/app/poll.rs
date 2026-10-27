@@ -1,6 +1,14 @@
-use super::device_cache::DeviceNameCache;
-use super::*;
-use std::sync::mpsc::RecvTimeoutError;
+use super::{
+    device_cache::DeviceNameCache, record_event, AppConfig, DeviceIdentity, DeviceReading,
+    DeviceState, FileLogger, LogLevel,
+};
+use std::{
+    collections::VecDeque,
+    error::Error,
+    sync::mpsc::{self, Receiver, RecvTimeoutError},
+    thread,
+    time::{Duration, Instant},
+};
 pub(super) enum PollCommand {
     Discover,
     UpdateIntervals { poll: Duration, retry: Duration },
@@ -50,8 +58,8 @@ pub(super) fn spawn_poll_worker(
         .name("volty-device-poller".to_owned())
         .spawn(move || {
             poll_worker(
-                commands_rx,
-                results_tx,
+                &commands_rx,
+                &results_tx,
                 poll_interval,
                 retry_interval,
                 device_state,
@@ -60,8 +68,8 @@ pub(super) fn spawn_poll_worker(
     Ok((commands_tx, results_rx, poller))
 }
 pub(super) fn poll_worker(
-    commands: mpsc::Receiver<PollCommand>,
-    results: mpsc::Sender<PollUpdate>,
+    commands: &mpsc::Receiver<PollCommand>,
+    results: &mpsc::Sender<PollUpdate>,
     poll_interval: Duration,
     retry_interval: Duration,
     mut device_state: Option<DeviceState>,
@@ -78,15 +86,15 @@ pub(super) fn poll_worker(
     );
 }
 pub(super) fn poll_worker_with_query(
-    commands: mpsc::Receiver<PollCommand>,
-    results: mpsc::Sender<PollUpdate>,
+    commands: &mpsc::Receiver<PollCommand>,
+    results: &mpsc::Sender<PollUpdate>,
     mut poll_interval: Duration,
     mut retry_interval: Duration,
     mut query: impl FnMut(&mpsc::Sender<PollUpdate>, bool) -> PollResult,
 ) {
     let mut full_scan = true;
     loop {
-        let reading = query(&results, full_scan);
+        let reading = query(results, full_scan);
         let successful_read = reading.is_ok();
         let next_poll = if successful_read {
             poll_interval
@@ -189,8 +197,7 @@ impl<'a> DeviceQuery<'a> {
                         .product_string
                         .as_deref()
                         .filter(|name| !name.trim().is_empty())
-                        .map(str::to_owned)
-                        .unwrap_or_else(|| mouse.name().to_owned());
+                        .map_or_else(|| mouse.name().to_owned(), str::to_owned);
                     self.send(PollUpdate::Trace(format!(
                         "HID discovery matched {fallback_name:?} to {} using {} (VID=0x{:04x}, PID=0x{:04x}, usage_page={:?}, usage={:?}, interface={})",
                         mouse.name(),
@@ -446,7 +453,7 @@ mod tests {
         atomic::{AtomicUsize, Ordering},
         Arc,
     };
-    use volty_battery::{BatteryLevel, BatterySource, BatteryState};
+    use volty_battery::{BatteryLevel, BatterySource, BatteryState, BatteryStatus};
     fn test_reading() -> DeviceReading {
         DeviceReading {
             identity: DeviceIdentity::Hid {
@@ -476,8 +483,8 @@ mod tests {
         let worker_query_count = Arc::clone(&query_count);
         let worker = thread::spawn(move || {
             poll_worker_with_query(
-                commands_rx,
-                results_tx,
+                &commands_rx,
+                &results_tx,
                 Duration::from_secs(60),
                 Duration::from_secs(60),
                 move |_, full_scan| {
@@ -511,8 +518,8 @@ mod tests {
         let (full_scan_tx, full_scan_rx) = mpsc::channel();
         let worker = thread::spawn(move || {
             poll_worker_with_query(
-                commands_rx,
-                results_tx,
+                &commands_rx,
+                &results_tx,
                 Duration::from_millis(20),
                 Duration::from_millis(20),
                 move |_, full_scan| {
@@ -550,8 +557,8 @@ mod tests {
         let worker_query_count = Arc::clone(&query_count);
         let worker = thread::spawn(move || {
             poll_worker_with_query(
-                commands_rx,
-                results_tx,
+                &commands_rx,
+                &results_tx,
                 Duration::from_secs(60),
                 Duration::from_secs(60),
                 move |_, _| {
@@ -584,8 +591,8 @@ mod tests {
         let (finish_query_tx, finish_query_rx) = mpsc::channel();
         let worker = thread::spawn(move || {
             poll_worker_with_query(
-                commands_rx,
-                results_tx,
+                &commands_rx,
+                &results_tx,
                 Duration::from_secs(60),
                 Duration::from_secs(60),
                 move |results, _| {

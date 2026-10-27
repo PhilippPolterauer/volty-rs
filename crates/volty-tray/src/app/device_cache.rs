@@ -1,4 +1,5 @@
-use super::*;
+use super::DeviceIdentity;
+use std::collections::{HashMap, HashSet};
 #[derive(Default)]
 pub(super) struct DeviceNameCache {
     names: HashMap<DeviceIdentity, String>,
@@ -51,6 +52,7 @@ impl DeviceNameCache {
 }
 #[cfg(test)]
 mod tests {
+    #[cfg(feature = "bluetooth")]
     use super::super::labels::format_device_name;
     use super::super::DeviceIdentity;
     use super::*;
