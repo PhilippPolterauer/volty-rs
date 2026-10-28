@@ -1,8 +1,8 @@
 use super::name_cache::NameCache;
 use crate::state::DeviceState;
 use volty_battery::{
-    BatteryProvider, DeviceId, DeviceLabel, ProviderEvent, ProviderPoll, ScanMode, SinkClosed,
-    SourceReading,
+    trace_enabled, BatteryProvider, DeviceId, DeviceLabel, ProviderEvent, ProviderPoll, ScanMode,
+    SinkClosed, SourceReading,
 };
 use volty_hid::{
     enumerate_hid_interfaces, resolve_hid_device, stable_interface_keys, BatteryProtocol,
@@ -78,16 +78,18 @@ impl HidProvider {
                     .as_deref()
                     .filter(|name| !name.trim().is_empty())
                     .map_or_else(|| device.name().to_owned(), str::to_owned);
-                sink(ProviderEvent::Trace(format!(
-                    "HID discovery matched {fallback_name:?} to {} using {} (VID=0x{:04x}, PID=0x{:04x}, usage_page={:?}, usage={:?}, interface={})",
-                    device.name(),
-                    protocol.name(),
-                    interface.vendor_id,
-                    interface.product_id,
-                    interface.usage_page,
-                    interface.usage,
-                    interface.interface_number
-                )))?;
+                if trace_enabled() {
+                    sink(ProviderEvent::Trace(format!(
+                        "HID discovery matched {fallback_name:?} to {} using {} (VID=0x{:04x}, PID=0x{:04x}, usage_page={:?}, usage={:?}, interface={})",
+                        device.name(),
+                        protocol.name(),
+                        interface.vendor_id,
+                        interface.product_id,
+                        interface.usage_page,
+                        interface.usage,
+                        interface.interface_number
+                    )))?;
+                }
                 let (known_indices, device_indices) =
                     self.device_indices(key, protocol.device_indices(), mode, sink)?;
                 for device_index in device_indices {
@@ -104,14 +106,19 @@ impl HidProvider {
                 }
                 Ok(())
             }
-            Ok(None) => sink(ProviderEvent::Trace(format!(
-                "HID discovery skipped an unsupported interface (VID=0x{:04x}, PID=0x{:04x}, usage_page={:?}, usage={:?}, interface={}): no supported HID protocol matched its interface metadata",
-                interface.vendor_id,
-                interface.product_id,
-                interface.usage_page,
-                interface.usage,
-                interface.interface_number
-            ))),
+            Ok(None) => {
+                if trace_enabled() {
+                    sink(ProviderEvent::Trace(format!(
+                        "HID discovery skipped an unsupported interface (VID=0x{:04x}, PID=0x{:04x}, usage_page={:?}, usage={:?}, interface={}): no supported HID protocol matched its interface metadata",
+                        interface.vendor_id,
+                        interface.product_id,
+                        interface.usage_page,
+                        interface.usage,
+                        interface.interface_number
+                    )))?;
+                }
+                Ok(())
+            }
             Err(error) => {
                 outcome.errors.push(format!(
                     "Ambiguous HID backend match for {:04x}:{:04x}: {error}",
@@ -256,10 +263,12 @@ impl HidProvider {
                         Some(HidppError::Timeout)
                     );
                 if empty_discovery_slot {
-                    sink(ProviderEvent::Trace(format!(
-                        "HID++ discovery address {} did not respond",
-                        probe.device_index
-                    )))?;
+                    if trace_enabled() {
+                        sink(ProviderEvent::Trace(format!(
+                            "HID++ discovery address {} did not respond",
+                            probe.device_index
+                        )))?;
+                    }
                 } else {
                     outcome.errors.push(format!(
                         "{} via {} (slot {}): {error}",

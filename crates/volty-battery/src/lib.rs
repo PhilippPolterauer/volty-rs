@@ -4,8 +4,8 @@
 mod provider;
 
 pub use provider::{
-    BatteryProvider, DeviceId, DeviceLabel, ProviderEvent, ProviderPoll, ScanMode, SinkClosed,
-    SourceReading,
+    set_trace_enabled, trace_enabled, BatteryProvider, DeviceId, DeviceLabel, ProviderEvent,
+    ProviderPoll, ScanMode, SinkClosed, SourceReading,
 };
 
 /// The known charging/discharging condition, or `Unknown` if unavailable.

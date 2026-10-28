@@ -9,13 +9,21 @@ rust-version.workspace = true
 
 [features]
 default = []
-hidapi = ["dep:hidapi"]
+hidapi = ["dep:hidapi", "dep:windows-sys"]
 profile = ["dep:toml"]
 
 [dependencies]
 hidapi = { version = "2.6", optional = true }
 volty-battery.workspace = true
 toml = { workspace = true, optional = true }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = [
+    "Win32_Devices_HumanInterfaceDevice",
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Storage_FileSystem",
+], optional = true }
 
 [lints]
 workspace = true

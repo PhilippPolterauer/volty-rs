@@ -22,6 +22,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Track log file size in memory instead of querying file metadata on every log line.
 - The tray loop now blocks on a Win32 event plus the message queue (`MsgWaitForMultipleObjects`) instead of sleeping and polling; poll results and config-file changes wake it. Idle wakeups drop to zero.
 - **Breaking:** removed the `ui_poll_interval_ms` config key (the loop is event-driven); remove it from `config.toml`, as unknown keys are a config error.
+- Added generic HID battery support: any HID interface whose report descriptor declares a battery level (Generic Device Controls *Battery Strength*, or Battery System relative/absolute state of charge, or remaining ÷ full-charge capacity) is now read through the Windows HID parser and shown as "HID Battery", with charging state when the Battery System page reports it. Vendor-defined pages are skipped, probe results are cached per interface and dropped when the device disappears.
+- HID++ polls cache each slot's battery feature index and unified-battery capabilities, so a steady-state poll is one transaction instead of three or four; a failed cached read rediscovers the layout. Discovery of an empty slot now gives up after 1 s instead of 2 s.
+- Trace-level strings are no longer formatted unless the log level is `trace`; as a result, trace lines from HID discovery no longer appear in the diagnostics window at lower log levels.
 
 ### Fixed
 

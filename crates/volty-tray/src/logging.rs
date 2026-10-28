@@ -36,7 +36,12 @@ impl FileLogger {
             )
         })?;
 
-        Self::open_at(directory.join("volty.log"), level, DEFAULT_MAX_FILE_SIZE)
+        Self::open_at(directory.join("volty.log"), level, DEFAULT_MAX_FILE_SIZE).map(
+            |mut logger| {
+                logger.set_level(level);
+                logger
+            },
+        )
     }
 
     fn open_at(path: impl Into<PathBuf>, level: LogLevel, max_file_size: u64) -> io::Result<Self> {
@@ -141,6 +146,7 @@ impl FileLogger {
 
     pub fn set_level(&mut self, level: LogLevel) {
         self.level = level;
+        volty_battery::set_trace_enabled(level.includes(LogLevel::Trace));
     }
 
     pub fn path(&self) -> &Path {

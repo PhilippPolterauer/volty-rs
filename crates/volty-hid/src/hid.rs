@@ -1,7 +1,9 @@
 use crate::logitech_hidpp::{transact_io, ReportIo};
 use crate::*;
 use hidapi::{DeviceInfo, HidApi, HidDevice};
-use std::sync::{Mutex, PoisonError};
+use std::collections::{HashMap, HashSet};
+use std::ffi::{CStr, CString};
+use std::sync::{LazyLock, Mutex, PoisonError};
 use std::time::Duration;
 
 /// Generic metadata for a HID interface, excluding its path and serial number.
@@ -105,6 +107,7 @@ pub fn enumerate_hid_interfaces() -> Result<Vec<HidInterfaceInfo>, HidppError> {
                 &right.path,
             ))
     });
+    forget_absent_interfaces(&interfaces);
     Ok(interfaces)
 }
 
@@ -239,71 +242,143 @@ fn open_hidpp_session(info: &HidInterfaceInfo) -> Result<HidppSession, HidppErro
     })
 }
 
+const PROBE_TIMEOUT: Duration = Duration::from_secs(1);
+const QUERY_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// Where a device keeps its battery, resolved once so later polls skip the
+/// Root and capability round trips.
+#[derive(Clone, Copy)]
+enum BatteryFeature {
+    Unified {
+        index: u8,
+        capabilities: UnifiedBatteryCapabilities,
+    },
+    Legacy {
+        index: u8,
+    },
+}
+
+type FeatureKey = (CString, u8);
+
+static BATTERY_FEATURES: LazyLock<Mutex<HashMap<FeatureKey, BatteryFeature>>> =
+    LazyLock::new(Mutex::default);
+
+fn cached_feature(key: &FeatureKey) -> Option<BatteryFeature> {
+    let cache = BATTERY_FEATURES
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner);
+    cache.get(key).copied()
+}
+
+fn cache_feature(key: FeatureKey, feature: BatteryFeature) {
+    let mut cache = BATTERY_FEATURES
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner);
+    cache.insert(key, feature);
+}
+
+fn forget_feature(key: &FeatureKey) {
+    let mut cache = BATTERY_FEATURES
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner);
+    cache.remove(key);
+}
+
+/// Drops cached features of interfaces that are no longer present, so a
+/// device replugged under the same path is rediscovered.
+fn forget_absent_interfaces(interfaces: &[HidInterfaceInfo]) {
+    let present: HashSet<&CStr> = interfaces.iter().map(|info| info.path.as_c_str()).collect();
+    let mut cache = BATTERY_FEATURES
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner);
+    cache.retain(|(path, _), _| present.contains(path.as_c_str()));
+    drop(cache);
+    #[cfg(windows)]
+    crate::generic_battery::forget_absent_interfaces(interfaces);
+}
+
+fn discover_battery_feature(
+    session: &mut HidppSession,
+    device_index: u8,
+) -> Result<BatteryFeature, HidppError> {
+    // Only the first request can hit an empty slot, so only it uses the short probe timeout.
+    if let Some(feature) =
+        session.get_feature(device_index, FEATURE_UNIFIED_BATTERY, PROBE_TIMEOUT)?
+    {
+        let response = transact_feature(
+            session,
+            device_index,
+            feature.feature_index,
+            FUNCTION_GET_UNIFIED_BATTERY_CAPABILITIES,
+            QUERY_TIMEOUT,
+        )?;
+        return Ok(BatteryFeature::Unified {
+            index: feature.feature_index,
+            capabilities: parse_unified_battery_capabilities(&response)?,
+        });
+    }
+    if let Some(feature) =
+        session.get_feature(device_index, FEATURE_BATTERY_STATUS, QUERY_TIMEOUT)?
+    {
+        return Ok(BatteryFeature::Legacy {
+            index: feature.feature_index,
+        });
+    }
+    Err(HidppError::UnsupportedBatteryFeature)
+}
+
+fn read_battery(
+    session: &mut HidppSession,
+    device_index: u8,
+    feature: BatteryFeature,
+) -> Result<BatteryStatus, HidppError> {
+    match feature {
+        BatteryFeature::Unified {
+            index,
+            capabilities,
+        } => {
+            let response = transact_feature(
+                session,
+                device_index,
+                index,
+                FUNCTION_GET_UNIFIED_BATTERY_INFO,
+                QUERY_TIMEOUT,
+            )?;
+            parse_unified_battery(&response, capabilities)
+        }
+        BatteryFeature::Legacy { index } => read_legacy_battery(session, device_index, index),
+    }
+}
+
 fn query_battery_session(
     session: &mut HidppSession,
     device_index: u8,
 ) -> Result<BatteryStatus, HidppError> {
-    if let Some(feature) = session.get_feature(
-        device_index,
-        FEATURE_UNIFIED_BATTERY,
-        Duration::from_secs(2),
-    )? {
-        return read_unified_battery(session, device_index, feature.feature_index);
+    let key = (session.info.path.clone(), device_index);
+    if let Some(feature) = cached_feature(&key) {
+        match read_battery(session, device_index, feature) {
+            Ok(battery) => return Ok(battery),
+            // The device did not answer, which says nothing about its feature layout.
+            Err(error @ (HidppError::Timeout | HidppError::HidApi(_))) => return Err(error),
+            // A different device may now sit in this slot; discover it again.
+            Err(_) => forget_feature(&key),
+        }
     }
-    if let Some(feature) =
-        session.get_feature(device_index, FEATURE_BATTERY_STATUS, Duration::from_secs(2))?
-    {
-        return read_legacy_battery(session, device_index, feature.feature_index);
-    }
-    Err(HidppError::UnsupportedBatteryFeature)
+    let feature = discover_battery_feature(session, device_index)?;
+    let battery = read_battery(session, device_index, feature)?;
+    cache_feature(key, feature);
+    Ok(battery)
 }
 
 fn query_device_session(
     session: &mut HidppSession,
     device_index: u8,
 ) -> Result<(Result<Option<String>, HidppError>, BatteryStatus), HidppError> {
-    if let Some(feature) = session.get_feature(
-        device_index,
-        FEATURE_UNIFIED_BATTERY,
-        Duration::from_secs(2),
-    )? {
-        let name = session.get_device_name(device_index, Duration::from_secs(2));
-        let battery = read_unified_battery(session, device_index, feature.feature_index)?;
-        return Ok((name, battery));
-    }
-
-    if let Some(feature) =
-        session.get_feature(device_index, FEATURE_BATTERY_STATUS, Duration::from_secs(2))?
-    {
-        let name = session.get_device_name(device_index, Duration::from_secs(2));
-        let battery = read_legacy_battery(session, device_index, feature.feature_index)?;
-        return Ok((name, battery));
-    }
-
-    Err(HidppError::UnsupportedBatteryFeature)
-}
-
-fn read_unified_battery(
-    session: &mut HidppSession,
-    device_index: u8,
-    feature_index: u8,
-) -> Result<BatteryStatus, HidppError> {
-    let capabilities = transact_feature(
-        session,
-        device_index,
-        feature_index,
-        FUNCTION_GET_UNIFIED_BATTERY_CAPABILITIES,
-        Duration::from_secs(2),
-    )?;
-    let capabilities = parse_unified_battery_capabilities(&capabilities)?;
-    let response = transact_feature(
-        session,
-        device_index,
-        feature_index,
-        FUNCTION_GET_UNIFIED_BATTERY_INFO,
-        Duration::from_secs(2),
-    )?;
-    parse_unified_battery(&response, capabilities)
+    let feature = discover_battery_feature(session, device_index)?;
+    let name = session.get_device_name(device_index, QUERY_TIMEOUT);
+    let battery = read_battery(session, device_index, feature)?;
+    cache_feature((session.info.path.clone(), device_index), feature);
+    Ok((name, battery))
 }
 
 fn read_legacy_battery(

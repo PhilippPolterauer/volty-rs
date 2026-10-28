@@ -1603,6 +1603,7 @@ dependencies = [
  "hidapi",
  "toml 0.8.2",
  "volty-battery",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]

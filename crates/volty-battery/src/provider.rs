@@ -1,5 +1,18 @@
 use crate::BatteryStatus;
 use std::fmt;
+use std::sync::atomic::{AtomicBool, Ordering};
+
+static TRACE_ENABLED: AtomicBool = AtomicBool::new(false);
+
+/// Tells providers whether anybody consumes [`ProviderEvent::Trace`], so they
+/// can skip building trace text that would be dropped.
+pub fn set_trace_enabled(enabled: bool) {
+    TRACE_ENABLED.store(enabled, Ordering::Relaxed);
+}
+
+pub fn trace_enabled() -> bool {
+    TRACE_ENABLED.load(Ordering::Relaxed)
+}
 
 /// Opaque, stable identity of a battery-powered device.
 ///

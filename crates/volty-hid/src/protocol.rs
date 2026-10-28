@@ -107,8 +107,10 @@ fn resolve_hid_device_from(
 }
 
 /// HID device families currently known to Volty.
-pub static SUPPORTED_HID_DEVICES: &[&dyn HidBatteryDevice] =
-    &[&crate::logitech_hidpp::LOGITECH_HIDPP_DEVICE];
+pub static SUPPORTED_HID_DEVICES: &[&dyn HidBatteryDevice] = &[
+    &crate::logitech_hidpp::LOGITECH_HIDPP_DEVICE,
+    &crate::generic_battery::GENERIC_HID_BATTERY_DEVICE,
+];
 
 #[cfg(test)]
 mod tests {
@@ -203,7 +205,7 @@ mod tests {
         let device = resolve_hid_device(&matched).unwrap().unwrap();
         assert_eq!(device.name(), "Logitech HID++ mouse");
         assert_eq!(device.protocol().name(), "Logitech HID++ 2.0");
-        assert_eq!(SUPPORTED_HID_DEVICES.len(), 1);
+        assert_eq!(SUPPORTED_HID_DEVICES.len(), 2);
 
         let short_report_interface = HidInterfaceInfo {
             usage: Some(0x0001),

@@ -29,7 +29,8 @@
 
 ## Current support
 
-Volty supports Logitech HID++ 2.0 interfaces on Windows 10/11. The Bluetooth
+Volty supports Logitech HID++ 2.0 interfaces and standard HID battery reports
+on Windows 10/11. The Bluetooth
 tray integration is disabled by default because it is not working as intended
 and has not been tested; do not rely on it. To opt into this experimental code
 in a local build, pass the tray crate's `bluetooth` feature:
@@ -38,9 +39,11 @@ in a local build, pass the tray crate's `bluetooth` feature:
 cargo run --release --package volty-tray --features bluetooth
 ```
 
-Other vendor HID protocols, generic HID battery reports, classic Bluetooth HFP
-battery indications, and vendor-specific Bluetooth protocols are not currently
-supported.
+Other vendor HID protocols, classic Bluetooth HFP battery indications, and
+vendor-specific Bluetooth protocols are not currently supported. Generic HID
+support covers devices whose report descriptor declares a battery level (Generic
+Device Controls *Battery Strength* or the Battery System page); a device that
+only exposes its battery through a vendor-defined report is not detected.
 
 > **Project status:** Volty is a vibe-coded hobby project. It is experimental,
 > has limited hardware testing, and is not production-ready or affiliated with
@@ -50,7 +53,8 @@ supported.
 
 ## Features
 
-* **HID++ Battery Monitoring:** Polls supported Logitech interfaces and paired-device indexes, prioritizes recently successful receiver slots from a machine-local SQLite cache, and uses each device's HID++ name when available.
+* **HID++ Battery Monitoring:** Polls supported Logitech interfaces and paired-device indexes, prioritizes recently successful receiver slots from a machine-local SQLite cache, caches each slot's battery feature so steady-state polls need one request, and uses each device's HID++ name when available.
+* **Generic HID Battery:** Reads the standard HID battery usages for any device that declares them, shown as "HID Battery".
 * **Battery Runtime Estimate:** Estimates time remaining from the recent discharge rate, using a configurable history window (10 minutes by default).
 * **Experimental Bluetooth integration:** Opt-in via the `bluetooth` Cargo feature and currently not working as intended or tested; it is disabled in default builds.
 * **Configurable Color Coding:** The default tray map is green above 30%, yellow from 16–30%, and red at 15% or below. Thresholds and colors can be overridden in the TOML configuration.
@@ -131,6 +135,7 @@ volty-rs/
 │   │   │   ├── profile.rs     # Device profile parsing (`profile` feature)
 │   │   │   ├── command.rs     # HID++ feature commands (`profile` feature)
 │   │   │   ├── logitech_hidpp.rs # HID++ 2.0 transport and battery backend
+│   │   │   ├── generic_battery.rs # Standard HID battery usages (Windows HID parser in `generic_battery/native.rs`)
 │   │   │   └── battery.rs     # HID++ battery decoding
 │   │   └── Cargo.toml
 │   │
@@ -194,7 +199,11 @@ matching, device-address iteration, and the protocol-specific battery query.
 `HidBatteryDevice` associates a device family with a backend. The
 `SUPPORTED_HID_DEVICES` catalog is the HID dispatch source: an interface must
 match exactly one device; no match is skipped and overlapping matches are
-reported. Its current catalog contains one Logitech HID++ 2.0 device.
+reported. Its current catalog contains the Logitech HID++ 2.0 device and a
+generic HID battery device. The generic family matches an interface only when
+its report descriptor declares a readable battery level (probed once per
+interface and cached), and never matches vendor-defined usage pages, so it
+cannot overlap the HID++ family.
 
 HID identity does not depend on the Windows interface path, which changes when
 USB re-enumerates. `stable_interface_keys` derives a key from VID/PID,
@@ -315,7 +324,7 @@ Colors must be six-digit hexadecimal RGB values such as `"#d23030"`.
 Logs append to `%APPDATA%\Volty\volty.log`; choose **Open Log File** in the tray
 menu to view them. The default `info` level records lifecycle and errors,
 `debug` adds successful battery readings, and `trace` adds low-level event
-details. Changes to `log_level` take effect when the config is reloaded.
+details (trace strings are only built at this level). Changes to `log_level` take effect when the config is reloaded.
 
 Choose **Diagnose / Report an Issue** in the tray menu to open a native Windows
 window with recent application events, the active configuration, Bluetooth
