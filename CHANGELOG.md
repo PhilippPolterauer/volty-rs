@@ -18,6 +18,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Reuse one HID context for device opens instead of re-enumerating all HID devices per query.
 - Persist recent-device order once per session and run SQLite in WAL mode, removing a synced write per poll.
 - Skip redundant tray icon, tooltip and menu updates when nothing changed.
+- Track a long-run discharge rate per device (percent lost over the time Volty was running and watching it, excluding downtime, gaps, charging and level increases), persist it in the local state, and use it for the battery ETA right after startup until the recent-window estimate is available.
 - Track log file size in memory instead of querying file metadata on every log line.
 - The tray loop now blocks on a Win32 event plus the message queue (`MsgWaitForMultipleObjects`) instead of sleeping and polling; poll results and config-file changes wake it. Idle wakeups drop to zero.
 - **Breaking:** removed the `ui_poll_interval_ms` config key (the loop is event-driven); remove it from `config.toml`, as unknown keys are a config error.

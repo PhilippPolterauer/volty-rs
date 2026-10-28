@@ -68,7 +68,10 @@ struct App {
 }
 
 pub fn run() -> Result<(), Box<dyn Error>> {
-    App::start()?.run_loop()
+    let mut app = App::start()?;
+    let result = app.run_loop();
+    let flushed = app.flush_discharge_rates(true);
+    result.and(flushed.map_err(Into::into))
 }
 impl App {
     fn start() -> Result<Self, Box<dyn Error>> {
@@ -133,12 +136,24 @@ impl App {
                 &format!("Could not clear notification cycles for unmonitored devices: {error}"),
             )?;
         }
-        let session = DeviceSession::start(
+        let mut session = DeviceSession::start(
             startup.active_config,
             &mut diagnostic_log,
             &mut file_logger,
             started,
         )?;
+        if let Some(state) = startup.monitor_state.as_ref() {
+            match state.discharge_rates() {
+                Ok(rates) => session.load_discharge_rates(rates),
+                Err(error) => record_event(
+                    &mut diagnostic_log,
+                    &mut file_logger,
+                    started,
+                    LogLevel::Warn,
+                    &format!("Could not load saved discharge rates: {error}"),
+                )?,
+            }
+        }
 
         Ok(Self {
             started,
@@ -680,6 +695,7 @@ impl App {
 
     fn finish_poll(&mut self, result: Result<(), String>) -> Result<(), Box<dyn Error>> {
         self.record_event(LogLevel::Trace, "Received device polling result")?;
+        self.flush_discharge_rates(false)?;
         let (readings, pruned) = self.session.finish_poll();
         if pruned {
             update_monitored_device_menu(
@@ -701,6 +717,28 @@ impl App {
             self.started,
         )?;
         Ok(())
+    }
+
+    /// Saves discharge rates that changed; `force` also saves rates that only
+    /// gained watched time, which is done on exit.
+    fn flush_discharge_rates(&mut self, force: bool) -> io::Result<()> {
+        let rates = self.session.take_unsaved_discharge_rates(force);
+        if rates.is_empty() {
+            return Ok(());
+        }
+        let Some(state) = self.monitor_state.as_mut() else {
+            return Ok(());
+        };
+        let saved = state
+            .save_discharge_rates(rates.iter().map(|(id, rate)| (id.as_str(), *rate)))
+            .map_err(|error| error.to_string());
+        match saved {
+            Ok(()) => Ok(()),
+            Err(error) => self.record_event(
+                LogLevel::Warn,
+                &format!("Could not save discharge rates: {error}"),
+            ),
+        }
     }
 
     fn record_event(&mut self, level: LogLevel, message: &str) -> io::Result<()> {

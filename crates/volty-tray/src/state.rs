@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeMap, HashSet},
+    collections::{BTreeMap, HashMap, HashSet},
     env, fs, io,
     path::{Path, PathBuf},
     time::Duration,
@@ -9,6 +9,15 @@ use rusqlite::{params, Connection, TransactionBehavior};
 
 /// Version 2 keys HID state by a path-independent interface key.
 const SCHEMA_VERSION: i64 = 2;
+
+/// Battery percentage points lost while Volty was alive and watching a device
+/// discharge, and how long that watching took. Time Volty was not running is
+/// never counted, so the ratio is the device's real drain rate.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct DischargeRate {
+    pub lost_percent: f64,
+    pub alive_seconds: f64,
+}
 
 pub struct DeviceState {
     connection: Connection,
@@ -59,6 +68,11 @@ impl DeviceState {
             ) WITHOUT ROWID;
             CREATE TABLE IF NOT EXISTS notified_discharge_cycles (
                 identity TEXT PRIMARY KEY
+            ) WITHOUT ROWID;
+            CREATE TABLE IF NOT EXISTS discharge_rates (
+                identity TEXT PRIMARY KEY,
+                lost_percent REAL NOT NULL CHECK (lost_percent >= 0),
+                alive_seconds REAL NOT NULL CHECK (alive_seconds >= 0)
             ) WITHOUT ROWID;",
         )?;
         if version < SCHEMA_VERSION {
@@ -203,6 +217,45 @@ impl DeviceState {
                 [identity],
             )?;
         }
+        Ok(())
+    }
+
+    pub fn discharge_rates(
+        &self,
+    ) -> Result<HashMap<String, DischargeRate>, Box<dyn std::error::Error>> {
+        let mut statement = self
+            .connection
+            .prepare("SELECT identity, lost_percent, alive_seconds FROM discharge_rates")?;
+        let rows = statement.query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                DischargeRate {
+                    lost_percent: row.get(1)?,
+                    alive_seconds: row.get(2)?,
+                },
+            ))
+        })?;
+        Ok(rows.collect::<Result<HashMap<_, _>, _>>()?)
+    }
+
+    pub fn save_discharge_rates<'a>(
+        &mut self,
+        rates: impl IntoIterator<Item = (&'a str, DischargeRate)>,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let transaction = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        for (identity, rate) in rates {
+            transaction.execute(
+                "INSERT INTO discharge_rates (identity, lost_percent, alive_seconds)
+                 VALUES (?1, ?2, ?3)
+                 ON CONFLICT (identity) DO UPDATE SET
+                    lost_percent = excluded.lost_percent,
+                    alive_seconds = excluded.alive_seconds",
+                params![identity, rate.lost_percent, rate.alive_seconds],
+            )?;
+        }
+        transaction.commit()?;
         Ok(())
     }
 
@@ -449,6 +502,46 @@ mod tests {
             .set_discharge_notification_sent(identity, false)
             .unwrap();
         assert!(state.notified_discharge_cycles().unwrap().is_empty());
+        drop(state);
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn discharge_rates_are_persisted_and_updated_in_place() {
+        let path = std::env::temp_dir().join(format!(
+            "volty-rate-state-{}-{}.sqlite3",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let first = DischargeRate {
+            lost_percent: 3.0,
+            alive_seconds: 7200.0,
+        };
+        let second = DischargeRate {
+            lost_percent: 4.0,
+            alive_seconds: 9000.0,
+        };
+
+        {
+            let mut state = DeviceState::open(&path).unwrap();
+            assert!(state.discharge_rates().unwrap().is_empty());
+            state
+                .save_discharge_rates([("hid:a#1", first), ("bluetooth:b", first)])
+                .unwrap();
+            state.save_discharge_rates([("hid:a#1", second)]).unwrap();
+        }
+
+        let state = DeviceState::open(&path).unwrap();
+        assert_eq!(
+            state.discharge_rates().unwrap(),
+            HashMap::from([
+                ("hid:a#1".to_owned(), second),
+                ("bluetooth:b".to_owned(), first)
+            ])
+        );
         drop(state);
         fs::remove_file(path).unwrap();
     }

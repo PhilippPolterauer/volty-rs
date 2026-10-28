@@ -301,7 +301,12 @@ Volty watches the file for changes, and **Discover Devices Now** also reloads it
 Invalid settings are reported while the last valid configuration stays active.
 Battery ETA appears after a full configured history window of discharging
 readings; it is hidden while charging or when the recent level trend cannot
-produce a reliable estimate.
+produce a reliable estimate. Volty also keeps a per-device long-run discharge
+rate (percent lost per hour it was actually running and watching the device,
+never counting time it was closed or the device was away) in its local state.
+After a restart this rate provides the ETA immediately, once at least an hour
+and 2 percentage points of discharge have been observed; the recent-window
+estimate takes over when available. History is capped at about two weeks.
 The default tray color map matches the green/yellow/red ranges above; uncomment
 `[battery_color_map]` to override its cutoffs or colors. Any omitted values
 retain their defaults. The red and yellow cutoffs can be set from 0–99 and

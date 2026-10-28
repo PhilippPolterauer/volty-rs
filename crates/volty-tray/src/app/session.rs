@@ -4,6 +4,7 @@ use super::{
     poll::{request_device_discovery, spawn_poll_worker, PollCommand, PollUpdate, PollWorker},
     AppConfig, DeviceReading, FileLogger,
 };
+use crate::state::DischargeRate;
 use std::{
     collections::{BTreeMap, HashMap, HashSet, VecDeque},
     error::Error,
@@ -44,7 +45,12 @@ impl DeviceSession {
     ) -> Result<Self, Box<dyn Error>> {
         let (commands, results, poller) =
             spawn_poll_worker(config, diagnostic_log, file_logger, started)?;
-        Ok(Self::with_worker((commands, results, poller)))
+        let mut session = Self::with_worker((commands, results, poller));
+        session.set_sampling_intervals(
+            Duration::from_secs(config.poll_interval_seconds),
+            Duration::from_secs(config.retry_interval_seconds),
+        );
+        Ok(session)
     }
 
     fn with_worker((commands, results, poller): PollWorker) -> Self {
@@ -77,12 +83,36 @@ impl DeviceSession {
     }
 
     pub(super) fn update_intervals(
-        &self,
+        &mut self,
         poll: Duration,
         retry: Duration,
     ) -> Result<(), SendError<PollCommand>> {
+        self.set_sampling_intervals(poll, retry);
         self.commands
             .send(PollCommand::UpdateIntervals { poll, retry })
+    }
+
+    /// Samples further apart than two polls plus slack mean Volty was not
+    /// watching in between, so that span must not count toward a drain rate.
+    fn set_sampling_intervals(&mut self, poll: Duration, retry: Duration) {
+        self.eta_estimator
+            .set_max_sample_gap(poll.max(retry) * 2 + Duration::from_secs(60));
+    }
+
+    pub(super) fn load_discharge_rates(&mut self, saved: HashMap<String, DischargeRate>) {
+        self.eta_estimator.load_rates(
+            saved
+                .into_iter()
+                .map(|(identity, rate)| (DeviceId::new(identity), rate))
+                .collect(),
+        );
+    }
+
+    pub(super) fn take_unsaved_discharge_rates(
+        &mut self,
+        force: bool,
+    ) -> Vec<(DeviceId, DischargeRate)> {
+        self.eta_estimator.take_unsaved_rates(force)
     }
 
     pub(super) fn request_quit(&self) {
