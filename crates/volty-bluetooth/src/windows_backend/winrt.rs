@@ -1,4 +1,4 @@
-use std::{sync::mpsc, time::Duration};
+use std::{marker::PhantomData, rc::Rc, sync::mpsc, time::Duration};
 
 use windows::core::RuntimeType;
 use windows::Win32::System::WinRT::{RoInitialize, RoUninitialize, RO_INIT_MULTITHREADED};
@@ -7,18 +7,20 @@ use windows_future::{AsyncOperationCompletedHandler, IAsyncOperation};
 use super::budget::ScanBudget;
 use crate::{error, BluetoothError};
 
-pub(super) struct WinRtApartment;
+pub(super) struct WinRtApartment(PhantomData<Rc<()>>);
 
 impl WinRtApartment {
     pub(super) fn initialize() -> Result<Self, BluetoothError> {
+        // SAFETY: RoInitialize affects this thread and the returned !Send guard balances each successful initialization.
         unsafe { RoInitialize(RO_INIT_MULTITHREADED) }
             .map_err(|error| windows_error("could not initialize Windows Runtime", error))?;
-        Ok(Self)
+        Ok(Self(PhantomData))
     }
 }
 
 impl Drop for WinRtApartment {
     fn drop(&mut self) {
+        // SAFETY: this !Send guard is dropped on the thread whose RoInitialize succeeded.
         unsafe { RoUninitialize() };
     }
 }

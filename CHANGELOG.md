@@ -12,7 +12,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Split `volty-hid` (`interface`, `hid`, `device`), the Bluetooth backend (`budget`, `winrt`, `classic`, `setupapi`, `ble`) and the About/Diagnose windows into focused modules; no function in non-test code exceeds 100 lines.
 - Added a Windows CI workflow (fmt, clippy `-D warnings`, tests, Bluetooth build); releases are now gated on the same checks.
 - Unified crate licensing and shared dependency versions via the workspace manifest; internal crates are `publish = false`.
+- Added an MIT `LICENSE` file; `volty-hid` is now MIT-only like the rest of the workspace.
 - Added unit tests for tray menu logic, notification latches, local state, and extracted Win32 layout helpers.
+- Enabled workspace lints (`undocumented_unsafe_blocks`, `unsafe_op_in_unsafe_fn`, `dbg_macro`, `todo`, `unimplemented`) and documented the safety invariant of every `unsafe` block.
+
+### Fixed
+
+- Hardened Win32/SetupAPI FFI: clipboard memory and locks are released through RAII guards, wide strings with interior NULs are rejected, API-reported buffer sizes are bounded, and window-state/`SetStdHandle`/monitor-lookup error paths no longer lose or misreport errors.
 - Split the tray application into focused modules (`app/*`, `tray/*`, shared `win32` helpers) and decomposed the monolithic event loop and device query.
 - Bluetooth scans now share a single overall time budget across the classic, SetupAPI, and BLE phases; partial results are kept with a warning.
 - The log file now rotates at 5 MiB, keeping one `.1` backup.

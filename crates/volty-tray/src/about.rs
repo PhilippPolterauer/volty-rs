@@ -6,9 +6,9 @@ use windows_sys::Win32::{
     System::LibraryLoader::GetModuleHandleW,
     System::SystemServices::{SS_ETCHEDHORZ, SS_ICON},
     UI::WindowsAndMessaging::{
-        CreateWindowExW, DestroyWindow, GetCursorPos, SendMessageW, STM_SETICON, SW_SHOWNORMAL,
-        WM_CLOSE, WM_COMMAND, WM_CTLCOLORSTATIC, WM_DESTROY, WM_NCCREATE, WS_CAPTION,
-        WS_OVERLAPPED, WS_SYSMENU, WS_VISIBLE,
+        CreateWindowExW, GetCursorPos, SendMessageW, STM_SETICON, SW_SHOWNORMAL, WM_CLOSE,
+        WM_COMMAND, WM_CTLCOLORSTATIC, WM_DESTROY, WM_NCCREATE, WS_CAPTION, WS_OVERLAPPED,
+        WS_SYSMENU, WS_VISIBLE,
     },
 };
 
@@ -62,6 +62,7 @@ struct AboutWindow {
 pub fn show_about_window() -> Result<(), Box<dyn Error>> {
     let class_name = win32::to_wide(WINDOW_CLASS);
     let title = win32::to_wide("About Volty");
+    // SAFETY: a null module name requests the current process executable's module handle.
     let instance = unsafe { GetModuleHandleW(ptr::null()) };
     if instance.is_null() {
         return Err(io::Error::last_os_error().into());
@@ -75,6 +76,8 @@ pub fn show_about_window() -> Result<(), Box<dyn Error>> {
         create_complete: false,
         fonts,
     });
+    // SAFETY: class/title are NUL-terminated and live through creation; the Box-backed state pointer
+    // remains valid for every synchronous creation callback and until the window is destroyed.
     let window = unsafe {
         CreateWindowExW(
             0,
@@ -96,7 +99,12 @@ pub fn show_about_window() -> Result<(), Box<dyn Error>> {
     }
 
     if let Err(error) = create_controls(window, instance, &mut state) {
-        unsafe { DestroyWindow(window) };
+        if let Err(destroy_error) = win32::destroy_window(window) {
+            if let Err(clear_error) = win32::clear_window_state(window) {
+                eprintln!("Volty could not detach About-window state: {clear_error}");
+            }
+            eprintln!("Volty could not destroy the incomplete About window: {destroy_error}");
+        }
         return Err(error);
     }
     state.create_complete = true;
@@ -106,13 +114,17 @@ pub fn show_about_window() -> Result<(), Box<dyn Error>> {
 
 fn centered_window_position(width: i32, height: i32) -> io::Result<(i32, i32)> {
     let mut cursor = POINT { x: 0, y: 0 };
+    // SAFETY: cursor is a writable, initialized POINT on this stack frame.
     if unsafe { GetCursorPos(ptr::addr_of_mut!(cursor)) } == 0 {
         return Err(io::Error::last_os_error());
     }
 
+    // SAFETY: cursor is a valid POINT value; MonitorFromPoint does not retain its address.
     let monitor = unsafe { MonitorFromPoint(cursor, MONITOR_DEFAULTTONEAREST) };
     if monitor.is_null() {
-        return Err(io::Error::last_os_error());
+        return Err(io::Error::other(
+            "Windows did not return a monitor for the cursor position",
+        ));
     }
 
     // SAFETY: MONITORINFO is a plain Win32 structure whose fields GetMonitorInfoW initializes.
@@ -120,6 +132,7 @@ fn centered_window_position(width: i32, height: i32) -> io::Result<(i32, i32)> {
     info.cbSize = mem::size_of::<MONITORINFO>()
         .try_into()
         .map_err(|_| io::Error::other("MONITORINFO size exceeds u32"))?;
+    // SAFETY: monitor is returned by MonitorFromPoint and info has its required cbSize.
     if unsafe { GetMonitorInfoW(monitor, ptr::addr_of_mut!(info)) } == 0 {
         return Err(io::Error::last_os_error());
     }
@@ -308,8 +321,10 @@ unsafe extern "system" fn window_proc(
     lparam: LPARAM,
 ) -> LRESULT {
     if message == WM_NCCREATE {
-        // SAFETY: WM_NCCREATE supplies a CREATESTRUCTW in lParam for this window.
-        unsafe { win32::attach_window_state(window, lparam) };
+        // SAFETY: WM_NCCREATE supplies this window's valid CREATESTRUCTW in lParam.
+        if !unsafe { win32::attach_window_state(window, lparam) } {
+            return 0;
+        }
     }
 
     match message {
@@ -344,11 +359,15 @@ fn set_status_text(window: HWND, status: &str) {
     let text = win32::to_wide(status);
     // SAFETY: GWLP_USERDATA is the boxed state for this live window.
     let state = unsafe { &*state_ptr };
-    win32::set_window_text(state.status, &text);
+    if let Err(error) = win32::set_window_text(state.status, &text) {
+        eprintln!("Volty could not update the About status: {error}");
+    }
 }
 
 fn destroy_window(window: HWND) -> LRESULT {
-    unsafe { DestroyWindow(window) };
+    if let Err(error) = win32::destroy_window(window) {
+        eprintln!("Volty could not close the About window: {error}");
+    }
     0
 }
 

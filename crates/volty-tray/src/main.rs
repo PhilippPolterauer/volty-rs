@@ -67,10 +67,12 @@ fn attach_parent_console() -> std::io::Result<()> {
         System::Console::{AttachConsole, ATTACH_PARENT_PROCESS},
     };
 
+    // SAFETY: ATTACH_PARENT_PROCESS is a documented pseudo-process identifier.
     if unsafe { AttachConsole(ATTACH_PARENT_PROCESS) } != 0 {
         return Ok(());
     }
 
+    // SAFETY: this reads the error immediately after AttachConsole failed.
     let error = unsafe { GetLastError() };
     if error == ERROR_ACCESS_DENIED || error == ERROR_INVALID_HANDLE {
         return Ok(());
@@ -83,8 +85,9 @@ fn attach_parent_console() -> std::io::Result<()> {
 fn show_error(message: &str) {
     use windows_sys::Win32::UI::WindowsAndMessaging::{MessageBoxW, MB_ICONERROR, MB_OK};
 
-    let message: Vec<u16> = message.encode_utf16().chain(Some(0)).collect();
-    let title: Vec<u16> = "Volty".encode_utf16().chain(Some(0)).collect();
+    let message = crate::win32::to_wide(message);
+    let title = crate::win32::to_wide("Volty");
+    // SAFETY: message and title are NUL-terminated buffers that remain live through MessageBoxW.
     unsafe {
         MessageBoxW(
             std::ptr::null_mut(),
@@ -112,28 +115,38 @@ fn attach_cli_console() -> std::io::Result<()> {
     };
 
     let is_valid_handle = |handle: HANDLE| !handle.is_null() && handle != INVALID_HANDLE_VALUE;
-    if is_valid_handle(unsafe { GetStdHandle(STD_OUTPUT_HANDLE) })
-        && is_valid_handle(unsafe { GetStdHandle(STD_ERROR_HANDLE) })
-    {
+    // SAFETY: GetStdHandle returns the process's current stdout handle for validation.
+    let stdout_handle = unsafe { GetStdHandle(STD_OUTPUT_HANDLE) };
+    // SAFETY: GetStdHandle returns the process's current stderr handle for validation.
+    let stderr_handle = unsafe { GetStdHandle(STD_ERROR_HANDLE) };
+    if is_valid_handle(stdout_handle) && is_valid_handle(stderr_handle) {
         return Ok(());
     }
 
-    if unsafe { AttachConsole(ATTACH_PARENT_PROCESS) } == 0
-        && unsafe { GetLastError() } != ERROR_ACCESS_DENIED
-        && unsafe { AllocConsole() } == 0
-    {
-        return Err(std::io::Error::last_os_error());
+    // SAFETY: ATTACH_PARENT_PROCESS is a documented pseudo-process identifier.
+    let attached = unsafe { AttachConsole(ATTACH_PARENT_PROCESS) } != 0;
+    if !attached {
+        // SAFETY: the error is read immediately after AttachConsole failed.
+        let error = unsafe { GetLastError() };
+        if error != ERROR_ACCESS_DENIED {
+            // SAFETY: AllocConsole creates a console for the current process without pointer arguments.
+            if unsafe { AllocConsole() } == 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+        }
     }
 
     for (standard_handle, console_name) in [
-        (STD_OUTPUT_HANDLE, "CONOUT$\0"),
-        (STD_ERROR_HANDLE, "CONOUT$\0"),
+        (STD_OUTPUT_HANDLE, "CONOUT$"),
+        (STD_ERROR_HANDLE, "CONOUT$"),
     ] {
+        // SAFETY: this reads the selected standard stream's current process handle.
         if is_valid_handle(unsafe { GetStdHandle(standard_handle) }) {
             continue;
         }
 
-        let console_name: Vec<u16> = console_name.encode_utf16().collect();
+        let console_name = crate::win32::to_wide(console_name);
+        // SAFETY: console_name is NUL-terminated and the optional security/template pointers are null.
         let handle = unsafe {
             CreateFileW(
                 console_name.as_ptr(),
@@ -148,9 +161,17 @@ fn attach_cli_console() -> std::io::Result<()> {
         if handle == INVALID_HANDLE_VALUE {
             return Err(std::io::Error::last_os_error());
         }
+        // SAFETY: handle is a valid file handle returned by CreateFileW for this standard stream.
         if unsafe { SetStdHandle(standard_handle, handle) } == 0 {
-            unsafe { CloseHandle(handle) };
-            return Err(std::io::Error::last_os_error());
+            let error = std::io::Error::last_os_error();
+            // SAFETY: SetStdHandle failed, so this still-owned CreateFileW handle must be closed.
+            if unsafe { CloseHandle(handle) } == 0 {
+                eprintln!(
+                    "Volty could not close a failed console handle: {}",
+                    std::io::Error::last_os_error()
+                );
+            }
+            return Err(error);
         }
     }
 
@@ -192,15 +213,22 @@ impl SingleInstance {
         use windows_sys::Win32::Foundation::{GetLastError, SetLastError, ERROR_ALREADY_EXISTS};
         use windows_sys::Win32::System::Threading::CreateMutexW;
 
-        let name: Vec<u16> = format!("{name}\0").encode_utf16().collect();
+        let name = crate::win32::to_wide(name);
+        // SAFETY: clearing the current thread's last error lets CreateMutexW's already-exists
+        // indication be distinguished from errors left by prior APIs.
         unsafe { SetLastError(0) };
+        // SAFETY: name is a NUL-terminated buffer that remains live through CreateMutexW.
         let handle = unsafe { CreateMutexW(std::ptr::null(), 0, name.as_ptr()) };
         if handle.is_null() {
             return Err(std::io::Error::last_os_error());
         }
 
+        // SAFETY: CreateMutexW succeeded and last error is read before another Win32 call.
         if unsafe { GetLastError() } == ERROR_ALREADY_EXISTS {
-            unsafe { windows_sys::Win32::Foundation::CloseHandle(handle) };
+            // SAFETY: this valid handle refers to the pre-existing mutex and is not retained.
+            if unsafe { windows_sys::Win32::Foundation::CloseHandle(handle) } == 0 {
+                return Err(std::io::Error::last_os_error());
+            }
             return Ok(Self(std::ptr::null_mut()));
         }
 
@@ -216,7 +244,13 @@ impl SingleInstance {
 impl Drop for SingleInstance {
     fn drop(&mut self) {
         if !self.0.is_null() {
-            unsafe { windows_sys::Win32::Foundation::CloseHandle(self.0) };
+            // SAFETY: this guard uniquely owns the valid mutex handle returned by CreateMutexW.
+            if unsafe { windows_sys::Win32::Foundation::CloseHandle(self.0) } == 0 {
+                eprintln!(
+                    "Volty could not close its single-instance mutex: {}",
+                    std::io::Error::last_os_error()
+                );
+            }
         }
     }
 }

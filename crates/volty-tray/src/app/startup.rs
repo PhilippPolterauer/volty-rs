@@ -120,11 +120,14 @@ pub(super) fn process_windows_messages() -> bool {
         DispatchMessageW, PeekMessageW, TranslateMessage, MSG, PM_REMOVE, WM_QUIT,
     };
 
+    // SAFETY: MSG is a plain Win32 output structure where every bit pattern is valid.
     let mut message: MSG = unsafe { std::mem::zeroed() };
+    // SAFETY: PeekMessageW writes to the valid local MSG; null HWND requests this thread's queue.
     while unsafe { PeekMessageW(&mut message, std::ptr::null_mut(), 0, 0, PM_REMOVE) } != 0 {
         if message.message == WM_QUIT {
             return false;
         }
+        // SAFETY: PeekMessageW initialized this MSG before the nonzero result.
         unsafe {
             TranslateMessage(&message);
             DispatchMessageW(&message);
@@ -168,6 +171,7 @@ pub(super) fn shell_open(target: &std::ffi::OsStr) -> Result<(), isize> {
 
     let verb: Vec<u16> = "open\0".encode_utf16().collect();
     let target: Vec<u16> = target.encode_wide().chain(Some(0)).collect();
+    // SAFETY: verb and target are NUL-terminated buffers that remain live through ShellExecuteW.
     let result = unsafe {
         ShellExecuteW(
             std::ptr::null_mut(),
@@ -177,7 +181,9 @@ pub(super) fn shell_open(target: &std::ffi::OsStr) -> Result<(), isize> {
             std::ptr::null(),
             SW_SHOWNORMAL,
         )
-    } as isize;
+    }
+    .expose_provenance()
+    .cast_signed();
     if result <= 32 {
         Err(result)
     } else {

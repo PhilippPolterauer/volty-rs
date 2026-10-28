@@ -1,7 +1,9 @@
 use std::{error::Error, io, mem, ptr};
 
 use windows_sys::Win32::{
-    Foundation::{GlobalFree, HINSTANCE, HWND, LPARAM, LRESULT, WPARAM},
+    Foundation::{
+        GetLastError, GlobalFree, SetLastError, HGLOBAL, HINSTANCE, HWND, LPARAM, LRESULT, WPARAM,
+    },
     System::{
         DataExchange::{CloseClipboard, EmptyClipboard, OpenClipboard, SetClipboardData},
         LibraryLoader::GetModuleHandleW,
@@ -9,10 +11,10 @@ use windows_sys::Win32::{
         SystemServices::SS_ETCHEDHORZ,
     },
     UI::WindowsAndMessaging::{
-        CreateWindowExW, DestroyWindow, GetClientRect, MoveWindow, CW_USEDEFAULT, ES_AUTOVSCROLL,
-        ES_MULTILINE, ES_NOHIDESEL, ES_READONLY, MINMAXINFO, SW_SHOW, WM_CLOSE, WM_COMMAND,
-        WM_CTLCOLOREDIT, WM_CTLCOLORSTATIC, WM_DESTROY, WM_GETMINMAXINFO, WM_NCCREATE, WM_SIZE,
-        WS_CHILD, WS_EX_CLIENTEDGE, WS_OVERLAPPEDWINDOW, WS_TABSTOP, WS_VISIBLE, WS_VSCROLL,
+        CreateWindowExW, GetClientRect, MoveWindow, CW_USEDEFAULT, ES_AUTOVSCROLL, ES_MULTILINE,
+        ES_NOHIDESEL, ES_READONLY, MINMAXINFO, SW_SHOW, WM_CLOSE, WM_COMMAND, WM_CTLCOLOREDIT,
+        WM_CTLCOLORSTATIC, WM_DESTROY, WM_GETMINMAXINFO, WM_NCCREATE, WM_SIZE, WS_CHILD,
+        WS_EX_CLIENTEDGE, WS_OVERLAPPEDWINDOW, WS_TABSTOP, WS_VISIBLE, WS_VSCROLL,
     },
 };
 
@@ -87,6 +89,7 @@ struct DiagnoseGeometry {
 pub fn show_diagnose_window(report: &str) -> Result<(), Box<dyn Error>> {
     let class_name = win32::to_wide(WINDOW_CLASS);
     let title = win32::to_wide("Volty Diagnose");
+    // SAFETY: a null module name requests the current process executable's module handle.
     let instance = unsafe { GetModuleHandleW(ptr::null()) };
     if instance.is_null() {
         return Err(io::Error::last_os_error().into());
@@ -104,6 +107,8 @@ pub fn show_diagnose_window(report: &str) -> Result<(), Box<dyn Error>> {
         create_complete: false,
         fonts,
     });
+    // SAFETY: class/title are NUL-terminated and live through creation; the Box-backed state pointer
+    // remains valid for every synchronous creation callback and until the window is destroyed.
     let window = unsafe {
         CreateWindowExW(
             0,
@@ -125,7 +130,12 @@ pub fn show_diagnose_window(report: &str) -> Result<(), Box<dyn Error>> {
     }
 
     if let Err(error) = create_controls(window, instance, &mut state) {
-        unsafe { DestroyWindow(window) };
+        if let Err(destroy_error) = win32::destroy_window(window) {
+            if let Err(clear_error) = win32::clear_window_state(window) {
+                eprintln!("Volty could not detach diagnostic-window state: {clear_error}");
+            }
+            eprintln!("Volty could not destroy the incomplete Diagnose window: {destroy_error}");
+        }
         return Err(error);
     }
     state.create_complete = true;
@@ -207,7 +217,7 @@ fn create_report_view(
         | ES_READONLY as u32
         | ES_AUTOVSCROLL as u32
         | ES_NOHIDESEL as u32;
-    state.report_view = win32::create_control_checked(
+    state.report_view = win32::create_control(
         window,
         instance,
         win32::ControlSpec {
@@ -305,8 +315,10 @@ unsafe extern "system" fn window_proc(
     lparam: LPARAM,
 ) -> LRESULT {
     if message == WM_NCCREATE {
-        // SAFETY: WM_NCCREATE supplies a CREATESTRUCTW in lParam for this window.
-        unsafe { win32::attach_window_state(window, lparam) };
+        // SAFETY: WM_NCCREATE supplies this window's valid CREATESTRUCTW in lParam.
+        if !unsafe { win32::attach_window_state(window, lparam) } {
+            return 0;
+        }
     }
 
     match message {
@@ -322,8 +334,9 @@ unsafe extern "system" fn window_proc(
 }
 
 fn handle_min_max_info(lparam: LPARAM) -> LRESULT {
+    let limits_ptr = ptr::with_exposed_provenance_mut::<MINMAXINFO>(lparam.cast_unsigned());
     // SAFETY: WM_GETMINMAXINFO provides a writable MINMAXINFO at lParam.
-    let limits = unsafe { &mut *(lparam as *mut MINMAXINFO) };
+    let limits = unsafe { &mut *limits_ptr };
     limits.ptMinTrackSize.x = MIN_WINDOW_WIDTH;
     limits.ptMinTrackSize.y = MIN_WINDOW_HEIGHT;
     0
@@ -369,11 +382,15 @@ fn handle_command(window: HWND, message: u32, wparam: WPARAM, lparam: LPARAM) ->
 
 fn set_status_text(state: &DiagnoseWindow, status: &str) {
     let text = win32::to_wide(status);
-    win32::set_window_text(state.status, &text);
+    if let Err(error) = win32::set_window_text(state.status, &text) {
+        eprintln!("Volty could not update the diagnostic status: {error}");
+    }
 }
 
 fn destroy_window(window: HWND) -> LRESULT {
-    unsafe { DestroyWindow(window) };
+    if let Err(error) = win32::destroy_window(window) {
+        eprintln!("Volty could not close the Diagnose window: {error}");
+    }
     0
 }
 
@@ -430,7 +447,9 @@ fn diagnose_geometry(width: i32, height: i32) -> DiagnoseGeometry {
 }
 
 fn layout_controls(window: HWND, state: &DiagnoseWindow) -> Result<(), io::Error> {
+    // SAFETY: RECT is a plain Win32 output structure where every bit pattern is valid.
     let mut client = unsafe { mem::zeroed() };
+    // SAFETY: window is the live top-level HWND and client is a writable local RECT.
     if unsafe { GetClientRect(window, ptr::addr_of_mut!(client)) } == 0 {
         return Err(io::Error::last_os_error());
     }
@@ -443,6 +462,7 @@ fn layout_controls(window: HWND, state: &DiagnoseWindow) -> Result<(), io::Error
         (state.issue_button, layout.issue_button),
         (state.close_button, layout.close_button),
     ] {
+        // SAFETY: each handle is a live child control created for this window.
         if unsafe {
             MoveWindow(
                 control,
@@ -461,48 +481,184 @@ fn layout_controls(window: HWND, state: &DiagnoseWindow) -> Result<(), io::Error
     Ok(())
 }
 
-fn copy_to_clipboard(window: HWND, report: &[u16]) -> Result<(), io::Error> {
-    let memory = unsafe { GlobalAlloc(GMEM_MOVEABLE, mem::size_of_val(report)) };
-    if memory.is_null() {
-        return Err(io::Error::last_os_error());
-    }
-    let destination = unsafe { GlobalLock(memory).cast::<u16>() };
-    if destination.is_null() {
-        unsafe { GlobalFree(memory) };
-        return Err(io::Error::last_os_error());
-    }
-    // SAFETY: GlobalLock returned a writable buffer at least as large as the report slice.
-    unsafe { ptr::copy_nonoverlapping(report.as_ptr(), destination, report.len()) };
-    unsafe { GlobalUnlock(memory) };
+struct ClipboardMemory {
+    handle: HGLOBAL,
+}
 
-    if unsafe { OpenClipboard(window) } == 0 {
-        unsafe { GlobalFree(memory) };
-        return Err(io::Error::last_os_error());
+impl ClipboardMemory {
+    fn allocate(size: usize) -> io::Result<Self> {
+        // SAFETY: GlobalAlloc receives a byte count derived from the live UTF-16 report slice.
+        let handle = unsafe { GlobalAlloc(GMEM_MOVEABLE, size) };
+        if handle.is_null() {
+            Err(io::Error::last_os_error())
+        } else {
+            Ok(Self { handle })
+        }
     }
 
-    let set_result = if unsafe { EmptyClipboard() } == 0
-        || unsafe { SetClipboardData(CLIPBOARD_UNICODE_TEXT, memory) }.is_null()
-    {
-        Err(io::Error::last_os_error())
-    } else {
+    fn lock(&self) -> io::Result<GlobalMemoryLock<'_>> {
+        // SAFETY: self owns a valid movable global-memory handle that is not clipboard-owned yet.
+        let pointer = unsafe { GlobalLock(self.handle).cast::<u16>() };
+        if pointer.is_null() {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(GlobalMemoryLock {
+            memory: self,
+            pointer,
+            locked: true,
+        })
+    }
+
+    fn relinquish(&mut self) {
+        self.handle = ptr::null_mut();
+    }
+}
+
+impl Drop for ClipboardMemory {
+    fn drop(&mut self) {
+        if !self.handle.is_null() {
+            // SAFETY: this guard frees only a block it still owns; successful SetClipboardData
+            // clears the handle so Windows, rather than this guard, owns it.
+            let failed_handle = unsafe { GlobalFree(self.handle) };
+            if !failed_handle.is_null() {
+                eprintln!(
+                    "Volty could not free clipboard memory: {}",
+                    io::Error::last_os_error()
+                );
+            }
+        }
+    }
+}
+
+struct GlobalMemoryLock<'a> {
+    memory: &'a ClipboardMemory,
+    pointer: *mut u16,
+    locked: bool,
+}
+
+impl GlobalMemoryLock<'_> {
+    fn pointer(&self) -> *mut u16 {
+        self.pointer
+    }
+
+    fn unlock(mut self) -> io::Result<()> {
+        unlock_global_memory(self.memory.handle)?;
+        self.locked = false;
         Ok(())
-    };
-    let close_succeeded = unsafe { CloseClipboard() } != 0;
-
-    if set_result.is_err() {
-        unsafe { GlobalFree(memory) };
     }
-    set_result?;
-    if !close_succeeded {
+}
+
+impl Drop for GlobalMemoryLock<'_> {
+    fn drop(&mut self) {
+        if self.locked {
+            if let Err(error) = unlock_global_memory(self.memory.handle) {
+                eprintln!("Volty could not unlock clipboard memory: {error}");
+            }
+        }
+    }
+}
+
+fn unlock_global_memory(handle: HGLOBAL) -> io::Result<()> {
+    loop {
+        // SAFETY: handle is owned by ClipboardMemory and currently locked exactly by this guard;
+        // clearing last error distinguishes normal final unlock (FALSE/ERROR_SUCCESS) from failure.
+        let (still_locked, error) = unsafe {
+            SetLastError(0);
+            let still_locked = GlobalUnlock(handle);
+            (still_locked, GetLastError())
+        };
+        if still_locked != 0 {
+            continue;
+        }
+        if error != 0 {
+            return Err(io::Error::from_raw_os_error(error as i32));
+        }
+        return Ok(());
+    }
+}
+
+struct ClipboardGuard {
+    open: bool,
+}
+
+impl ClipboardGuard {
+    fn open(owner: HWND) -> io::Result<Self> {
+        // SAFETY: owner is the live top-level window that initiated this clipboard operation.
+        if unsafe { OpenClipboard(owner) } == 0 {
+            Err(io::Error::last_os_error())
+        } else {
+            Ok(Self { open: true })
+        }
+    }
+
+    fn close(mut self) -> io::Result<()> {
+        // SAFETY: this guard records a successful OpenClipboard on the current thread.
+        if unsafe { CloseClipboard() } == 0 {
+            Err(io::Error::last_os_error())
+        } else {
+            self.open = false;
+            Ok(())
+        }
+    }
+}
+
+impl Drop for ClipboardGuard {
+    fn drop(&mut self) {
+        if self.open {
+            // SAFETY: this guard still owns the successful open on the current thread.
+            if unsafe { CloseClipboard() } == 0 {
+                eprintln!(
+                    "Volty could not close the clipboard: {}",
+                    io::Error::last_os_error()
+                );
+            }
+        }
+    }
+}
+
+fn validate_clipboard_text(report: &[u16]) -> io::Result<()> {
+    if report.last() != Some(&0) || report[..report.len().saturating_sub(1)].contains(&0) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "clipboard text must have exactly one trailing NUL",
+        ));
+    }
+    Ok(())
+}
+
+fn copy_to_clipboard(window: HWND, report: &[u16]) -> Result<(), io::Error> {
+    validate_clipboard_text(report)?;
+    let memory = ClipboardMemory::allocate(mem::size_of_val(report))?;
+    let locked = memory.lock()?;
+    // SAFETY: GlobalLock provides a writable allocation of at least size_of_val(report) bytes;
+    // report is a live non-overlapping slice of the corresponding number of UTF-16 units.
+    unsafe { ptr::copy_nonoverlapping(report.as_ptr(), locked.pointer(), report.len()) };
+    locked.unlock()?;
+
+    let clipboard = ClipboardGuard::open(window)?;
+    // SAFETY: ClipboardGuard owns the open clipboard on this thread.
+    if unsafe { EmptyClipboard() } == 0 {
         return Err(io::Error::last_os_error());
     }
-
-    Ok(())
+    // SAFETY: memory is movable global memory, unlocked, and remains owned until this call succeeds.
+    if unsafe { SetClipboardData(CLIPBOARD_UNICODE_TEXT, memory.handle) }.is_null() {
+        return Err(io::Error::last_os_error());
+    }
+    let mut memory = memory;
+    memory.relinquish();
+    clipboard.close()
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{diagnose_geometry, ControlGeometry};
+    use super::{diagnose_geometry, validate_clipboard_text, ControlGeometry};
+
+    #[test]
+    fn clipboard_text_requires_a_single_terminal_nul() {
+        assert!(validate_clipboard_text(&[b'o' as u16, b'k' as u16, 0]).is_ok());
+        assert!(validate_clipboard_text(&[]).is_err());
+        assert!(validate_clipboard_text(&[b'o' as u16, 0, b'k' as u16, 0]).is_err());
+    }
 
     #[test]
     fn lays_out_controls_at_the_initial_client_size() {

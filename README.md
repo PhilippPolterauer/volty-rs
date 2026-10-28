@@ -362,5 +362,4 @@ with compatible Logitech Lightspeed hardware.
 
 ## License
 
-The tray application is MIT-licensed. The HID crate is dual-licensed under MIT
-or Apache-2.0.
+All crates are released under the [MIT License](LICENSE).

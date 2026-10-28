@@ -26,6 +26,7 @@ use crate::{
     BluetoothScan, FALLBACK_DEVICE_NAME,
 };
 
+const MAX_DEVICE_INSTANCE_ID_UNITS: u32 = 65_536;
 const BATTERY_LIFE_PROPERTY_KEY: DEVPROPKEY = DEVPROPKEY {
     fmtid: GUID::from_u128(0x49cd1f76_5626_4b17_a4e8_18b4aa1a2213),
     pid: 10,
@@ -33,6 +34,7 @@ const BATTERY_LIFE_PROPERTY_KEY: DEVPROPKEY = DEVPROPKEY {
 pub(super) fn scan_setupapi_battery_property(
     budget: &ScanBudget,
 ) -> Result<BluetoothScan, BluetoothError> {
+    // SAFETY: null filters request all present devices; the returned set is owned by DeviceInfoSet below.
     let device_info_set = unsafe {
         SetupDiGetClassDevsW(None, PCWSTR::null(), None, DIGCF_ALLCLASSES | DIGCF_PRESENT)
     }
@@ -43,7 +45,9 @@ pub(super) fn scan_setupapi_battery_property(
     let mut index = 0;
 
     while let Some(info) = next_device_info(device_info_set.0, index, budget, &mut scan)? {
-        index += 1;
+        index = index
+            .checked_add(1)
+            .ok_or_else(|| error("PnP device index overflow"))?;
         let outcome = inspect_device(device_info_set.0, &info, &mut scan);
         counts.bluetooth_nodes_examined += usize::from(outcome.bluetooth_node);
         counts.battery_properties_found += usize::from(outcome.battery_property_found);
@@ -82,9 +86,11 @@ fn next_device_info(
         return Ok(None);
     }
     let mut info = SP_DEVINFO_DATA {
-        cbSize: std::mem::size_of::<SP_DEVINFO_DATA>() as u32,
+        cbSize: u32::try_from(std::mem::size_of::<SP_DEVINFO_DATA>())
+            .expect("SP_DEVINFO_DATA size fits DWORD"),
         ..SP_DEVINFO_DATA::default()
     };
+    // SAFETY: the set is live and info is an initialized SP_DEVINFO_DATA with its required cbSize.
     match unsafe { SetupDiEnumDeviceInfo(device_info_set, index, &raw mut info) } {
         Ok(()) => {}
         Err(error) if windows_error_code(&error) == ERROR_NO_MORE_ITEMS.0 => return Ok(None),
@@ -218,7 +224,10 @@ struct DeviceInfoSet(HDEVINFO);
 
 impl Drop for DeviceInfoSet {
     fn drop(&mut self) {
-        let _ = unsafe { SetupDiDestroyDeviceInfoList(self.0) };
+        // SAFETY: this guard uniquely owns the valid HDEVINFO and Drop attempts destruction on every exit path.
+        if let Err(error) = unsafe { SetupDiDestroyDeviceInfoList(self.0) } {
+            eprintln!("could not destroy Windows device-info set: {error}");
+        }
     }
 }
 
@@ -227,6 +236,7 @@ fn read_device_instance_id(
     info: &SP_DEVINFO_DATA,
 ) -> Result<String, BluetoothError> {
     let mut required_size = 0;
+    // SAFETY: device_info_set and info are live; None performs the documented size query and required_size is writable.
     match unsafe {
         SetupDiGetDeviceInstanceIdW(device_info_set, info, None, Some(&raw mut required_size))
     } {
@@ -239,7 +249,15 @@ fn read_device_instance_id(
     if required_size == 0 {
         return Err(error("PnP device identity had an empty size"));
     }
-    let mut buffer = vec![0u16; required_size as usize];
+    if required_size > MAX_DEVICE_INSTANCE_ID_UNITS {
+        return Err(error(format!(
+            "PnP device identity size is unreasonable ({required_size} UTF-16 units)"
+        )));
+    }
+    let buffer_len = usize::try_from(required_size)
+        .map_err(|_| error("PnP device identity size does not fit memory"))?;
+    let mut buffer = vec![0u16; buffer_len];
+    // SAFETY: the live device info is paired with an output slice sized by the successful size query.
     unsafe {
         SetupDiGetDeviceInstanceIdW(
             device_info_set,
@@ -249,7 +267,8 @@ fn read_device_instance_id(
         )
     }
     .map_err(|error| windows_error("could not read PnP device identity", error))?;
-    Ok(String::from_utf16_lossy(&buffer)
+    let written = checked_written_size(required_size, buffer.len(), "PnP device identity")?;
+    Ok(String::from_utf16_lossy(&buffer[..written])
         .trim_end_matches('\0')
         .to_owned())
 }
@@ -294,6 +313,7 @@ fn read_device_property(
 ) -> Result<Option<(DEVPROPTYPE, Vec<u8>)>, BluetoothError> {
     let mut property_type = DEVPROPTYPE::default();
     let mut required_size = 0;
+    // SAFETY: device and key are valid; null output queries byte size into writable local outputs.
     match unsafe {
         SetupDiGetDevicePropertyW(
             device_info_set,
@@ -315,7 +335,10 @@ fn read_device_property(
             "{context}: Windows returned an invalid property size ({required_size} bytes)"
         )));
     }
-    let mut bytes = vec![0; required_size as usize];
+    let buffer_len = usize::try_from(required_size)
+        .map_err(|_| error(format!("{context}: property size does not fit memory")))?;
+    let mut bytes = vec![0; buffer_len];
+    // SAFETY: bytes is a writable allocation of required_size bytes, and property_type/required_size are writable locals.
     unsafe {
         SetupDiGetDevicePropertyW(
             device_info_set,
@@ -328,8 +351,24 @@ fn read_device_property(
         )
     }
     .map_err(|error| windows_error(context, error))?;
-    bytes.truncate(required_size as usize);
+    let written = checked_written_size(required_size, bytes.len(), context)?;
+    bytes.truncate(written);
     Ok(Some((property_type, bytes)))
+}
+
+fn checked_written_size(
+    size: u32,
+    capacity: usize,
+    context: &str,
+) -> Result<usize, BluetoothError> {
+    let size = usize::try_from(size)
+        .map_err(|_| error(format!("{context}: returned size does not fit memory")))?;
+    if size > capacity {
+        return Err(error(format!(
+            "{context}: Windows reported {size} bytes for a {capacity}-byte buffer"
+        )));
+    }
+    Ok(size)
 }
 
 fn decode_device_property_string(bytes: &[u8]) -> String {
@@ -352,7 +391,16 @@ fn is_software_device_id(instance_id: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{decode_device_property_string, has_bluetooth_enumerator, is_software_device_id};
+    use super::{
+        checked_written_size, decode_device_property_string, has_bluetooth_enumerator,
+        is_software_device_id,
+    };
+
+    #[test]
+    fn rejects_api_lengths_larger_than_the_provided_buffer() {
+        assert_eq!(checked_written_size(3, 4, "property").unwrap(), 3);
+        assert!(checked_written_size(5, 4, "property").is_err());
+    }
 
     #[test]
     fn decodes_property_strings_and_ignores_incomplete_trailing_bytes() {

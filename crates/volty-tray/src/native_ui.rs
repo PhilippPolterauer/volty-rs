@@ -47,28 +47,25 @@ impl FontSet {
         let body_small = match create_font(-14, NORMAL_FONT_WEIGHT, "Segoe UI") {
             Ok(font) => font,
             Err(error) => {
-                unsafe { DeleteObject(body) };
+                // SAFETY: this newly created font has not been selected into a device context.
+                delete_font(body);
                 return Err(error);
             }
         };
         let heading = match create_font(-27, SEMIBOLD_FONT_WEIGHT, "Segoe UI") {
             Ok(font) => font,
             Err(error) => {
-                unsafe {
-                    DeleteObject(body);
-                    DeleteObject(body_small);
-                }
+                delete_font(body);
+                delete_font(body_small);
                 return Err(error);
             }
         };
         let monospace = match create_font(-15, NORMAL_FONT_WEIGHT, "Consolas") {
             Ok(font) => font,
             Err(error) => {
-                unsafe {
-                    DeleteObject(body);
-                    DeleteObject(body_small);
-                    DeleteObject(heading);
-                }
+                delete_font(body);
+                delete_font(body_small);
+                delete_font(heading);
                 return Err(error);
             }
         };
@@ -84,40 +81,59 @@ impl FontSet {
 
 impl Drop for FontSet {
     fn drop(&mut self) {
-        unsafe { DeleteObject(self.body) };
-        unsafe { DeleteObject(self.body_small) };
-        unsafe { DeleteObject(self.heading) };
-        unsafe { DeleteObject(self.monospace) };
+        delete_font(self.body);
+        delete_font(self.body_small);
+        delete_font(self.heading);
+        delete_font(self.monospace);
+    }
+}
+
+fn delete_font(font: HFONT) {
+    // SAFETY: this is a uniquely owned font not selected into a device context.
+    if unsafe { DeleteObject(font) } == 0 {
+        eprintln!(
+            "Volty could not release a UI font: {}",
+            io::Error::last_os_error()
+        );
     }
 }
 
 pub fn set_control_font(control: HWND, font: HFONT) {
+    // SAFETY: control is a live child HWND and font remains owned by its parent FontSet.
     unsafe { SendMessageW(control, WM_SETFONT, font.expose_provenance(), 1) };
 }
 
 pub fn static_control_color(hdc: WPARAM) -> LRESULT {
     let hdc = ptr::with_exposed_provenance_mut::<c_void>(hdc);
-    unsafe { SetBkMode(hdc, TRANSPARENT.cast_signed()) };
-    unsafe { SetTextColor(hdc, system_text_color()) };
-    unsafe { GetSysColorBrush(COLOR_WINDOW) }
-        .expose_provenance()
-        .cast_signed()
+    // SAFETY: WM_CTLCOLORSTATIC supplies this live HDC; the returned system brush is shared.
+    unsafe {
+        SetBkMode(hdc, TRANSPARENT.cast_signed());
+        SetTextColor(hdc, system_text_color());
+        GetSysColorBrush(COLOR_WINDOW)
+    }
+    .expose_provenance()
+    .cast_signed()
 }
 
 pub fn edit_control_color(hdc: WPARAM) -> LRESULT {
     let hdc = ptr::with_exposed_provenance_mut::<c_void>(hdc);
-    unsafe { SetTextColor(hdc, system_text_color()) };
-    unsafe { GetSysColorBrush(COLOR_WINDOW) }
-        .expose_provenance()
-        .cast_signed()
+    // SAFETY: WM_CTLCOLOREDIT supplies this live HDC; the returned system brush is shared.
+    unsafe {
+        SetTextColor(hdc, system_text_color());
+        GetSysColorBrush(COLOR_WINDOW)
+    }
+    .expose_provenance()
+    .cast_signed()
 }
 
 fn system_text_color() -> COLORREF {
+    // SAFETY: COLOR_WINDOWTEXT is a valid system color index.
     unsafe { GetSysColor(COLOR_WINDOWTEXT) }
 }
 
 fn create_font(height: i32, weight: i32, face_name: &'static str) -> io::Result<HFONT> {
     let face_name_wide = to_wide(face_name);
+    // SAFETY: face_name_wide is NUL-terminated and remains alive for this synchronous call.
     let font = unsafe {
         CreateFontW(
             height,
@@ -137,9 +153,11 @@ fn create_font(height: i32, weight: i32, face_name: &'static str) -> io::Result<
         )
     };
     if font.is_null() {
-        Err(io::Error::other(format!(
-            "could not create the {face_name} font"
-        )))
+        let error = io::Error::last_os_error();
+        Err(io::Error::new(
+            error.kind(),
+            format!("could not create the {face_name} font: {error}"),
+        ))
     } else {
         Ok(font)
     }
