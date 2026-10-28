@@ -7,7 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-10-28
+
 ### Changed
+
+- Refreshed the README: added CI/release/license badges, corrected the tray menu action name (**Discover Devices Now**), documented per-device monitoring, log rotation, MSRV, the CI check commands, and the release procedure.
+- Introduced this changelog's release workflow: user-facing changes are recorded under `[Unreleased]` and moved under a version heading on release.
 
 - Split `volty-hid` (`interface`, `hid`, `device`), the Bluetooth backend (`budget`, `winrt`, `classic`, `setupapi`, `ble`) and the About/Diagnose windows into focused modules; no function in non-test code exceeds 100 lines.
 - Added a Windows CI workflow (fmt, clippy `-D warnings`, tests, Bluetooth build); releases are now gated on the same checks.

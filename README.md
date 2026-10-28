@@ -9,11 +9,19 @@
 </p>
 
 <p align="center">
+  <a href="https://github.com/PhilippPolterauer/volty-rs/actions/workflows/ci.yml"><img src="https://github.com/PhilippPolterauer/volty-rs/actions/workflows/ci.yml/badge.svg" alt="CI status"></a>
+  <a href="https://github.com/PhilippPolterauer/volty-rs/releases/latest"><img src="https://img.shields.io/github/v/release/PhilippPolterauer/volty-rs" alt="Latest release"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="MIT license"></a>
+</p>
+
+<p align="center">
   <a href="#features">Features</a> •
   <a href="#using-a-released-binary">Usage</a> •
   <a href="#architecture">Architecture</a> •
   <a href="#quick-start">Quick Start</a> •
   <a href="#building-and-testing">Building</a> •
+  <a href="#releases">Releases</a> •
+  <a href="CHANGELOG.md">Changelog</a> •
   <a href="#license">License</a>
 </p>
 
@@ -21,10 +29,10 @@
 
 ## Current support
 
-Volty currently supports Logitech HID++ 2.0 interfaces. The Bluetooth tray
-integration is disabled by default because it is not working as intended and
-has not been tested; do not rely on it. To opt into this experimental code in
-a local build, pass the tray crate's `bluetooth` feature:
+Volty supports Logitech HID++ 2.0 interfaces on Windows 10/11. The Bluetooth
+tray integration is disabled by default because it is not working as intended
+and has not been tested; do not rely on it. To opt into this experimental code
+in a local build, pass the tray crate's `bluetooth` feature:
 
 ```powershell
 cargo run --release --package volty-tray --features bluetooth
@@ -40,7 +48,7 @@ supported.
 
 ---
 
-## ✨ Features
+## Features
 
 * **HID++ Battery Monitoring:** Polls supported Logitech interfaces and paired-device indexes, prioritizes recently successful receiver slots from a machine-local SQLite cache, and uses each device's HID++ name when available.
 * **Battery Runtime Estimate:** Estimates time remaining from the recent discharge rate, using a configurable history window (10 minutes by default).
@@ -49,6 +57,8 @@ supported.
 * **Threshold Alerts:** One-time native Windows toast notification per discharge cycle when battery hits warning thresholds.
 * **One-Click Diagnostics:** A native Diagnose window shows recent app logs, backend status, and HID details, with buttons to copy the log or open a GitHub issue draft.
 * **Retry After Read Errors:** Polling resumes after errors using the configurable retry interval.
+* **Per-Device Control:** Choose which discovered devices are monitored from the tray's **Monitored Devices** submenu; the choice is persisted locally.
+* **Self-Maintaining Logs:** The local log file rotates at 5 MiB and keeps one `.1` backup.
 * **Standalone Executable:** Releases provide a single `.exe` with no installer. Optional Start on Boot uses the current user's Windows Run setting.
 
 ---
@@ -81,7 +91,8 @@ default and can be configured or disabled in Volty's configuration file.
 
 ![Volty low-battery notification](./docs/notification.png)
 
-Right-click the tray icon to refresh device readings, open configuration or
+Right-click the tray icon to discover devices and refresh readings
+(**Discover Devices Now**), choose **Monitored Devices**, open configuration or
 logs, view diagnostics, enable **Start on Boot**, see **About Volty**, reset
 Volty, or quit the app. **Start on Boot** toggles startup for the current
 Windows user and does not require administrator privileges.
@@ -224,7 +235,7 @@ saved in the local SQLite state database at
 `%LOCALAPPDATA%\Volty\device-state.sqlite3`; unlisted devices are monitored by
 default. Legacy `[monitored_devices]` entries in `config.toml` are migrated to
 SQLite on startup and removed after a successful migration. The menu also lets
-you refresh, open configuration, enable startup, or quit. **About Volty** opens
+you discover devices, open configuration, enable startup, or quit. **About Volty** opens
 a small native window with the app version and a button to visit the project on
 GitHub.
 The database also remembers which devices have already received a low-battery
@@ -257,7 +268,7 @@ log_level = "info" # error, warn, info, debug, or trace
 ```
 
 Settings are stored per-user and do not require administrator privileges.
-Volty watches the file for changes, and **Refresh Now** also reloads it.
+Volty watches the file for changes, and **Discover Devices Now** also reloads it.
 Invalid settings are reported while the last valid configuration stays active.
 Battery ETA appears after a full configured history window of discharging
 readings; it is hidden while charging or when the recent level trend cannot
@@ -337,12 +348,23 @@ it because diagnostic interface paths can identify local devices.
 
 ## Building and testing
 
-Prerequisites: Windows 10/11 and the stable `x86_64-pc-windows-msvc` Rust
-toolchain.
+Prerequisites: Windows 10/11 and the `x86_64-pc-windows-msvc` Rust toolchain
+(Rust 1.89 or newer; the stable channel is recommended). The release binary is
+written to `target\release\volty.exe`.
 
 ```powershell
 cargo build --release --package volty-tray
 cargo test --workspace
+```
+
+CI runs the same checks on every push and pull request, plus a build with the
+`bluetooth` feature:
+
+```powershell
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets --all-features -- -D warnings
+cargo test --workspace
+cargo build -p volty-tray --features bluetooth
 ```
 
 See the [sustained-run performance assessment](./docs/performance-assessment.md)
@@ -350,11 +372,15 @@ for one-minute resource measurements and polling-path limitations.
 
 ## Releases
 
-Push a version tag such as `v0.2.0` to run the Windows release workflow. It
-tests the workspace, verifies the tag against the `volty-tray` package version,
-and publishes a standalone `x86_64-pc-windows-msvc` executable with a SHA-256
-checksum to the GitHub Release. No installer or sidecar runtime files are
-required.
+User-facing changes are tracked in [CHANGELOG.md](./CHANGELOG.md).
+
+To cut a release, bump the workspace crates' version, move the
+`[Unreleased]` changelog entries under the new version heading, commit, and
+push a matching tag such as `v0.2.1`. The Windows release workflow verifies the
+tag against the `volty-tray` package version, runs format, Clippy, and test
+checks, and publishes a standalone `x86_64-pc-windows-msvc` executable with a
+SHA-256 checksum to the GitHub Release. No installer or sidecar runtime files
+are required.
 
 Protocol-frame unit tests use mock byte buffers and do not require a connected
 mouse. Device communication and tray behavior should be verified on Windows
