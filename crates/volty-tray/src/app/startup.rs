@@ -106,6 +106,7 @@ pub(super) fn watch_config_file() -> Result<ConfigWatch, Box<dyn Error>> {
         if events_tx.send(event).is_err() {
             eprintln!("Volty configuration watcher event receiver has stopped");
         }
+        super::wake::signal();
     })?;
     watcher.watch(config_dir, RecursiveMode::NonRecursive)?;
 

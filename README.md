@@ -281,7 +281,6 @@ editor is associated with `.toml` files). Supported settings are:
 low_battery_threshold = 20 # 1-100 percent
 poll_interval_seconds = 120 # 10-3600 seconds after a successful reading
 retry_interval_seconds = 15 # 5-300 seconds after an error
-ui_poll_interval_ms = 250 # 50-1000 milliseconds between tray-loop checks
 battery_eta_window_minutes = 10 # 1-180 minutes of discharge history
 notifications_enabled = true
 log_level = "info" # error, warn, info, debug, or trace

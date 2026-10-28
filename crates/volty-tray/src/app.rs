@@ -5,6 +5,7 @@ mod notifications;
 mod poll;
 mod session;
 mod startup;
+mod wake;
 
 use device_ui::{
     apply_poll_result, is_device_monitored, update_monitored_device_menu, update_tray_devices,
@@ -23,7 +24,6 @@ use std::{
     error::Error,
     io,
     sync::mpsc::TryRecvError,
-    thread,
     time::{Duration, Instant},
 };
 use volty_battery::{BatteryStatus, DeviceId, DeviceLabel, ProviderEvent, SourceReading};
@@ -72,6 +72,7 @@ pub fn run() -> Result<(), Box<dyn Error>> {
 }
 impl App {
     fn start() -> Result<Self, Box<dyn Error>> {
+        wake::init()?;
         let started = Instant::now();
         let mut startup = load_startup_state();
         let mut diagnostic_log = VecDeque::new();
@@ -169,9 +170,10 @@ impl App {
             self.process_config_events()?;
             self.reload_config_if_due()?;
             self.process_poll_results()?;
-            thread::sleep(Duration::from_millis(
-                self.active_config.ui_poll_interval_ms,
-            ));
+            let reload_wait = self
+                .config_reload_due
+                .map(|due| due.saturating_duration_since(Instant::now()));
+            wake::wait(reload_wait)?;
         }
     }
 

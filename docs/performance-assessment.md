@@ -29,7 +29,7 @@ The process had been running for about 2 minutes 18 seconds at the end of sampli
 ### Polling and idle behavior
 
 - The default successful-poll wait is 120 seconds, with a configurable range of 10-3600 seconds; the default retry wait is 15 seconds. The worker waits after each query completes, so query duration adds to the start-to-start interval. ([config.rs](../crates/volty-tray/src/config.rs#L12), [app/poll.rs](../crates/volty-tray/src/app/poll.rs#L88))
-- Device discovery runs on a dedicated worker thread. The tray loop sleeps between checks using configurable `ui_poll_interval_ms` (50-1000 ms), defaulting to 250 ms rather than busy-spinning. This is four loop checks per second by default, with up to 250 ms additional delay before processing queued UI work. ([app.rs](../crates/volty-tray/src/app.rs#L224), [config.rs](../crates/volty-tray/src/config.rs#L14))
+- Device discovery runs on a dedicated worker thread. The tray loop is event-driven: it blocks in `MsgWaitForMultipleObjects` and is woken by window messages, the poll worker, and the config watcher, so it uses no CPU while idle and processes queued work immediately. ([app.rs](../crates/volty-tray/src/app.rs), [wake.rs](../crates/volty-tray/src/app/wake.rs))
 - The in-memory diagnostic log is capped at 200 entries. The file logger appends and flushes each accepted entry and rotates at 5 MiB, keeping one `.1` backup, so sustained trace logging is bounded to roughly 10 MiB of disk. ([app.rs](../crates/volty-tray/src/app.rs#L47), [logging.rs](../crates/volty-tray/src/logging.rs#L10))
 
 ### 10-second successful-poll scenario
@@ -38,7 +38,7 @@ Set `poll_interval_seconds = 10` to use this cadence; the application default re
 
 Each scan repeats the same HID discovery and battery-query work, so average device activity and scan-related CPU/I/O will rise with scan frequency. The existing one-minute process sample did not use a verified 10-second configuration and cannot quantify that increase. Exact impact depends on connected devices and read latency; no device-specific CPU or battery-life claim is made here.
 
-The UI loop's new 250 ms default reduces idle checks from about ten to four per second compared with the previous 100 ms value. The tradeoff is up to 250 ms before the loop processes queued tray actions or completed readings; device polling itself remains on its worker thread.
+The UI loop no longer polls on a timer; it blocks until a window message, poll result, or config change arrives, so idle wakeups are zero and queued tray actions or completed readings are processed immediately. Device polling itself remains on its worker thread.
 
 The battery ETA uses a per-device discharge history, defaulting to a 10-minute window (configurable from 1 to 180 minutes). With 10-second polling, this retains about 60 samples per device. The estimate needs a full window of usable readings, resets while charging or after a level increase, and requires no additional device I/O.
 

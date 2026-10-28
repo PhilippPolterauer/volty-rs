@@ -11,7 +11,6 @@ use toml_edit::Document;
 pub const DEFAULT_LOW_BATTERY_THRESHOLD: u8 = 20;
 pub const DEFAULT_POLL_INTERVAL_SECONDS: u64 = 120;
 pub const DEFAULT_RETRY_INTERVAL_SECONDS: u64 = 15;
-pub const DEFAULT_UI_POLL_INTERVAL_MS: u64 = 250;
 pub const DEFAULT_BATTERY_ETA_WINDOW_MINUTES: u64 = 10;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -88,7 +87,6 @@ pub struct AppConfig {
     pub low_battery_threshold: u8,
     pub poll_interval_seconds: u64,
     pub retry_interval_seconds: u64,
-    pub ui_poll_interval_ms: u64,
     pub battery_eta_window_minutes: u64,
     pub notifications_enabled: bool,
     pub log_level: LogLevel,
@@ -101,7 +99,6 @@ impl Default for AppConfig {
             low_battery_threshold: DEFAULT_LOW_BATTERY_THRESHOLD,
             poll_interval_seconds: DEFAULT_POLL_INTERVAL_SECONDS,
             retry_interval_seconds: DEFAULT_RETRY_INTERVAL_SECONDS,
-            ui_poll_interval_ms: DEFAULT_UI_POLL_INTERVAL_MS,
             battery_eta_window_minutes: DEFAULT_BATTERY_ETA_WINDOW_MINUTES,
             notifications_enabled: true,
             log_level: LogLevel::Info,
@@ -151,8 +148,6 @@ impl AppConfig {
              # poll_interval_seconds = {}\n\
              # Seconds between retries after a polling error (5-300).\n\
              # retry_interval_seconds = {}\n\
-             # Milliseconds between tray-loop checks (50-1000).\n\
-             # ui_poll_interval_ms = {}\n\
              # Minutes of discharge history used to estimate battery runtime (1-180).\n\
              # battery_eta_window_minutes = {}\n\
              # Set to false to disable low-battery toast notifications.\n\
@@ -171,7 +166,6 @@ impl AppConfig {
             defaults.low_battery_threshold,
             defaults.poll_interval_seconds,
             defaults.retry_interval_seconds,
-            defaults.ui_poll_interval_ms,
             defaults.battery_eta_window_minutes,
             defaults.notifications_enabled,
             defaults.log_level.as_str().to_ascii_lowercase()
@@ -379,10 +373,6 @@ fn parse_toml(contents: &str, path: &Path) -> Result<AppConfig, ConfigError> {
                 config.retry_interval_seconds =
                     parse_interval(value, "retry_interval_seconds", 5, 300, "seconds", path)?;
             }
-            "ui_poll_interval_ms" => {
-                config.ui_poll_interval_ms =
-                    parse_interval(value, "ui_poll_interval_ms", 50, 1000, "milliseconds", path)?;
-            }
             "battery_eta_window_minutes" => {
                 config.battery_eta_window_minutes =
                     parse_interval(value, "battery_eta_window_minutes", 1, 180, "minutes", path)?;
@@ -558,7 +548,6 @@ mod tests {
     #[test]
     fn toml_config_accepts_defaults_and_threshold_values() {
         let path = Path::new("config.toml");
-        assert_eq!(AppConfig::default().ui_poll_interval_ms, 250);
         assert_eq!(AppConfig::default().battery_eta_window_minutes, 10);
         assert_eq!(
             parse_toml("# Volty configuration\n", path).unwrap(),
@@ -573,7 +562,7 @@ mod tests {
         );
         assert_eq!(
             parse_toml(
-                "low_battery_threshold = 80\npoll_interval_seconds = 300\nretry_interval_seconds = 30\nui_poll_interval_ms = 250\nbattery_eta_window_minutes = 20\nnotifications_enabled = false\nlog_level = \"debug\"\n",
+                "low_battery_threshold = 80\npoll_interval_seconds = 300\nretry_interval_seconds = 30\nbattery_eta_window_minutes = 20\nnotifications_enabled = false\nlog_level = \"debug\"\n",
                 path
             )
             .unwrap(),
@@ -581,7 +570,6 @@ mod tests {
                 low_battery_threshold: 80,
                 poll_interval_seconds: 300,
                 retry_interval_seconds: 30,
-                ui_poll_interval_ms: 250,
                 battery_eta_window_minutes: 20,
                 notifications_enabled: false,
                 log_level: LogLevel::Debug,
@@ -593,14 +581,9 @@ mod tests {
             AppConfig::default()
         );
         assert_eq!(
-            parse_toml(
-                "poll_interval_seconds = 10\nui_poll_interval_ms = 250\n",
-                path
-            )
-            .unwrap(),
+            parse_toml("poll_interval_seconds = 10\n", path).unwrap(),
             AppConfig {
                 poll_interval_seconds: 10,
-                ui_poll_interval_ms: 250,
                 ..AppConfig::default()
             }
         );
@@ -652,9 +635,6 @@ mod tests {
             "poll_interval_seconds = \"120\"",
             "retry_interval_seconds = 4",
             "retry_interval_seconds = 301",
-            "ui_poll_interval_ms = 49",
-            "ui_poll_interval_ms = 1001",
-            "ui_poll_interval_ms = \"250\"",
             "battery_eta_window_minutes = 0",
             "battery_eta_window_minutes = 181",
             "battery_eta_window_minutes = \"10\"",

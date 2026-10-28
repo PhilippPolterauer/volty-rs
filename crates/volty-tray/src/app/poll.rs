@@ -91,7 +91,7 @@ pub(super) fn poll_worker_with_query(
         } else {
             retry_interval
         };
-        if results.send(PollUpdate::Finished(reading)).is_err() {
+        if send_update(results, PollUpdate::Finished(reading)).is_err() {
             return;
         }
 
@@ -128,6 +128,16 @@ pub(super) fn request_device_discovery(
     }
 }
 
+/// Sends an update and wakes the blocked UI loop to consume it.
+fn send_update(
+    results: &mpsc::Sender<PollUpdate>,
+    update: PollUpdate,
+) -> Result<(), mpsc::SendError<PollUpdate>> {
+    results.send(update)?;
+    super::wake::signal();
+    Ok(())
+}
+
 const RECEIVER_DISCONNECTED: &str = "device polling result receiver disconnected";
 
 pub(super) fn query_providers(
@@ -140,11 +150,7 @@ pub(super) fn query_providers(
     } else {
         ScanMode::Refresh
     };
-    let mut sink = |event| {
-        results
-            .send(PollUpdate::Event(event))
-            .map_err(|_| SinkClosed)
-    };
+    let mut sink = |event| send_update(results, PollUpdate::Event(event)).map_err(|_| SinkClosed);
     let mut total = ProviderPoll::default();
     for provider in providers {
         let poll = provider

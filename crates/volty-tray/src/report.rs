@@ -73,7 +73,6 @@ fn render_diagnostic_report(
          Low-battery threshold: {}%\n\
          Poll interval: {} seconds\n\
          Retry interval: {} seconds\n\
-         UI poll interval: {} milliseconds\n\
          Battery ETA window: {} minutes\n\
          Log level: {}\n\
          Low-battery notifications: {}\n\
@@ -90,7 +89,6 @@ fn render_diagnostic_report(
         config.low_battery_threshold,
         config.poll_interval_seconds,
         config.retry_interval_seconds,
-        config.ui_poll_interval_ms,
         config.battery_eta_window_minutes,
         config.log_level.as_str(),
         if config.notifications_enabled {
@@ -198,7 +196,6 @@ mod tests {
 
         assert!(report.contains("Volty Diagnose Log"));
         assert!(report.contains("Low-battery threshold: 20%"));
-        assert!(report.contains("UI poll interval: 250 milliseconds"));
         assert!(report.contains("Battery ETA window: 10 minutes"));
         assert!(report.contains("Battery ETA window: 10 minutes"));
         assert!(report.contains(
