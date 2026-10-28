@@ -1,8 +1,10 @@
 //! Logitech HID++ 2.0 frame, transport, and protocol-specific definitions.
-use crate::protocol::{BatteryProtocol, MouseModel, ProtocolDeviceReading, ProtocolError};
+use crate::protocol::{BatteryProtocol, HidBatteryDevice, ProtocolDeviceReading, ProtocolError};
 use crate::{BatteryStatus, HidInterfaceInfo};
 use std::fmt;
-use std::time::{Duration, Instant};
+use std::time::Duration;
+#[cfg(any(feature = "hidapi", test))]
+use std::time::Instant;
 
 /// The Logitech HID++ 2.0 battery protocol implementation.
 pub struct LogitechHidpp20;
@@ -66,10 +68,10 @@ impl BatteryProtocol for LogitechHidpp20 {
     }
 }
 
-/// Logitech HID++ 2.0 mouse family; battery support is confirmed by feature discovery.
-pub struct LogitechHidppMouse;
+/// Logitech HID++ 2.0 device family; battery support is confirmed by feature discovery.
+pub struct LogitechHidppDevice;
 
-impl MouseModel for LogitechHidppMouse {
+impl HidBatteryDevice for LogitechHidppDevice {
     fn name(&self) -> &'static str {
         "Logitech HID++ mouse"
     }
@@ -80,7 +82,7 @@ impl MouseModel for LogitechHidppMouse {
 }
 
 pub static LOGITECH_HIDPP_20: LogitechHidpp20 = LogitechHidpp20;
-pub static LOGITECH_HIDPP_MOUSE: LogitechHidppMouse = LogitechHidppMouse;
+pub static LOGITECH_HIDPP_DEVICE: LogitechHidppDevice = LogitechHidppDevice;
 
 pub const LOGITECH_VENDOR_ID: u16 = 0x046d;
 pub const FEATURE_ROOT: u16 = 0x0000;

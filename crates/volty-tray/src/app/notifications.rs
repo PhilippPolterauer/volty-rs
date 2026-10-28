@@ -1,7 +1,6 @@
 use super::{
-    battery_is_full, battery_source_label, battery_status_label, format_device_name,
-    is_device_monitored, record_event, AppConfig, DeviceIdentity, DeviceReading, DeviceState,
-    FileLogger, LogLevel,
+    battery_is_full, battery_status_label, is_device_monitored, record_event, AppConfig,
+    DeviceReading, DeviceState, FileLogger, LogLevel,
 };
 use crate::notify::{BatterySample, NotificationEngine, NotificationOutcome};
 use std::{
@@ -10,10 +9,10 @@ use std::{
     io,
     time::Instant,
 };
-use volty_battery::BatteryState;
+use volty_battery::{BatteryState, DeviceId};
 pub(super) struct DeviceNotifications {
     config: AppConfig,
-    engines: HashMap<DeviceIdentity, NotificationEngine>,
+    engines: HashMap<DeviceId, NotificationEngine>,
     persisted_alerts: HashSet<String>,
     pending_alerts: HashMap<String, bool>,
 }
@@ -43,7 +42,7 @@ impl DeviceNotifications {
 
     pub(super) fn retain_monitored_devices(&mut self, monitored_devices: &BTreeMap<String, bool>) {
         self.engines
-            .retain(|identity, _| is_device_monitored(monitored_devices, &identity.config_id()));
+            .retain(|id, _| is_device_monitored(monitored_devices, id.as_str()));
         let stale_alerts: HashSet<_> = self
             .persisted_alerts
             .iter()
@@ -59,13 +58,13 @@ impl DeviceNotifications {
 
     pub(super) fn update(
         &mut self,
-        identity: DeviceIdentity,
+        id: DeviceId,
         device_name: &str,
         sample: BatterySample,
     ) -> Result<NotificationOutcome, Box<dyn Error>> {
-        let identity_key = identity.config_id();
+        let identity_key = id.as_str().to_owned();
         let previously_notified = self.persisted_alerts.contains(&identity_key);
-        let engine = match self.engines.entry(identity) {
+        let engine = match self.engines.entry(id) {
             Entry::Occupied(entry) => entry.into_mut(),
             Entry::Vacant(entry) => {
                 let mut engine = NotificationEngine::from_config(self.config)?;
@@ -111,7 +110,7 @@ pub(super) fn process_device_reading(
     file_logger: &mut FileLogger,
     started: Instant,
 ) -> io::Result<()> {
-    let device_name = format_device_name(&reading.name, reading.device_index);
+    let device_name = reading.label.display();
     let percentage = reading.battery.level_percent;
     let status = battery_status_label(&reading.battery);
     record_event(
@@ -121,7 +120,7 @@ pub(super) fn process_device_reading(
         LogLevel::Debug,
         &format!(
             "Battery read for {device_name} via {}: {} ({status})",
-            battery_source_label(reading.battery.source),
+            reading.battery.source,
             percentage.map_or_else(|| "unknown".to_owned(), |value| format!("{value}%"))
         ),
     )?;
@@ -170,7 +169,7 @@ fn process_notification(
     file_logger: &mut FileLogger,
     started: Instant,
 ) -> io::Result<()> {
-    let device_name = format_device_name(&reading.name, reading.device_index);
+    let device_name = reading.label.display();
     let threshold = notifications.config.low_battery_threshold;
     let enabled = notifications.config.notifications_enabled;
     record_event(
@@ -184,7 +183,7 @@ fn process_notification(
         ),
     )?;
 
-    let notification_result = notifications.update(reading.identity.clone(), &device_name, sample);
+    let notification_result = notifications.update(reading.id.clone(), &device_name, sample);
     if let Err(error) = notifications.persist_pending_alerts(state) {
         record_event(
             diagnostic_log,
@@ -214,7 +213,7 @@ fn record_notification_outcome(
     file_logger: &mut FileLogger,
     started: Instant,
 ) -> io::Result<()> {
-    let device_name = format_device_name(&reading.name, reading.device_index);
+    let device_name = reading.label.display();
     match notification_result {
         Ok(outcome) => {
             let detail = match outcome {
@@ -261,14 +260,8 @@ mod tests {
     use super::*;
     #[test]
     fn disabled_devices_drop_notification_tracking_state() {
-        let monitored = DeviceIdentity::Hid {
-            interface_path: "monitored".to_owned(),
-            device_index: 1,
-        };
-        let unmonitored = DeviceIdentity::Hid {
-            interface_path: "unmonitored".to_owned(),
-            device_index: 2,
-        };
+        let monitored = DeviceId::new("hid:monitored#1");
+        let unmonitored = DeviceId::new("hid:unmonitored#2");
         let mut notifications = DeviceNotifications::from_config(AppConfig::default()).unwrap();
         notifications.engines.insert(
             monitored.clone(),
@@ -278,9 +271,9 @@ mod tests {
             unmonitored.clone(),
             NotificationEngine::from_config(AppConfig::default()).unwrap(),
         );
-        let monitored_devices = BTreeMap::from([(unmonitored.config_id(), false)]);
-        let monitored_key = monitored.config_id();
-        let unmonitored_key = unmonitored.config_id();
+        let monitored_devices = BTreeMap::from([(unmonitored.as_str().to_owned(), false)]);
+        let monitored_key = monitored.as_str().to_owned();
+        let unmonitored_key = unmonitored.as_str().to_owned();
         notifications.restore_persisted_alerts(HashSet::from([
             monitored_key.clone(),
             unmonitored_key.clone(),

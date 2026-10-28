@@ -146,6 +146,10 @@ pub struct TrayController {
     actions_rx: Receiver<TrayAction>,
     percentage: Option<u8>,
     battery_color_map: BatteryColorMap,
+    displayed_status: Option<String>,
+    displayed_tooltip: Option<String>,
+    displayed_device_statuses: Vec<String>,
+    displayed_icon: Option<(Option<u8>, u32, BatteryColorMap)>,
 }
 
 struct TrayMenu {
@@ -309,6 +313,10 @@ impl TrayController {
             actions_rx,
             percentage: None,
             battery_color_map: BatteryColorMap::default(),
+            displayed_status: None,
+            displayed_tooltip: None,
+            displayed_device_statuses: Vec::new(),
+            displayed_icon: None,
         })
     }
 
@@ -466,20 +474,35 @@ impl TrayController {
         icon_size: u32,
         device_statuses: &[String],
     ) -> Result<(), TrayError> {
-        self.status_item.set_text(menu_status);
-        self.replace_device_status_items(device_statuses)?;
-        let icon = match percentage {
-            Some(percentage) => {
-                battery_icon_at_size_with_color_map(percentage, icon_size, self.battery_color_map)?
-            }
-            None => unknown_battery_icon_at_size(icon_size)?,
-        };
-        self.icon
-            .set_icon(Some(icon))
-            .map_err(|error| TrayError::new(format!("could not update tray icon: {error}")))?;
-        self.icon
-            .set_tooltip(Some(tooltip))
-            .map_err(|error| TrayError::new(format!("could not update tray tooltip: {error}")))?;
+        if self.displayed_status.as_deref() != Some(menu_status) {
+            self.status_item.set_text(menu_status);
+            self.displayed_status = Some(menu_status.to_owned());
+        }
+        if self.displayed_device_statuses != device_statuses {
+            self.replace_device_status_items(device_statuses)?;
+            self.displayed_device_statuses = device_statuses.to_vec();
+        }
+        let icon_key = (percentage, icon_size, self.battery_color_map);
+        if self.displayed_icon != Some(icon_key) {
+            let icon = match percentage {
+                Some(percentage) => battery_icon_at_size_with_color_map(
+                    percentage,
+                    icon_size,
+                    self.battery_color_map,
+                )?,
+                None => unknown_battery_icon_at_size(icon_size)?,
+            };
+            self.icon
+                .set_icon(Some(icon))
+                .map_err(|error| TrayError::new(format!("could not update tray icon: {error}")))?;
+            self.displayed_icon = Some(icon_key);
+        }
+        if self.displayed_tooltip.as_deref() != Some(tooltip) {
+            self.icon.set_tooltip(Some(tooltip)).map_err(|error| {
+                TrayError::new(format!("could not update tray tooltip: {error}"))
+            })?;
+            self.displayed_tooltip = Some(tooltip.to_owned());
+        }
         Ok(())
     }
 
@@ -584,6 +607,7 @@ impl TrayController {
             self.icon
                 .set_icon(Some(icon))
                 .map_err(|error| TrayError::new(format!("could not update tray icon: {error}")))?;
+            self.displayed_icon = Some((Some(percentage), ICON_SIZE, battery_color_map));
         }
         self.battery_color_map = battery_color_map;
         Ok(())

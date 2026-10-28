@@ -42,8 +42,8 @@ pub trait BatteryProtocol: Sync {
     }
 }
 
-/// A mouse family mapped to the protocol used to query its battery.
-pub trait MouseModel: Sync {
+/// A HID device family mapped to the protocol used to query its battery.
+pub trait HidBatteryDevice: Sync {
     fn name(&self) -> &'static str;
 
     fn protocol(&self) -> &'static dyn BatteryProtocol;
@@ -53,43 +53,43 @@ pub trait MouseModel: Sync {
     }
 }
 
-/// An interface matches more than one registered mouse model.
+/// An interface matches more than one registered HID device family.
 #[derive(Debug, Clone, Eq, PartialEq)]
-pub struct AmbiguousMouseModel {
-    /// Names of all matching models, in catalog order.
+pub struct AmbiguousHidDevice {
+    /// Names of all matching families, in catalog order.
     pub matching_model_names: Vec<&'static str>,
 }
 
-impl fmt::Display for AmbiguousMouseModel {
+impl fmt::Display for AmbiguousHidDevice {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "multiple mouse models match this HID interface: {}",
+            "multiple HID device families match this interface: {}",
             self.matching_model_names.join(", ")
         )
     }
 }
 
-impl Error for AmbiguousMouseModel {}
+impl Error for AmbiguousHidDevice {}
 
-/// Resolve an enumerated HID interface to its unique registered mouse model.
+/// Resolve an enumerated HID interface to its unique registered device family.
 ///
-/// Returns `Ok(None)` when no model matches and an error when multiple models
-/// match the interface.
-pub fn resolve_mouse_model(
+/// Returns `Ok(None)` when no family matches and an error when multiple
+/// families match the interface.
+pub fn resolve_hid_device(
     interface: &HidInterfaceInfo,
-) -> Result<Option<&'static dyn MouseModel>, AmbiguousMouseModel> {
-    resolve_mouse_model_from(SUPPORTED_MICE, interface)
+) -> Result<Option<&'static dyn HidBatteryDevice>, AmbiguousHidDevice> {
+    resolve_hid_device_from(SUPPORTED_HID_DEVICES, interface)
 }
 
-fn resolve_mouse_model_from(
-    catalog: &[&'static dyn MouseModel],
+fn resolve_hid_device_from(
+    catalog: &[&'static dyn HidBatteryDevice],
     interface: &HidInterfaceInfo,
-) -> Result<Option<&'static dyn MouseModel>, AmbiguousMouseModel> {
+) -> Result<Option<&'static dyn HidBatteryDevice>, AmbiguousHidDevice> {
     let mut matches = catalog
         .iter()
         .copied()
-        .filter(|mouse| mouse.matches(interface));
+        .filter(|device| device.matches(interface));
 
     let Some(first) = matches.next() else {
         return Ok(None);
@@ -100,26 +100,27 @@ fn resolve_mouse_model_from(
     };
 
     let mut matching_model_names = vec![first.name(), second.name()];
-    matching_model_names.extend(matches.map(|mouse| mouse.name()));
-    Err(AmbiguousMouseModel {
+    matching_model_names.extend(matches.map(|device| device.name()));
+    Err(AmbiguousHidDevice {
         matching_model_names,
     })
 }
 
-/// Mouse families currently known to Volty.
-pub static SUPPORTED_MICE: &[&dyn MouseModel] = &[&crate::logitech_hidpp::LOGITECH_HIDPP_MOUSE];
+/// HID device families currently known to Volty.
+pub static SUPPORTED_HID_DEVICES: &[&dyn HidBatteryDevice] =
+    &[&crate::logitech_hidpp::LOGITECH_HIDPP_DEVICE];
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::ffi::CString;
 
-    struct TestMouseModel {
+    struct TestDevice {
         name: &'static str,
         vendor_id: u16,
     }
 
-    impl MouseModel for TestMouseModel {
+    impl HidBatteryDevice for TestDevice {
         fn name(&self) -> &'static str {
             self.name
         }
@@ -133,16 +134,16 @@ mod tests {
         }
     }
 
-    static TEST_MOUSE_A: TestMouseModel = TestMouseModel {
-        name: "Test Mouse A",
+    static TEST_DEVICE_A: TestDevice = TestDevice {
+        name: "Test Device A",
         vendor_id: 0x1234,
     };
-    static TEST_MOUSE_B: TestMouseModel = TestMouseModel {
-        name: "Test Mouse B",
+    static TEST_DEVICE_B: TestDevice = TestDevice {
+        name: "Test Device B",
         vendor_id: 0x5678,
     };
-    static TEST_MOUSE_C: TestMouseModel = TestMouseModel {
-        name: "Test Mouse C",
+    static TEST_DEVICE_C: TestDevice = TestDevice {
+        name: "Test Device C",
         vendor_id: 0x1234,
     };
 
@@ -157,59 +158,60 @@ mod tests {
             bus_type: "Usb".to_owned(),
             manufacturer_string: None,
             product_string: Some("HID++ receiver".to_owned()),
+            serial_number: None,
             path: CString::new("test").unwrap(),
         }
     }
 
     #[test]
-    fn resolver_returns_none_when_no_catalog_model_matches() {
-        let catalog: &[&'static dyn MouseModel] = &[&TEST_MOUSE_A];
-        assert!(resolve_mouse_model_from(catalog, &interface(0x9999))
+    fn resolver_returns_none_when_no_catalog_device_matches() {
+        let catalog: &[&'static dyn HidBatteryDevice] = &[&TEST_DEVICE_A];
+        assert!(resolve_hid_device_from(catalog, &interface(0x9999))
             .unwrap()
             .is_none());
     }
 
     #[test]
-    fn resolver_returns_the_unique_matching_model() {
-        let catalog: &[&'static dyn MouseModel] = &[&TEST_MOUSE_A, &TEST_MOUSE_B];
-        let matched = resolve_mouse_model_from(catalog, &interface(0x1234))
+    fn resolver_returns_the_unique_matching_device() {
+        let catalog: &[&'static dyn HidBatteryDevice] = &[&TEST_DEVICE_A, &TEST_DEVICE_B];
+        let matched = resolve_hid_device_from(catalog, &interface(0x1234))
             .unwrap()
             .unwrap();
-        assert_eq!(matched.name(), "Test Mouse A");
+        assert_eq!(matched.name(), "Test Device A");
     }
 
     #[test]
     fn resolver_reports_all_ambiguous_matches() {
-        let catalog: &[&'static dyn MouseModel] = &[&TEST_MOUSE_A, &TEST_MOUSE_C];
-        let error = match resolve_mouse_model_from(catalog, &interface(0x1234)) {
+        let catalog: &[&'static dyn HidBatteryDevice] = &[&TEST_DEVICE_A, &TEST_DEVICE_C];
+        let error = match resolve_hid_device_from(catalog, &interface(0x1234)) {
             Err(error) => error,
-            Ok(_) => panic!("expected an ambiguous model resolution"),
+            Ok(_) => panic!("expected an ambiguous device resolution"),
         };
         assert_eq!(
             error.matching_model_names,
-            vec!["Test Mouse A", "Test Mouse C"]
+            vec!["Test Device A", "Test Device C"]
         );
         assert_eq!(
             error.to_string(),
-            "multiple mouse models match this HID interface: Test Mouse A, Test Mouse C"
+            "multiple HID device families match this interface: Test Device A, Test Device C"
         );
     }
 
     #[test]
     fn registry_resolves_the_registered_logitech_hidpp_family() {
         let matched = interface(0x046d);
-        let mouse = resolve_mouse_model(&matched).unwrap().unwrap();
-        assert_eq!(mouse.name(), "Logitech HID++ mouse");
-        assert_eq!(mouse.protocol().name(), "Logitech HID++ 2.0");
-        assert_eq!(SUPPORTED_MICE.len(), 1);
+        let device = resolve_hid_device(&matched).unwrap().unwrap();
+        assert_eq!(device.name(), "Logitech HID++ mouse");
+        assert_eq!(device.protocol().name(), "Logitech HID++ 2.0");
+        assert_eq!(SUPPORTED_HID_DEVICES.len(), 1);
 
         let short_report_interface = HidInterfaceInfo {
             usage: Some(0x0001),
             ..matched
         };
-        assert!(resolve_mouse_model(&short_report_interface)
+        assert!(resolve_hid_device(&short_report_interface)
             .unwrap()
             .is_none());
-        assert!(resolve_mouse_model(&interface(0x1234)).unwrap().is_none());
+        assert!(resolve_hid_device(&interface(0x1234)).unwrap().is_none());
     }
 }

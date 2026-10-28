@@ -5,7 +5,7 @@ publish = false
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
-description = "Protocol-neutral battery readings for Volty"
+description = "Protocol-neutral battery readings and the provider contract for Volty"
 
 [dependencies]
 

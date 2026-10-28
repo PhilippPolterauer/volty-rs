@@ -1,7 +1,5 @@
-use super::{
-    device_cache::DeviceNameCache, record_event, AppConfig, DeviceIdentity, DeviceReading,
-    DeviceState, FileLogger, LogLevel,
-};
+use super::{record_event, AppConfig, DeviceState, FileLogger, LogLevel};
+use crate::provider::default_providers;
 use std::{
     collections::VecDeque,
     error::Error,
@@ -9,6 +7,8 @@ use std::{
     thread,
     time::{Duration, Instant},
 };
+use volty_battery::{BatteryProvider, ProviderEvent, ProviderPoll, ScanMode, SinkClosed};
+
 pub(super) enum PollCommand {
     Discover,
     UpdateIntervals { poll: Duration, retry: Duration },
@@ -21,14 +21,7 @@ pub(super) type PollWorker = (
     thread::JoinHandle<()>,
 );
 pub(super) enum PollUpdate {
-    Reading(DeviceReading),
-    DeviceName {
-        identity: DeviceIdentity,
-        name: String,
-        error: Option<String>,
-    },
-    Warning(String),
-    Trace(String),
+    Event(ProviderEvent),
     Finished(PollResult),
 }
 pub(super) fn spawn_poll_worker(
@@ -62,8 +55,8 @@ pub(super) fn spawn_poll_worker(
                 &results_tx,
                 poll_interval,
                 retry_interval,
-                device_state,
-            )
+                default_providers(device_state),
+            );
         })?;
     Ok((commands_tx, results_rx, poller))
 }
@@ -72,17 +65,14 @@ pub(super) fn poll_worker(
     results: &mpsc::Sender<PollUpdate>,
     poll_interval: Duration,
     retry_interval: Duration,
-    mut device_state: Option<DeviceState>,
+    mut providers: Vec<Box<dyn BatteryProvider>>,
 ) {
-    let mut name_cache = DeviceNameCache::default();
     poll_worker_with_query(
         commands,
         results,
         poll_interval,
         retry_interval,
-        move |results, full_scan| {
-            query_devices(results, &mut device_state, &mut name_cache, full_scan)
-        },
+        move |results, full_scan| query_providers(results, &mut providers, full_scan),
     );
 }
 pub(super) fn poll_worker_with_query(
@@ -137,314 +127,52 @@ pub(super) fn request_device_discovery(
         Ok(())
     }
 }
-pub(super) fn query_devices(
+
+const RECEIVER_DISCONNECTED: &str = "device polling result receiver disconnected";
+
+pub(super) fn query_providers(
     results: &mpsc::Sender<PollUpdate>,
-    device_state: &mut Option<DeviceState>,
-    name_cache: &mut DeviceNameCache,
+    providers: &mut [Box<dyn BatteryProvider>],
     full_scan: bool,
 ) -> PollResult {
-    let mut query = DeviceQuery::new(results, device_state, name_cache, full_scan);
-    query.query_hid_interfaces()?;
-    #[cfg(feature = "bluetooth")]
-    query.query_bluetooth_devices()?;
-    query.finish()
-}
-
-struct DeviceQuery<'a> {
-    results: &'a mpsc::Sender<PollUpdate>,
-    device_state: &'a mut Option<DeviceState>,
-    name_cache: &'a mut DeviceNameCache,
-    full_scan: bool,
-    errors: Vec<String>,
-    supported_interfaces: usize,
-    reading_count: usize,
-}
-
-impl<'a> DeviceQuery<'a> {
-    fn new(
-        results: &'a mpsc::Sender<PollUpdate>,
-        device_state: &'a mut Option<DeviceState>,
-        name_cache: &'a mut DeviceNameCache,
-        full_scan: bool,
-    ) -> Self {
-        Self {
-            results,
-            device_state,
-            name_cache,
-            full_scan,
-            errors: Vec::new(),
-            supported_interfaces: 0,
-            reading_count: 0,
-        }
+    let mode = if full_scan {
+        ScanMode::Discover
+    } else {
+        ScanMode::Refresh
+    };
+    let mut sink = |event| {
+        results
+            .send(PollUpdate::Event(event))
+            .map_err(|_| SinkClosed)
+    };
+    let mut total = ProviderPoll::default();
+    for provider in providers {
+        let poll = provider
+            .poll(mode, &mut sink)
+            .map_err(|SinkClosed| RECEIVER_DISCONNECTED.to_owned())?;
+        total.readings += poll.readings;
+        total.recognised += poll.recognised;
+        total.errors.extend(poll.errors);
     }
 
-    fn query_hid_interfaces(&mut self) -> PollResult {
-        use volty_hid::{enumerate_hid_interfaces, resolve_mouse_model};
-
-        let interfaces = match enumerate_hid_interfaces() {
-            Ok(interfaces) => interfaces,
-            Err(error) => {
-                self.errors.push(format!("HID discovery: {error}"));
-                Vec::new()
-            }
-        };
-        for interface in interfaces {
-            match resolve_mouse_model(&interface) {
-                Ok(Some(mouse)) => {
-                    self.supported_interfaces += 1;
-                    let protocol = mouse.protocol();
-                    let fallback_name = interface
-                        .product_string
-                        .as_deref()
-                        .filter(|name| !name.trim().is_empty())
-                        .map_or_else(|| mouse.name().to_owned(), str::to_owned);
-                    self.send(PollUpdate::Trace(format!(
-                        "HID discovery matched {fallback_name:?} to {} using {} (VID=0x{:04x}, PID=0x{:04x}, usage_page={:?}, usage={:?}, interface={})",
-                        mouse.name(),
-                        protocol.name(),
-                        interface.vendor_id,
-                        interface.product_id,
-                        interface.usage_page,
-                        interface.usage,
-                        interface.interface_number
-                    )))?;
-                    let interface_path = interface.path.to_string_lossy().into_owned();
-                    let (known_indices, device_indices) =
-                        self.device_indices(&interface_path, protocol.device_indices())?;
-                    for device_index in device_indices {
-                        self.query_hid_device(
-                            &interface,
-                            protocol,
-                            &fallback_name,
-                            &interface_path,
-                            device_index,
-                            &known_indices,
-                        )?;
-                    }
-                }
-                Ok(None) => self.send(PollUpdate::Trace(format!(
-                    "HID discovery skipped an unsupported interface (VID=0x{:04x}, PID=0x{:04x}, usage_page={:?}, usage={:?}, interface={}): no supported HID protocol matched its interface metadata",
-                    interface.vendor_id,
-                    interface.product_id,
-                    interface.usage_page,
-                    interface.usage,
-                    interface.interface_number
-                )))?,
-                Err(error) => self.errors.push(format!(
-                    "Ambiguous HID backend match for {:04x}:{:04x}: {error}",
-                    interface.vendor_id, interface.product_id
-                )),
-            }
+    if total.readings > 0 {
+        if !total.errors.is_empty() {
+            sink(ProviderEvent::Warning(format!(
+                "Some battery readings failed: {}",
+                total.errors.join("; ")
+            )))
+            .map_err(|SinkClosed| RECEIVER_DISCONNECTED.to_owned())?;
         }
-        Ok(())
+        return Ok(());
     }
-
-    fn send(&self, update: PollUpdate) -> PollResult {
-        self.results
-            .send(update)
-            .map_err(|_| "device polling result receiver disconnected".to_owned())
+    if total.recognised == 0 && total.errors.is_empty() {
+        return Err("No readable battery found".to_owned());
     }
-}
-
-impl DeviceQuery<'_> {
-    fn device_indices(
-        &mut self,
-        interface_path: &str,
-        candidates: &[u8],
-    ) -> Result<(Vec<u8>, Vec<u8>), String> {
-        let mut known_indices = match self
-            .device_state
-            .as_ref()
-            .map(|state| state.known_device_indices(interface_path, candidates))
-        {
-            Some(Ok(indices)) => indices,
-            Some(Err(error)) => {
-                *self.device_state = None;
-                self.send(PollUpdate::Warning(format!(
-                    "Could not read discovery state; continuing with a full scan: {error}"
-                )))?;
-                Vec::new()
-            }
-            None => Vec::new(),
-        };
-        for device_index in self
-            .name_cache
-            .known_device_indices(interface_path, candidates)
-        {
-            if !known_indices.contains(&device_index) {
-                known_indices.push(device_index);
-            }
-        }
-
-        let device_indices = if !self.full_scan && !known_indices.is_empty() {
-            known_indices.clone()
-        } else {
-            match self
-                .device_state
-                .as_ref()
-                .map(|state| state.ordered_device_indices(interface_path, candidates))
-            {
-                Some(Ok(indices)) => indices,
-                Some(Err(error)) => {
-                    *self.device_state = None;
-                    self.send(PollUpdate::Warning(format!(
-                        "Could not read discovery state; continuing with a full scan: {error}"
-                    )))?;
-                    candidates.to_vec()
-                }
-                None => candidates.to_vec(),
-            }
-        };
-        Ok((known_indices, device_indices))
-    }
-
-    fn query_hid_device(
-        &mut self,
-        interface: &volty_hid::HidInterfaceInfo,
-        protocol: &dyn volty_hid::BatteryProtocol,
-        fallback_name: &str,
-        interface_path: &str,
-        device_index: u8,
-        known_indices: &[u8],
-    ) -> PollResult {
-        let identity = DeviceIdentity::Hid {
-            interface_path: interface_path.to_owned(),
-            device_index,
-        };
-        let cached_name = self.name_cache.get(&identity).map(str::to_owned);
-        let was_known = cached_name.is_some() || known_indices.contains(&device_index);
-        let reading = match cached_name {
-            Some(name) => protocol
-                .query_battery(interface, device_index)
-                .map(|battery| (battery, name, None, false)),
-            None => protocol
-                .query_device(interface, device_index)
-                .map(|device| {
-                    let volty_hid::ProtocolDeviceReading {
-                        name: queried_name,
-                        battery,
-                    } = device;
-                    let (name, name_error) =
-                        self.name_cache
-                            .resolve(identity.clone(), fallback_name, || {
-                                queried_name.map_err(|error| error.to_string())
-                            });
-                    (battery, name, name_error, true)
-                }),
-        };
-
-        match reading {
-            Ok((battery, name, name_error, name_was_queried)) => {
-                self.name_cache.remember_device(identity.clone());
-                let reading = DeviceReading {
-                    identity: identity.clone(),
-                    name: name.clone(),
-                    device_index: Some(device_index),
-                    battery,
-                    estimated_time_remaining: None,
-                    notification_error: None,
-                };
-                self.send(PollUpdate::Reading(reading))?;
-                self.reading_count += 1;
-                let state_error = self
-                    .device_state
-                    .as_mut()
-                    .and_then(|state| state.record(interface_path, device_index).err());
-                if let Some(error) = state_error {
-                    *self.device_state = None;
-                    self.send(PollUpdate::Warning(format!(
-                        "Could not update discovery state; continuing with full scans: {error}"
-                    )))?;
-                }
-                if name_was_queried {
-                    self.send(PollUpdate::DeviceName {
-                        identity,
-                        name,
-                        error: name_error,
-                    })?;
-                }
-            }
-            Err(error) => {
-                self.name_cache.forget(&identity);
-                let empty_discovery_slot = self.full_scan
-                    && !was_known
-                    && matches!(
-                        error.downcast_ref::<volty_hid::HidppError>(),
-                        Some(volty_hid::HidppError::Timeout)
-                    );
-                if empty_discovery_slot {
-                    self.send(PollUpdate::Trace(format!(
-                        "HID++ discovery address {device_index} did not respond"
-                    )))?;
-                } else {
-                    self.errors.push(format!(
-                        "{fallback_name} via {} (slot {device_index}): {error}",
-                        protocol.name()
-                    ));
-                }
-            }
-        }
-        Ok(())
-    }
-}
-impl DeviceQuery<'_> {
-    #[cfg(feature = "bluetooth")]
-    fn query_bluetooth_devices(&mut self) -> PollResult {
-        match volty_bluetooth::scan_battery_devices() {
-            Ok(scan) => {
-                self.send(PollUpdate::Trace(format!(
-                    "Bluetooth discovery examined {} device entries and found {} readable battery value(s) with {} warning(s)",
-                    scan.devices_examined,
-                    scan.readings.len(),
-                    scan.warnings.len()
-                )))?;
-                for event in scan.discovery_events {
-                    self.send(PollUpdate::Trace(format!("Bluetooth discovery: {event}")))?;
-                }
-                self.errors.extend(
-                    scan.warnings
-                        .into_iter()
-                        .map(|warning| format!("Bluetooth battery read: {warning}")),
-                );
-                for reading in scan.readings {
-                    let identity = DeviceIdentity::Bluetooth {
-                        device_id: reading.device_id,
-                    };
-                    self.send(PollUpdate::Reading(DeviceReading {
-                        identity,
-                        name: reading.name,
-                        device_index: None,
-                        battery: reading.battery,
-                        estimated_time_remaining: None,
-                        notification_error: None,
-                    }))?;
-                    self.reading_count += 1;
-                }
-            }
-            Err(error) => self.errors.push(format!("Bluetooth discovery: {error}")),
-        }
-        Ok(())
-    }
-
-    fn finish(self) -> PollResult {
-        if self.reading_count > 0 {
-            if !self.errors.is_empty() {
-                self.send(PollUpdate::Warning(format!(
-                    "Some battery readings failed: {}",
-                    self.errors.join("; ")
-                )))?;
-            }
-            return Ok(());
-        }
-        if self.supported_interfaces == 0 && self.errors.is_empty() {
-            return Err("No readable battery found".to_owned());
-        }
-        Err(if self.errors.is_empty() {
-            "No supported battery devices found".to_owned()
-        } else {
-            self.errors.join("; ")
-        })
-    }
+    Err(if total.errors.is_empty() {
+        "No supported battery devices found".to_owned()
+    } else {
+        total.errors.join("; ")
+    })
 }
 #[cfg(test)]
 mod tests {
@@ -453,27 +181,101 @@ mod tests {
         atomic::{AtomicUsize, Ordering},
         Arc,
     };
-    use volty_battery::{BatteryLevel, BatterySource, BatteryState, BatteryStatus};
-    fn test_reading() -> DeviceReading {
-        DeviceReading {
-            identity: DeviceIdentity::Hid {
-                interface_path: "test".to_owned(),
-                device_index: 1,
-            },
-            name: "Test device".to_owned(),
-            device_index: Some(1),
+    use volty_battery::{
+        BatteryLevel, BatteryState, BatteryStatus, DeviceId, DeviceLabel, SourceReading,
+    };
+
+    fn test_reading() -> SourceReading {
+        SourceReading {
+            id: DeviceId::new("hid:test#1"),
+            label: DeviceLabel::new("Test device").with_qualifier("slot 1"),
             battery: BatteryStatus {
                 level_percent: Some(20),
                 level: BatteryLevel::Low,
                 raw_level: 2,
                 state: BatteryState::Discharging,
                 raw_status: Some(0),
-                source: BatterySource::Unified,
+                source: "test",
             },
-            estimated_time_remaining: None,
-            notification_error: None,
         }
     }
+
+    struct FakeProvider {
+        readings: usize,
+        recognised: usize,
+        errors: Vec<String>,
+    }
+
+    impl BatteryProvider for FakeProvider {
+        fn poll(
+            &mut self,
+            _mode: ScanMode,
+            sink: &mut dyn FnMut(ProviderEvent) -> Result<(), SinkClosed>,
+        ) -> Result<ProviderPoll, SinkClosed> {
+            for _ in 0..self.readings {
+                sink(ProviderEvent::Reading(test_reading()))?;
+            }
+            Ok(ProviderPoll {
+                readings: self.readings,
+                recognised: self.recognised,
+                errors: self.errors.clone(),
+            })
+        }
+    }
+
+    fn fake(readings: usize, recognised: usize, errors: &[&str]) -> Box<dyn BatteryProvider> {
+        Box::new(FakeProvider {
+            readings,
+            recognised,
+            errors: errors.iter().map(|error| (*error).to_owned()).collect(),
+        })
+    }
+
+    #[test]
+    fn provider_results_are_aggregated_across_sources() {
+        let (results_tx, results_rx) = mpsc::channel();
+        let mut providers = vec![fake(0, 1, &["HID discovery: boom"]), fake(1, 1, &[])];
+
+        assert_eq!(query_providers(&results_tx, &mut providers, true), Ok(()));
+        let events: Vec<_> = results_rx.try_iter().collect();
+        assert!(matches!(
+            events.as_slice(),
+            [
+                PollUpdate::Event(ProviderEvent::Reading(_)),
+                PollUpdate::Event(ProviderEvent::Warning(message))
+            ] if message.contains("HID discovery: boom")
+        ));
+    }
+
+    #[test]
+    fn no_recognised_device_and_no_error_means_no_readable_battery() {
+        let (results_tx, _results_rx) = mpsc::channel();
+
+        assert_eq!(
+            query_providers(&results_tx, &mut [fake(0, 0, &[])], true),
+            Err("No readable battery found".to_owned())
+        );
+        assert_eq!(
+            query_providers(&results_tx, &mut [fake(0, 2, &[])], true),
+            Err("No supported battery devices found".to_owned())
+        );
+        assert_eq!(
+            query_providers(&results_tx, &mut [fake(0, 0, &["a", "b"])], true),
+            Err("a; b".to_owned())
+        );
+    }
+
+    #[test]
+    fn closed_receiver_stops_the_poll() {
+        let (results_tx, results_rx) = mpsc::channel();
+        drop(results_rx);
+
+        assert_eq!(
+            query_providers(&results_tx, &mut [fake(1, 1, &[])], true),
+            Err(RECEIVER_DISCONNECTED.to_owned())
+        );
+    }
+
     #[test]
     fn discovery_command_triggers_an_immediate_device_poll() {
         let (commands_tx, commands_rx) = mpsc::channel();
@@ -596,17 +398,16 @@ mod tests {
                 Duration::from_secs(60),
                 Duration::from_secs(60),
                 move |results, _| {
-                    assert!(results.send(PollUpdate::Reading(test_reading())).is_ok());
+                    assert!(results
+                        .send(PollUpdate::Event(ProviderEvent::Reading(test_reading())))
+                        .is_ok());
                     finish_query_rx.recv().unwrap();
                     assert!(results
-                        .send(PollUpdate::DeviceName {
-                            identity: DeviceIdentity::Hid {
-                                interface_path: "test".to_owned(),
-                                device_index: 1,
-                            },
-                            name: "Resolved name".to_owned(),
+                        .send(PollUpdate::Event(ProviderEvent::DeviceName {
+                            id: DeviceId::new("hid:test#1"),
+                            label: DeviceLabel::new("Resolved name"),
                             error: None,
-                        })
+                        }))
                         .is_ok());
                     Ok(())
                 },
@@ -615,12 +416,12 @@ mod tests {
 
         assert!(matches!(
             results_rx.recv_timeout(Duration::from_secs(5)).unwrap(),
-            PollUpdate::Reading(_)
+            PollUpdate::Event(ProviderEvent::Reading(_))
         ));
         finish_query_tx.send(()).unwrap();
         assert!(matches!(
             results_rx.recv_timeout(Duration::from_secs(5)).unwrap(),
-            PollUpdate::DeviceName { .. }
+            PollUpdate::Event(ProviderEvent::DeviceName { .. })
         ));
         assert!(matches!(
             results_rx.recv_timeout(Duration::from_secs(5)).unwrap(),

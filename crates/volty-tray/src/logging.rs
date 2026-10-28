@@ -11,6 +11,7 @@ const DEFAULT_MAX_FILE_SIZE: u64 = 5 * 1024 * 1024;
 
 pub struct FileLogger {
     file: Option<File>,
+    size: u64,
     path: PathBuf,
     level: LogLevel,
     max_file_size: u64,
@@ -46,9 +47,11 @@ impl FileLogger {
                 format!("could not open log file {}: {error}", path.display()),
             )
         })?;
+        let size = file.metadata()?.len();
 
         Ok(Self {
             file: Some(file),
+            size,
             path,
             level,
             max_file_size,
@@ -69,14 +72,8 @@ impl FileLogger {
             timestamp.subsec_millis(),
             level.as_str()
         );
-        let current_size = self
-            .file
-            .as_ref()
-            .ok_or_else(|| io::Error::other("log file is unavailable"))?
-            .metadata()?
-            .len();
-        if current_size > 0 && current_size.saturating_add(entry.len() as u64) > self.max_file_size
-        {
+        let entry_len = entry.len() as u64;
+        if self.size > 0 && self.size.saturating_add(entry_len) > self.max_file_size {
             self.rotate()?;
         }
 
@@ -88,13 +85,8 @@ impl FileLogger {
             file.write_all(entry.as_bytes())?;
             file.flush()?;
         }
-        let written_size = self
-            .file
-            .as_ref()
-            .ok_or_else(|| io::Error::other("log file is unavailable"))?
-            .metadata()?
-            .len();
-        if written_size > self.max_file_size {
+        self.size = self.size.saturating_add(entry_len);
+        if self.size > self.max_file_size {
             self.rotate()?;
         }
         Ok(())
@@ -122,6 +114,7 @@ impl FileLogger {
 
         match open_append(&self.path) {
             Ok(file) => {
+                self.size = 0;
                 self.file = Some(file);
                 Ok(())
             }
@@ -132,6 +125,7 @@ impl FileLogger {
     fn reopen_after_rotation_failure(&mut self, error: io::Error) -> io::Error {
         match open_append(&self.path) {
             Ok(file) => {
+                self.size = file.metadata().map_or(0, |metadata| metadata.len());
                 self.file = Some(file);
                 error
             }

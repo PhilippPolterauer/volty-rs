@@ -91,10 +91,7 @@ pub(super) fn scan_windows_battery_property(
                 scan.readings.push(BluetoothBatteryReading {
                     device_id: device_id.to_string_lossy(),
                     name: name.clone(),
-                    battery: battery_status(
-                        level,
-                        volty_battery::BatterySource::BluetoothDeviceProperty,
-                    ),
+                    battery: battery_status(level, crate::SOURCE_DEVICE_PROPERTY),
                 });
                 Some(level)
             }
@@ -177,10 +174,7 @@ fn scan_hfp_service_battery_property(
                 scan.readings.push(BluetoothBatteryReading {
                     device_id: device_id.to_string_lossy(),
                     name: name.to_owned(),
-                    battery: battery_status(
-                        level,
-                        volty_battery::BatterySource::BluetoothDeviceProperty,
-                    ),
+                    battery: battery_status(level, crate::SOURCE_DEVICE_PROPERTY),
                 });
             }
             Ok(None) => {}

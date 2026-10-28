@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Breaking:** introduced the `BatteryProvider` trait in `volty-battery`. A provider yields readings keyed by a stable `DeviceId` plus a `DeviceLabel` and `BatteryStatus`; the tray polls a list of providers (`HidProvider`, and `BluetoothProvider` with the `bluetooth` feature) instead of hard-coding the HID query and a Bluetooth branch.
+- **Breaking:** `BatteryStatus.source` is now a plain `&'static str` label set by each backend; the transport-specific `BatterySource` enum is removed from `volty-battery`.
+- **Breaking:** renamed the HID catalog vocabulary to be device-neutral: `MouseModel` → `HidBatteryDevice`, `SUPPORTED_MICE` → `SUPPORTED_HID_DEVICES`, `resolve_mouse_model` → `resolve_hid_device`, `AmbiguousMouseModel` → `AmbiguousHidDevice`, `LogitechHidppMouse` → `LogitechHidppDevice`.
+- Extracted a `DeviceSession` from the tray `App`: the poller, latest/pending readings, discovered devices and ETA state now live behind one service that the UI consumes.
+- `volty-hid` command/profile code (`volty hid` diagnostics, TOML profiles) is behind the new `profile` feature, so protocol-only consumers no longer pull in `toml`. The tray enables it.
+- Documented the provider model, stable identity, the Bluetooth promotion criterion (one trustworthy Windows reading with a stable id) and the Windows-only platform scope in the README and `docs/`.
+- Reuse one HID context for device opens instead of re-enumerating all HID devices per query.
+- Persist recent-device order once per session and run SQLite in WAL mode, removing a synced write per poll.
+- Skip redundant tray icon, tooltip and menu updates when nothing changed.
+- Track log file size in memory instead of querying file metadata on every log line.
+
+### Fixed
+
+- HID device identity no longer depends on the Windows interface path. Ids are now `hid:{stable key}#{slot}` where the key is derived from VID/PID, interface number, usage page/usage and a hash of the serial number (identical twins are split deterministically). The slot cache, monitor flags and low-battery alert de-duplication therefore survive USB re-enumeration instead of splitting.
+
+### Migration
+
+- Local state schema version 2: the `recent_devices` table is keyed by `interface_key` instead of `interface_path`. On first start the old path-keyed table is dropped and existing `hid:` entries are removed from monitored-device flags and notified discharge cycles, so per-device monitor choices and alert latches for HID devices reset once. Bluetooth ids are unchanged.
+
 ## [0.2.1] - 2026-10-28
 
 ### Changed

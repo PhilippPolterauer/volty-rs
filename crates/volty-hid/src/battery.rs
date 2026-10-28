@@ -1,7 +1,10 @@
 use crate::logitech_hidpp::{
     HidppError, HidppFrame, FUNCTION_GET_BATTERY_STATUS, FUNCTION_GET_UNIFIED_BATTERY_INFO,
 };
-pub use volty_battery::{BatteryLevel, BatterySource, BatteryState, BatteryStatus};
+pub use volty_battery::{BatteryLevel, BatteryState, BatteryStatus};
+
+pub const SOURCE_UNIFIED_BATTERY: &str = "HID++ Unified Battery";
+pub const SOURCE_BATTERY_STATUS: &str = "HID++ Battery Status";
 
 /// Unified Battery feature capabilities.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -68,7 +71,7 @@ pub fn parse_unified_battery(
         raw_level,
         state,
         raw_status: Some(raw_status),
-        source: BatterySource::Unified,
+        source: SOURCE_UNIFIED_BATTERY,
     })
 }
 
@@ -97,7 +100,7 @@ pub fn parse_legacy_battery_status(frame: &HidppFrame) -> Result<BatteryStatus, 
         raw_level,
         state: parse_charge_status(raw_status),
         raw_status: Some(raw_status),
-        source: BatterySource::LegacyBatteryStatus,
+        source: SOURCE_BATTERY_STATUS,
     })
 }
 

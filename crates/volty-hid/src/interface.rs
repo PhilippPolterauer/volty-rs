@@ -15,7 +15,78 @@ pub struct HidInterfaceInfo {
     pub bus_type: String,
     pub manufacturer_string: Option<String>,
     pub product_string: Option<String>,
+    pub serial_number: Option<String>,
     pub path: CString,
+}
+
+impl HidInterfaceInfo {
+    /// Path-independent identity: the same physical interface keeps this value
+    /// when Windows re-enumerates it under a different device path. The serial
+    /// number, when present, is hashed so it never appears in logs or state.
+    fn identity_base(&self) -> String {
+        let serial = self
+            .serial_number
+            .as_deref()
+            .map(str::trim)
+            .filter(|serial| !serial.is_empty())
+            .map_or_else(
+                || "-".to_owned(),
+                |serial| format!("{:016x}", fnv1a(serial)),
+            );
+        format!(
+            "{:04x}:{:04x}:{}:{}:{}:{serial}",
+            self.vendor_id,
+            self.product_id,
+            self.interface_number,
+            self.usage_page
+                .map_or_else(|| "-".to_owned(), |value| format!("{value:04x}")),
+            self.usage
+                .map_or_else(|| "-".to_owned(), |value| format!("{value:04x}")),
+        )
+    }
+}
+
+fn fnv1a(text: &str) -> u64 {
+    text.bytes().fold(0xcbf2_9ce4_8422_2325, |hash, byte| {
+        (hash ^ u64::from(byte)).wrapping_mul(0x0100_0000_01b3)
+    })
+}
+
+/// Stable, path-independent keys for an inventory, in the same order as the input.
+///
+/// Interfaces that are indistinguishable by metadata (identical devices without
+/// a serial number) are told apart by their order within the sorted paths; the
+/// first of each group keeps the bare key so plugging in a twin later does not
+/// rename the original.
+pub fn stable_interface_keys(interfaces: &[HidInterfaceInfo]) -> Vec<String> {
+    let bases: Vec<String> = interfaces
+        .iter()
+        .map(HidInterfaceInfo::identity_base)
+        .collect();
+    let mut order: Vec<usize> = (0..interfaces.len()).collect();
+    order.sort_by(|&left, &right| {
+        bases[left]
+            .cmp(&bases[right])
+            .then_with(|| interfaces[left].path.cmp(&interfaces[right].path))
+    });
+    let mut keys = vec![String::new(); interfaces.len()];
+    let mut previous_base: Option<&str> = None;
+    let mut ordinal = 0;
+    for index in order {
+        let base = bases[index].as_str();
+        ordinal = if previous_base == Some(base) {
+            ordinal + 1
+        } else {
+            0
+        };
+        previous_base = Some(base);
+        keys[index] = if ordinal == 0 {
+            base.to_owned()
+        } else {
+            format!("{base}~{ordinal}")
+        };
+    }
+    keys
 }
 
 impl fmt::Debug for HidInterfaceInfo {
@@ -30,6 +101,10 @@ impl fmt::Debug for HidInterfaceInfo {
             .field("bus_type", &self.bus_type)
             .field("manufacturer_string", &self.manufacturer_string)
             .field("product_string", &self.product_string)
+            .field(
+                "serial_number",
+                &self.serial_number.as_ref().map(|_| "<redacted>"),
+            )
             .field("path", &"<redacted>")
             .finish()
     }

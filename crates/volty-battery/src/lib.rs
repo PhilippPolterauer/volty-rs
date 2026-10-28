@@ -1,3 +1,13 @@
+//! Transport-neutral battery readings and the provider contract that backends
+//! implement. Nothing in this crate knows about HID++, Bluetooth, or Windows.
+
+mod provider;
+
+pub use provider::{
+    BatteryProvider, DeviceId, DeviceLabel, ProviderEvent, ProviderPoll, ScanMode, SinkClosed,
+    SourceReading,
+};
+
 /// The known charging/discharging condition, or `Unknown` if unavailable.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum BatteryState {
@@ -22,15 +32,6 @@ pub enum BatteryLevel {
     Full,
 }
 
-/// Origin of a parsed battery status.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum BatterySource {
-    Unified,
-    LegacyBatteryStatus,
-    BluetoothGatt,
-    BluetoothDeviceProperty,
-}
-
 /// Normalized battery reading. Unreported values remain unavailable.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct BatteryStatus {
@@ -43,5 +44,7 @@ pub struct BatteryStatus {
     pub state: BatteryState,
     /// Raw state byte, when the source reports one.
     pub raw_status: Option<u8>,
-    pub source: BatterySource,
+    /// Human-readable description of where the reading came from, chosen by the
+    /// backend that produced it (for example "HID++ Unified Battery").
+    pub source: &'static str,
 }

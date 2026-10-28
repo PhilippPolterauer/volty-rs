@@ -25,7 +25,7 @@ winres = "0.1"
 [target.'cfg(windows)'.dependencies]
 volty-battery.workspace = true
 volty-bluetooth = { path = "../volty-bluetooth", optional = true }
-volty-hid = { path = "../volty-hid", features = ["hidapi"] }
+volty-hid = { path = "../volty-hid", features = ["hidapi", "profile"] }
 tray-icon = "0.14"
 image = { version = "0.25", default-features = false, features = ["png"] }
 notify-rust = { version = "4.11", default-features = false }

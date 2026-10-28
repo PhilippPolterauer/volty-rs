@@ -1,10 +1,10 @@
-use super::{DeviceIdentity, DeviceReading};
+use super::DeviceReading;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::time::{Duration, Instant};
-use volty_battery::{BatteryState, BatteryStatus};
+use volty_battery::{BatteryState, BatteryStatus, DeviceId};
 #[derive(Default)]
 pub(super) struct BatteryEtaEstimator {
-    samples: HashMap<DeviceIdentity, VecDeque<BatteryEtaSample>>,
+    samples: HashMap<DeviceId, VecDeque<BatteryEtaSample>>,
 }
 #[derive(Clone, Copy)]
 struct BatteryEtaSample {
@@ -14,7 +14,7 @@ struct BatteryEtaSample {
 impl BatteryEtaEstimator {
     pub(super) fn estimate(
         &mut self,
-        identity: &DeviceIdentity,
+        identity: &DeviceId,
         battery: &BatteryStatus,
         window: Duration,
     ) -> Option<Duration> {
@@ -23,7 +23,7 @@ impl BatteryEtaEstimator {
 
     pub(super) fn estimate_at(
         &mut self,
-        identity: &DeviceIdentity,
+        identity: &DeviceId,
         battery: &BatteryStatus,
         measured_at: Instant,
         window: Duration,
@@ -78,17 +78,13 @@ impl BatteryEtaEstimator {
         Some(Duration::from_secs_f64(seconds_remaining))
     }
 
-    pub(super) fn retain_devices(&mut self, devices: &HashSet<DeviceIdentity>) {
+    pub(super) fn retain_devices(&mut self, devices: &HashSet<DeviceId>) {
         self.samples
             .retain(|identity, _| devices.contains(identity));
     }
 
-    pub(super) fn remove(&mut self, identity: &DeviceIdentity) {
+    pub(super) fn remove(&mut self, identity: &DeviceId) {
         self.samples.remove(identity);
-    }
-
-    pub(super) fn clear(&mut self) {
-        self.samples.clear();
     }
 }
 pub(super) fn battery_eta_label(reading: &DeviceReading) -> Option<String> {
@@ -128,9 +124,8 @@ pub(super) fn format_battery_eta(eta: Duration) -> String {
 }
 #[cfg(test)]
 mod tests {
-    use super::super::DeviceIdentity;
     use super::*;
-    use volty_battery::{BatteryLevel, BatterySource};
+    use volty_battery::BatteryLevel;
     fn eta_battery(level_percent: u8, state: BatteryState) -> BatteryStatus {
         BatteryStatus {
             level_percent: Some(level_percent),
@@ -138,16 +133,13 @@ mod tests {
             raw_level: level_percent,
             state,
             raw_status: None,
-            source: BatterySource::Unified,
+            source: "test",
         }
     }
     #[test]
     fn battery_eta_projects_remaining_time_after_the_configured_window() {
         let mut estimator = BatteryEtaEstimator::default();
-        let identity = DeviceIdentity::Hid {
-            interface_path: "receiver".to_owned(),
-            device_index: 1,
-        };
+        let identity = DeviceId::new("hid:receiver#1");
         let start = Instant::now();
         let window = Duration::from_secs(10 * 60);
 
@@ -182,10 +174,7 @@ mod tests {
     #[test]
     fn battery_eta_resets_during_charging_and_after_a_level_increase() {
         let mut estimator = BatteryEtaEstimator::default();
-        let identity = DeviceIdentity::Hid {
-            interface_path: "receiver".to_owned(),
-            device_index: 1,
-        };
+        let identity = DeviceId::new("hid:receiver#1");
         let start = Instant::now();
         let window = Duration::from_secs(10 * 60);
 

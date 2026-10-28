@@ -10,11 +10,12 @@ rust-version.workspace = true
 [features]
 default = []
 hidapi = ["dep:hidapi"]
+profile = ["dep:toml"]
 
 [dependencies]
 hidapi = { version = "2.6", optional = true }
 volty-battery.workspace = true
-toml.workspace = true
+toml = { workspace = true, optional = true }
 
 [lints]
 workspace = true

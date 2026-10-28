@@ -15,6 +15,8 @@ mod native_ui;
 #[cfg(windows)]
 mod notify;
 #[cfg(windows)]
+mod provider;
+#[cfg(windows)]
 mod report;
 #[cfg(windows)]
 mod state;

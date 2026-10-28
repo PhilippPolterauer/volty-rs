@@ -69,14 +69,13 @@ fn merge_scan(target: &mut BluetoothScan, mut source: BluetoothScan) {
 #[cfg(test)]
 mod tests {
     use super::merge_scan;
-    use crate::{battery_status, BluetoothBatteryReading, BluetoothScan};
-    use volty_battery::BatterySource;
+    use crate::{battery_status, BluetoothBatteryReading, BluetoothScan, SOURCE_GATT};
 
     fn reading(device_id: &str, level: u8) -> BluetoothBatteryReading {
         BluetoothBatteryReading {
             device_id: device_id.to_owned(),
             name: format!("device-{device_id}"),
-            battery: battery_status(level, BatterySource::BluetoothGatt),
+            battery: battery_status(level, SOURCE_GATT),
         }
     }
 

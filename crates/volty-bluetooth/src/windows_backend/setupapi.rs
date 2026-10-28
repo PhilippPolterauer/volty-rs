@@ -184,10 +184,7 @@ fn inspect_bluetooth_device(
             scan.readings.push(BluetoothBatteryReading {
                 device_id: instance_id,
                 name,
-                battery: battery_status(
-                    level,
-                    volty_battery::BatterySource::BluetoothDeviceProperty,
-                ),
+                battery: battery_status(level, crate::SOURCE_DEVICE_PROPERTY),
             });
         }
         Ok(None) => scan.discovery_events.push(format!(

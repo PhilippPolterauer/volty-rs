@@ -44,6 +44,7 @@ fn interface_selectors_match_explicit_metadata_without_debugging_paths() {
         bus_type: "Usb".to_owned(),
         manufacturer_string: Some("Logitech".to_owned()),
         product_string: Some("Receiver".to_owned()),
+        serial_number: None,
         path: CString::new("private-hid-path").unwrap(),
     };
     let selector = HidInterfaceSelector {
@@ -92,6 +93,40 @@ fn interface_selectors_match_explicit_metadata_without_debugging_paths() {
         ),
         Err(HidppError::NoMatchingInterface { .. })
     ));
+}
+
+#[test]
+fn stable_interface_keys_survive_path_changes_and_split_twins() {
+    let interface = |path: &str, serial: Option<&str>| HidInterfaceInfo {
+        vendor_id: 0x046d,
+        product_id: 0xc547,
+        release_number: 1,
+        usage_page: Some(0xff00),
+        usage: Some(2),
+        interface_number: 2,
+        bus_type: "Usb".to_owned(),
+        manufacturer_string: None,
+        product_string: None,
+        serial_number: serial.map(str::to_owned),
+        path: CString::new(path).unwrap(),
+    };
+
+    let before = stable_interface_keys(&[interface("path-a", None)]);
+    let after = stable_interface_keys(&[interface("path-b", None)]);
+    assert_eq!(before, after);
+
+    let twins = stable_interface_keys(&[interface("path-z", None), interface("path-y", None)]);
+    assert_ne!(twins[0], twins[1]);
+    assert_eq!(twins[1], before[0]);
+    assert!(twins[0].ends_with("~1"));
+
+    let with_serial = stable_interface_keys(&[interface("path-a", Some("SN-123"))]);
+    assert_ne!(with_serial, before);
+    assert!(!with_serial[0].contains("SN-123"));
+    assert_eq!(
+        with_serial,
+        stable_interface_keys(&[interface("path-moved", Some("SN-123"))])
+    );
 }
 
 #[test]
@@ -390,7 +425,7 @@ fn unified_battery_info_is_normalized() {
     assert_eq!(battery.level_percent, Some(87));
     assert_eq!(battery.level, BatteryLevel::Good);
     assert_eq!(battery.state, BatteryState::Charging);
-    assert_eq!(battery.source, BatterySource::Unified);
+    assert_eq!(battery.source, SOURCE_UNIFIED_BATTERY);
 }
 
 #[test]
@@ -400,7 +435,7 @@ fn legacy_battery_status_is_normalized() {
     assert_eq!(battery.level_percent, None);
     assert_eq!(battery.raw_level, 42);
     assert_eq!(battery.state, BatteryState::Charged);
-    assert_eq!(battery.source, BatterySource::LegacyBatteryStatus);
+    assert_eq!(battery.source, SOURCE_BATTERY_STATUS);
 }
 
 #[test]

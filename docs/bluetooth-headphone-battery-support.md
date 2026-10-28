@@ -52,26 +52,36 @@ service need a separately implemented protocol.
 ## Current architecture and integration boundary
 
 The HID path enumerates interfaces, resolves each against
-`SUPPORTED_MICE`, and calls a `BatteryProtocol` using a `HidInterfaceInfo` and
+`SUPPORTED_HID_DEVICES`, and calls a `BatteryProtocol` using a `HidInterfaceInfo` and
 device index. That contract is specifically for HID; a Bluetooth GATT device
-should not be forced into it. See [`protocol.rs`](../crates/volty-hid/src/protocol.rs)
-and the polling flow in [`app.rs`](../crates/volty-tray/src/app.rs).
+should not be forced into it. Both sources meet at the `BatteryProvider` trait
+in `volty-battery`, which yields a stable `DeviceId`, a `DeviceLabel` and a
+`BatteryStatus`. See [`protocol.rs`](../crates/volty-hid/src/protocol.rs),
+[`provider.rs`](../crates/volty-battery/src/provider.rs) and the polling flow
+in [`app.rs`](../crates/volty-tray/src/app.rs).
 
 The tray accepts multiple device rows, computes the lowest reported percentage
 for its icon, and sends per-device low-battery notifications.
 
 The implemented structure keeps the backends separate:
 
-1. Keep `BatteryProtocol`, `MouseModel`, and `SUPPORTED_MICE` HID-specific.
-2. `volty-battery` owns the protocol-neutral normalized reading types.
-   `volty-hid` retains HID++ decoding and returns the shared model.
+1. Keep `BatteryProtocol`, `HidBatteryDevice`, and `SUPPORTED_HID_DEVICES` HID-specific.
+2. `volty-battery` owns the protocol-neutral normalized reading types and the
+   provider trait. `volty-hid` retains HID++ decoding and returns the shared
+   model.
 3. `volty-bluetooth` reads the Windows battery-life property and owns GATT
-   discovery and battery reads. Keep Windows Bluetooth transport out of
-   `volty-hid` and tray rendering. `hidapi` only handles HID and is not a GATT
-   transport.
-4. The tray polling worker queries both backends and merges successful
-   readings. Device identity includes the source, so HID and Bluetooth
-   notification state cannot collide.
+   discovery and battery reads, exposed as `BluetoothProvider`. Keep Windows
+   Bluetooth transport out of `volty-hid` and tray rendering. `hidapi` only
+   handles HID and is not a GATT transport.
+4. The tray polling worker polls every provider and merges successful
+   readings. Device ids carry the source prefix (`hid:`, `bluetooth:`), so HID
+   and Bluetooth notification state cannot collide.
+
+Bluetooth stays behind the `bluetooth` feature. Its three probes (battery-life
+property, SetupAPI, paired GATT) are merged by opaque device id under a shared
+budget; that is a discovery strategy, not a protocol. It should only become a
+default peer of HID++ once one Windows reading is trustworthy on its own and
+produces a stable device id.
 
 ## Runtime behavior
 

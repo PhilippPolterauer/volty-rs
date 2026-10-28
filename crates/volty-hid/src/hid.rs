@@ -1,6 +1,7 @@
 use crate::logitech_hidpp::{transact_io, ReportIo};
 use crate::*;
 use hidapi::{DeviceInfo, HidApi, HidDevice};
+use std::sync::{Mutex, PoisonError};
 use std::time::Duration;
 
 /// Generic metadata for a HID interface, excluding its path and serial number.
@@ -50,18 +51,42 @@ impl HidInterfaceInfo {
             bus_type: format!("{:?}", info.bus_type()),
             manufacturer_string: info.manufacturer_string().map(str::to_owned),
             product_string: info.product_string().map(str::to_owned),
+            serial_number: info.serial_number().map(str::to_owned),
             path: info.path().to_owned(),
         }
     }
 }
 
+static SHARED_API: Mutex<Option<HidApi>> = Mutex::new(None);
+
+/// Runs `f` against a process-wide `HidApi`, so opening a device by path does not
+/// repeat a full HID enumeration. `refresh` re-enumerates an existing context.
+fn with_shared_api<T>(
+    refresh: bool,
+    f: impl FnOnce(&HidApi) -> Result<T, HidppError>,
+) -> Result<T, HidppError> {
+    let mut guard = SHARED_API.lock().unwrap_or_else(PoisonError::into_inner);
+    match guard.as_mut() {
+        Some(api) if refresh => api.refresh_devices().map_err(HidppError::HidApi)?,
+        Some(_) => {}
+        None => *guard = Some(HidApi::new().map_err(HidppError::HidApi)?),
+    }
+    match guard.as_ref() {
+        Some(api) => f(api),
+        None => Err(HidppError::UnexpectedResponse(
+            "shared HID context is unavailable",
+        )),
+    }
+}
+
 /// Enumerate all visible HID interfaces in deterministic order.
 pub fn enumerate_hid_interfaces() -> Result<Vec<HidInterfaceInfo>, HidppError> {
-    let api = HidApi::new().map_err(HidppError::HidApi)?;
-    let mut interfaces: Vec<_> = api
-        .device_list()
-        .map(HidInterfaceInfo::from_hidapi)
-        .collect();
+    let mut interfaces: Vec<_> = with_shared_api(true, |api| {
+        Ok(api
+            .device_list()
+            .map(HidInterfaceInfo::from_hidapi)
+            .collect())
+    })?;
     interfaces.sort_by(|left, right| {
         (
             left.vendor_id,
@@ -204,8 +229,9 @@ pub(crate) fn query_device_interface(
 }
 
 fn open_hidpp_session(info: &HidInterfaceInfo) -> Result<HidppSession, HidppError> {
-    let api = HidApi::new().map_err(HidppError::HidApi)?;
-    let device = api.open_path(&info.path).map_err(HidppError::HidApi)?;
+    let device = with_shared_api(false, |api| {
+        api.open_path(&info.path).map_err(HidppError::HidApi)
+    })?;
     Ok(HidppSession {
         device,
         info: info.clone(),

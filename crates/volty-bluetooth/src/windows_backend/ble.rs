@@ -119,10 +119,7 @@ fn read_battery(
     let Some(level) = read_battery_level(&device, budget)? else {
         return Ok(None);
     };
-    Ok(Some(battery_status(
-        level,
-        volty_battery::BatterySource::BluetoothGatt,
-    )))
+    Ok(Some(battery_status(level, crate::SOURCE_GATT)))
 }
 
 fn read_battery_level(

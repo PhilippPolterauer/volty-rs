@@ -1,35 +1,32 @@
 mod battery_eta;
-mod device_cache;
 mod device_ui;
 mod labels;
 mod notifications;
 mod poll;
+mod session;
 mod startup;
 
-use battery_eta::BatteryEtaEstimator;
 use device_ui::{
-    apply_poll_result, is_device_monitored, retain_monitored_readings,
-    update_monitored_device_menu, update_tray_devices, update_visible_devices,
+    apply_poll_result, is_device_monitored, update_monitored_device_menu, update_tray_devices,
+    update_visible_devices,
 };
-use labels::{
-    append_config_error, battery_is_full, battery_source_label, battery_status_label,
-    format_device_name,
-};
+use labels::{append_config_error, battery_is_full, battery_status_label};
 use notifications::{process_device_reading, DeviceNotifications};
-use poll::{request_device_discovery, spawn_poll_worker, PollCommand, PollUpdate};
+use poll::PollUpdate;
+use session::DeviceSession;
 use startup::{
     load_startup_state, open_configuration, open_log_file, process_windows_messages,
     remove_reset_files, toggle_start_on_boot, watch_config_file, ConfigWatch,
 };
 use std::{
-    collections::{BTreeMap, HashMap, HashSet, VecDeque},
+    collections::{BTreeMap, VecDeque},
     error::Error,
     io,
-    sync::mpsc::{self, Receiver, TryRecvError},
+    sync::mpsc::TryRecvError,
     thread,
     time::{Duration, Instant},
 };
-use volty_battery::BatteryStatus;
+use volty_battery::{BatteryStatus, DeviceId, DeviceLabel, ProviderEvent, SourceReading};
 
 use crate::{
     about::show_about_window,
@@ -48,43 +45,11 @@ const MAX_DIAGNOSTIC_LOG_ENTRIES: usize = 200;
 
 #[derive(Clone)]
 struct DeviceReading {
-    identity: DeviceIdentity,
-    name: String,
-    device_index: Option<u8>,
+    id: DeviceId,
+    label: DeviceLabel,
     battery: BatteryStatus,
     estimated_time_remaining: Option<Duration>,
     notification_error: Option<String>,
-}
-
-#[derive(Clone, Eq, Hash, PartialEq)]
-enum DeviceIdentity {
-    Hid {
-        interface_path: String,
-        device_index: u8,
-    },
-    #[cfg(feature = "bluetooth")]
-    Bluetooth { device_id: String },
-}
-
-impl DeviceIdentity {
-    fn config_id(&self) -> String {
-        match self {
-            Self::Hid {
-                interface_path,
-                device_index,
-            } => format!("hid:{device_index}:{interface_path}"),
-            #[cfg(feature = "bluetooth")]
-            Self::Bluetooth { device_id } => format!("bluetooth:{device_id}"),
-        }
-    }
-
-    fn display_name(&self, name: &str) -> String {
-        match self {
-            Self::Hid { device_index, .. } => format_device_name(name, Some(*device_index)),
-            #[cfg(feature = "bluetooth")]
-            Self::Bluetooth { .. } => name.to_owned(),
-        }
-    }
 }
 
 struct App {
@@ -98,16 +63,8 @@ struct App {
     active_config: AppConfig,
     notification_config_error: Option<String>,
     notifications: DeviceNotifications,
-    commands: mpsc::Sender<PollCommand>,
-    results: Receiver<PollUpdate>,
-    poller: Option<thread::JoinHandle<()>>,
+    session: DeviceSession,
     config_reload_due: Option<Instant>,
-    pending_readings: Vec<DeviceReading>,
-    latest_readings: HashMap<DeviceIdentity, DeviceReading>,
-    battery_eta_estimator: BatteryEtaEstimator,
-    discovered_devices: HashMap<DeviceIdentity, String>,
-    readings_seen_this_poll: HashSet<DeviceIdentity>,
-    poll_had_warning: bool,
 }
 
 pub fn run() -> Result<(), Box<dyn Error>> {
@@ -175,7 +132,7 @@ impl App {
                 &format!("Could not clear notification cycles for unmonitored devices: {error}"),
             )?;
         }
-        let (commands, results, poller) = spawn_poll_worker(
+        let session = DeviceSession::start(
             startup.active_config,
             &mut diagnostic_log,
             &mut file_logger,
@@ -193,16 +150,8 @@ impl App {
             active_config: startup.active_config,
             notification_config_error: startup.notification_config_error,
             notifications,
-            commands,
-            results,
-            poller: Some(poller),
+            session,
             config_reload_due: None,
-            pending_readings: Vec::new(),
-            latest_readings: HashMap::new(),
-            battery_eta_estimator: BatteryEtaEstimator::default(),
-            discovered_devices: HashMap::new(),
-            readings_seen_this_poll: HashSet::new(),
-            poll_had_warning: false,
         })
     }
 
@@ -269,7 +218,7 @@ impl App {
             TrayAction::ResetVolty => self.reset_volty()?,
             TrayAction::Quit => {
                 self.record_event(LogLevel::Info, "Volty shutting down")?;
-                let _ = self.commands.send(PollCommand::Quit);
+                self.session.request_quit();
                 return Ok(false);
             }
         }
@@ -284,7 +233,7 @@ impl App {
         if self.reload_notification_config()? {
             self.refresh_visible_devices()?;
         }
-        if self.commands.send(PollCommand::Discover).is_err() {
+        if self.session.discover().is_err() {
             self.report_error("Discovery error", "device discovery poller has stopped")?;
         }
         Ok(())
@@ -370,7 +319,7 @@ impl App {
             Ok(()) => {
                 self.monitored_devices
                     .insert(identity.to_owned(), monitored);
-                let refresh_failed = request_device_discovery(&self.commands, monitored).is_err();
+                let refresh_failed = self.session.discover_if_monitored(monitored).is_err();
                 self.notifications
                     .retain_monitored_devices(&self.monitored_devices);
                 if let Err(error) = self
@@ -380,10 +329,10 @@ impl App {
                     self.report_error("Notification state error", &error.to_string())?;
                 }
                 let device_name = self
-                    .discovered_devices
-                    .iter()
-                    .find(|(device, _)| device.config_id() == identity)
-                    .map_or_else(|| "device".to_owned(), |(_, name)| name.clone());
+                    .session
+                    .device_name(identity)
+                    .unwrap_or("device")
+                    .to_owned();
                 self.record_event(
                     LogLevel::Info,
                     &format!(
@@ -391,11 +340,7 @@ impl App {
                         if monitored { "Enabled" } else { "Disabled" }
                     ),
                 )?;
-                retain_monitored_readings(
-                    &mut self.latest_readings,
-                    &mut self.pending_readings,
-                    &self.monitored_devices,
-                );
+                self.session.retain_monitored(&self.monitored_devices);
                 self.refresh_visible_devices()?;
                 if refresh_failed {
                     self.report_error("Discovery error", "device discovery poller has stopped")?;
@@ -430,12 +375,7 @@ impl App {
             Ok(enabled) => self.tray.set_start_on_boot_checked(enabled),
             Err(error) => startup_reset_errors.push(error.to_string()),
         }
-        let _ = self.commands.send(PollCommand::Quit);
-        if let Some(poller) = self.poller.take() {
-            poller
-                .join()
-                .map_err(|_| io::Error::other("device polling worker panicked during reset"))?;
-        }
+        self.session.shutdown("during reset")?;
         drop(self.monitor_state.take());
         remove_reset_files(&configuration_file, &local_state_file)?;
         self.diagnostic_log.clear();
@@ -476,12 +416,6 @@ impl App {
             )?;
         }
 
-        self.pending_readings.clear();
-        self.latest_readings.clear();
-        self.battery_eta_estimator.clear();
-        self.discovered_devices.clear();
-        self.readings_seen_this_poll.clear();
-        self.poll_had_warning = false;
         self.config_reload_due = None;
         self.tray
             .set_battery_color_map(self.active_config.battery_color_map)?;
@@ -492,15 +426,12 @@ impl App {
         self.tray.reset_status(&reset_status)?;
         self.tray.update_monitored_devices(&[])?;
 
-        let (commands, results, poller) = spawn_poll_worker(
+        self.session.restart(
             self.active_config,
             &mut self.diagnostic_log,
             &mut self.file_logger,
             self.started,
         )?;
-        self.commands = commands;
-        self.results = results;
-        self.poller = Some(poller);
         self.record_event(
             LogLevel::Info,
             "Volty reset completed; fresh configuration and local state are active",
@@ -544,7 +475,7 @@ impl App {
         self.config_reload_due = None;
         if self.reload_notification_config()? {
             self.refresh_visible_devices()?;
-            if self.commands.send(PollCommand::Discover).is_err() {
+            if self.session.discover().is_err() {
                 self.report_error("Discovery error", "device discovery poller has stopped")?;
             }
         }
@@ -573,11 +504,11 @@ impl App {
             || config.retry_interval_seconds != self.active_config.retry_interval_seconds;
         if intervals_changed
             && self
-                .commands
-                .send(PollCommand::UpdateIntervals {
-                    poll: Duration::from_secs(config.poll_interval_seconds),
-                    retry: Duration::from_secs(config.retry_interval_seconds),
-                })
+                .session
+                .update_intervals(
+                    Duration::from_secs(config.poll_interval_seconds),
+                    Duration::from_secs(config.retry_interval_seconds),
+                )
                 .is_err()
         {
             self.report_error(
@@ -606,14 +537,10 @@ impl App {
     }
 
     fn refresh_visible_devices(&mut self) -> io::Result<()> {
-        retain_monitored_readings(
-            &mut self.latest_readings,
-            &mut self.pending_readings,
-            &self.monitored_devices,
-        );
+        self.session.retain_monitored(&self.monitored_devices);
         update_monitored_device_menu(
             &mut self.tray,
-            &self.discovered_devices,
+            &self.session.discovered_devices,
             &self.monitored_devices,
             &mut self.diagnostic_log,
             &mut self.file_logger,
@@ -621,7 +548,7 @@ impl App {
         )?;
         update_visible_devices(
             &mut self.tray,
-            &self.latest_readings,
+            &self.session.latest_readings,
             &self.monitored_devices,
             self.notification_config_error.as_deref(),
             &mut self.diagnostic_log,
@@ -632,7 +559,7 @@ impl App {
     fn process_poll_results(&mut self) -> Result<(), Box<dyn Error>> {
         #[allow(clippy::while_let_loop)]
         loop {
-            match self.results.try_recv() {
+            match self.session.try_recv() {
                 Ok(update) => self.handle_poll_update(update)?,
                 Err(TryRecvError::Empty) => return Ok(()),
                 Err(TryRecvError::Disconnected) => {
@@ -648,18 +575,16 @@ impl App {
 
     fn handle_poll_update(&mut self, update: PollUpdate) -> Result<(), Box<dyn Error>> {
         match update {
-            PollUpdate::Reading(reading) => self.handle_reading(reading),
-            PollUpdate::DeviceName {
-                identity,
-                name,
-                error,
-            } => self.handle_device_name(&identity, name, error),
-            PollUpdate::Warning(message) => {
-                self.poll_had_warning = true;
+            PollUpdate::Event(ProviderEvent::Reading(reading)) => self.handle_reading(reading),
+            PollUpdate::Event(ProviderEvent::DeviceName { id, label, error }) => {
+                self.handle_device_name(&id, label, error)
+            }
+            PollUpdate::Event(ProviderEvent::Warning(message)) => {
+                self.session.mark_warning();
                 self.record_event(LogLevel::Warn, &message)?;
                 Ok(())
             }
-            PollUpdate::Trace(message) => {
+            PollUpdate::Event(ProviderEvent::Trace(message)) => {
                 self.record_event(LogLevel::Trace, &message)?;
                 Ok(())
             }
@@ -667,27 +592,21 @@ impl App {
         }
     }
 
-    fn handle_reading(&mut self, mut reading: DeviceReading) -> Result<(), Box<dyn Error>> {
-        let identity = reading.identity.clone();
-        self.discovered_devices
-            .insert(identity.clone(), identity.display_name(&reading.name));
-        self.readings_seen_this_poll.insert(identity.clone());
-        if is_device_monitored(&self.monitored_devices, &identity.config_id()) {
-            reading.estimated_time_remaining = self.battery_eta_estimator.estimate(
-                &identity,
-                &reading.battery,
-                Duration::from_secs(self.active_config.battery_eta_window_minutes * 60),
-            );
-            self.pending_readings.push(reading);
+    fn handle_reading(&mut self, reading: SourceReading) -> Result<(), Box<dyn Error>> {
+        let id = reading.id.clone();
+        let monitored = is_device_monitored(&self.monitored_devices, id.as_str());
+        let eta_window = Duration::from_secs(self.active_config.battery_eta_window_minutes * 60);
+        if self.session.observe(reading, monitored, eta_window) {
             update_tray_devices(
                 &mut self.tray,
-                &self.pending_readings,
+                &self.session.pending_readings,
                 self.notification_config_error.as_deref(),
                 &mut self.diagnostic_log,
                 &mut self.file_logger,
                 self.started,
             )?;
             let reading = self
+                .session
                 .pending_readings
                 .last_mut()
                 .ok_or_else(|| io::Error::other("pending battery reading disappeared"))?;
@@ -699,23 +618,21 @@ impl App {
                 &mut self.file_logger,
                 self.started,
             )?;
-            self.latest_readings.insert(identity, reading.clone());
+            self.session.latest_readings.insert(id, reading.clone());
             if reading.notification_error.is_some() {
                 update_tray_devices(
                     &mut self.tray,
-                    &self.pending_readings,
+                    &self.session.pending_readings,
                     self.notification_config_error.as_deref(),
                     &mut self.diagnostic_log,
                     &mut self.file_logger,
                     self.started,
                 )?;
             }
-        } else {
-            self.battery_eta_estimator.remove(&identity);
         }
         update_monitored_device_menu(
             &mut self.tray,
-            &self.discovered_devices,
+            &self.session.discovered_devices,
             &self.monitored_devices,
             &mut self.diagnostic_log,
             &mut self.file_logger,
@@ -726,25 +643,13 @@ impl App {
 
     fn handle_device_name(
         &mut self,
-        identity: &DeviceIdentity,
-        name: String,
+        id: &DeviceId,
+        label: DeviceLabel,
         error: Option<String>,
     ) -> Result<(), Box<dyn Error>> {
-        let device_name = identity.display_name(&name);
-        let is_discovered = self.discovered_devices.contains_key(identity);
-        self.discovered_devices
-            .insert(identity.clone(), device_name.clone());
-        let has_pending_reading = if let Some(reading) = self
-            .pending_readings
-            .iter_mut()
-            .find(|reading| reading.identity == *identity)
-        {
-            reading.name = name.clone();
-            true
-        } else {
-            false
-        };
-        if !has_pending_reading && !is_discovered {
+        let renamed = self.session.rename(id, label);
+        let device_name = renamed.display;
+        if !renamed.had_pending_reading && !renamed.was_discovered {
             self.record_event(
                 LogLevel::Warn,
                 &format!(
@@ -752,12 +657,9 @@ impl App {
                 ),
             )?;
         }
-        if let Some(reading) = self.latest_readings.get_mut(identity) {
-            reading.name = name;
-        }
         update_monitored_device_menu(
             &mut self.tray,
-            &self.discovered_devices,
+            &self.session.discovered_devices,
             &self.monitored_devices,
             &mut self.diagnostic_log,
             &mut self.file_logger,
@@ -776,25 +678,17 @@ impl App {
 
     fn finish_poll(&mut self, result: Result<(), String>) -> Result<(), Box<dyn Error>> {
         self.record_event(LogLevel::Trace, "Received device polling result")?;
-        if !self.poll_had_warning {
-            self.battery_eta_estimator
-                .retain_devices(&self.readings_seen_this_poll);
-            self.discovered_devices
-                .retain(|identity, _| self.readings_seen_this_poll.contains(identity));
-            self.latest_readings
-                .retain(|identity, _| self.readings_seen_this_poll.contains(identity));
+        let (readings, pruned) = self.session.finish_poll();
+        if pruned {
             update_monitored_device_menu(
                 &mut self.tray,
-                &self.discovered_devices,
+                &self.session.discovered_devices,
                 &self.monitored_devices,
                 &mut self.diagnostic_log,
                 &mut self.file_logger,
                 self.started,
             )?;
         }
-        self.readings_seen_this_poll.clear();
-        self.poll_had_warning = false;
-        let readings = std::mem::take(&mut self.pending_readings);
         apply_poll_result(
             &mut self.tray,
             &readings,

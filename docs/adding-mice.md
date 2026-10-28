@@ -94,8 +94,8 @@ To make a non-standard battery feature available in the tray:
 1. If the mouse uses a new transport or wire protocol, add a separate protocol
    implementation module and implement `BatteryProtocol`. Do not put a second
    vendor's framing in `logitech_hidpp.rs`.
-2. Implement `MouseModel` for the mouse family, returning the appropriate
-   protocol. Add the model to `SUPPORTED_MICE` in
+2. Implement `HidBatteryDevice` for the device family, returning the appropriate
+   protocol. Add it to `SUPPORTED_HID_DEVICES` in
    `crates/volty-hid/src/protocol.rs`; this is the dispatch catalog. There is
    no separate protocol registry. Keep matchers specific because overlapping
    matches are reported as ambiguous and are not polled.

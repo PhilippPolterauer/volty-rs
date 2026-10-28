@@ -20,19 +20,22 @@ HID peripheral
 Enumerate HID interfaces
      |
      v
-Resolve each interface against SUPPORTED_MICE
-     | no match: no model selected
+Resolve each interface against SUPPORTED_HID_DEVICES
+     | no match: no device selected
      | multiple matches: ambiguity error
      | exactly one match
      |
      v
-Selected model's protocol backend
+Selected device's protocol backend
      |
      v
 Protocol-specific query and decoder
      |
      v
-Normalized battery reading
+Normalized battery reading (BatteryStatus)
+     |
+     v
+HidProvider -> BatteryProvider (DeviceId + DeviceLabel + BatteryStatus)
      |
      +-- Tray icon
      +-- Low-battery notifications
@@ -51,33 +54,33 @@ The workspace has two user-facing paths today:
 | HID diagnostics CLI | Inspects interfaces and HID++ feature mappings for on-demand diagnostics. | HID++ 2.0 diagnostics; separate from tray polling. |
 
 On-demand diagnostics do not select a tray backend or add device support.
-Tray polling is selected only by the model catalog and its registered
+Tray polling is selected only by the device catalog and its registered
 protocol backends.
 
-## Protocol and mouse extension points
+## Protocol and device extension points
 
 The HID crate separates interface-to-device matching from protocol behavior:
 
-- `MouseModel` supplies a family name and returns its `BatteryProtocol`.
+- `HidBatteryDevice` supplies a family name and returns its `BatteryProtocol`.
   Override `matches` when the default protocol-level interface match is too
   broad.
 - `BatteryProtocol` supplies its name, interface matcher, ordered
   `device_indices`, and `query_battery`, which owns transport, response
   decoding, and conversion to `BatteryStatus`. Optional `query_device_name`
   metadata is a separate operation and must not delay a battery reading.
-- `SUPPORTED_MICE` is the single dispatch catalog used to select a model and
-  its backend.
+- `SUPPORTED_HID_DEVICES` is the single dispatch catalog used to select a device
+  and its backend.
 
 During tray polling, Volty enumerates HID interfaces and calls
-`resolve_mouse_model` for each one. The resolver checks the models in
-`SUPPORTED_MICE`: no match selects no model, exactly one match selects that
-model, and multiple matches produce an ambiguity error rather than letting
-catalog order decide. `MouseModel::matches` defaults to the selected backend's
-`supports_interface` method. The uniquely selected model supplies the backend
+`resolve_hid_device` for each one. The resolver checks the devices in
+`SUPPORTED_HID_DEVICES`: no match selects no device, exactly one match selects that
+device, and multiple matches produce an ambiguity error rather than letting
+catalog order decide. `HidBatteryDevice::matches` defaults to the selected backend's
+`supports_interface` method. The uniquely selected device supplies the backend
 used for the query; Volty does not try every protocol or choose a backend
 from diagnostic input.
 
-Today the only registered model is the Logitech HID++ 2.0 mouse. Its backend
+Today the only registered device is the Logitech HID++ 2.0 device. Its backend
 matches vendor ID `0x046d` and usage page `0xff00`. After selection, runtime
 feature discovery and battery decoding determine whether a supported battery
 feature is available. Polling keeps every successful interface/device-index
@@ -86,12 +89,19 @@ reports a supported battery. The tray lists each readable device and uses the
 lowest reported percentage for its battery icon.
 
 Successful readings are forwarded to notifications immediately instead of
-waiting for every candidate slot to finish scanning. Volty stores the last
-successful device-index order per HID interface in
+waiting for every candidate slot to finish scanning. Each HID device is
+identified as `hid:{stable key}#{slot}`. The stable key comes from
+`stable_interface_keys` (VID/PID, interface number, usage page/usage and a hash
+of the serial number when the device reports one) and deliberately excludes the
+Windows interface path, which changes when USB re-enumerates. Interfaces that
+are indistinguishable (for example two identical receivers without serials) get
+a deterministic `~N` suffix ordered by path. Volty stores the last successful
+device-index order per stable key in
 `%LOCALAPPDATA%\Volty\device-state.sqlite3` and tries those indexes first on
 later polls. This cache only changes discovery order: unreadable or missing
 state falls back to the full index scan, and successful readings remain usable
-while the rest of discovery continues.
+while the rest of discovery continues. Monitor flags and low-battery alert
+de-duplication use the same id, so they survive re-enumeration.
 
 Protocol names are queried only after the battery scan has delivered its
 readings. Each interface/device-index name (including a missing name or lookup
@@ -104,17 +114,17 @@ To get a device into tray polling:
 1. If the existing matcher selects it and the existing backend already
    decodes its battery feature, no new trait implementation is needed.
 2. If the wire protocol is already supported but the device/family needs its
-   own interface match, implement `MouseModel`. Return the existing backend
-   from `protocol()` and add the model to `SUPPORTED_MICE`.
+   own interface match, implement `HidBatteryDevice`. Return the existing backend
+   from `protocol()` and add the device to `SUPPORTED_HID_DEVICES`.
 3. If a new battery feature or encoding uses an existing wire protocol,
    extend that backend's `query_battery` and decoding path. Add or update a
-   `MouseModel` only if the interface does not already resolve to that backend.
+   `HidBatteryDevice` only if the interface does not already resolve to that backend.
 4. For a new wire protocol, implement `BatteryProtocol`: identify compatible
    interfaces, list addresses to try, perform the protocol-specific query,
-   and return a normalized `BatteryStatus`. Then implement `MouseModel` to
-   select that backend and register the model in `SUPPORTED_MICE`.
-5. Keep model matchers mutually exclusive for every interface. If multiple
-   models match, resolution fails with an ambiguity error rather than choosing
+   and return a normalized `BatteryStatus`. Then implement `HidBatteryDevice` to
+   select that backend and register it in `SUPPORTED_HID_DEVICES`.
+5. Keep device matchers mutually exclusive for every interface. If multiple
+   devices match, resolution fails with an ambiguity error rather than choosing
    a backend based on catalog order.
 6. Only `level_percent` should drive the numeric tray icon and percentage
    notifications. Leave it `None` when the device reports only a raw level or
@@ -126,13 +136,14 @@ No additional tray/UI trait is required: once `query_battery` returns a valid
 percentage is available, and charging/full notification state.
 
 `logitech_hidpp.rs` is currently the only protocol backend. The tray consumes
-the protocol and model traits rather than selecting a vendor directly.
+the protocol and device traits rather than selecting a vendor directly.
 
 ## How HID diagnostics fit
 
-The `volty hid` CLI provides on-demand HID++ inspection and diagnostics. It is
-separate from the tray poller: diagnostic commands do not identify a mouse
-model, register a backend, or change which battery query the tray runs.
+The `volty hid` CLI (the `profile` feature of `volty-hid`, enabled by the tray)
+provides on-demand HID++ inspection and diagnostics. It is
+separate from the tray poller: diagnostic commands do not identify a HID
+device, register a backend, or change which battery query the tray runs.
 
 See [Adding a Logitech mouse](./adding-mice.md) for the current backend's
 worked example: interface selection, feature discovery, tray validation, and
@@ -154,8 +165,8 @@ For a new device, keep these responsibilities explicit:
    protocol, implement its transport rather than relying on diagnostic input.
 4. **Normalize the result.** Convert the response to the shared battery model
    while retaining unknown/sentinel values instead of guessing.
-5. **Connect it to the tray deliberately.** Add a `MouseModel` to
-   `SUPPORTED_MICE` that selects the backend. A successful standalone
+5. **Connect it to the tray deliberately.** Add a `HidBatteryDevice` to
+   `SUPPORTED_HID_DEVICES` that selects the backend. A successful standalone
    diagnostic query alone does not add tray support.
 6. **Test both layers.** Unit-test parsing with recorded frames, then validate
    with read-only hardware queries and the actual tray path.

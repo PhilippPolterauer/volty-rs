@@ -119,17 +119,17 @@ Volty launches; logs are retained.
 ```text
 volty-rs/
 ├── crates/
-│   ├── volty-battery/         # Protocol-neutral normalized battery readings
-│   ├── volty-bluetooth/       # Windows Bluetooth backend (classic, SetupAPI, BLE phases under a shared scan budget)
+│   ├── volty-battery/         # Dependency-free BatteryStatus, DeviceId and the BatteryProvider trait
+│   ├── volty-bluetooth/       # Windows Bluetooth provider (classic, SetupAPI, BLE phases under a shared scan budget)
 │   ├── volty-hid/             # Zero-UI, zero-Win32 protocol crate
 │   │   ├── src/
 │   │   │   ├── lib.rs         # Module root and public re-exports
-│   │   │   ├── interface.rs   # HID interface metadata and selectors
+│   │   │   ├── interface.rs   # HID interface metadata, selectors and stable interface keys
 │   │   │   ├── hid.rs         # Optional hidapi device enumeration and sessions
 │   │   │   ├── device.rs      # Device name and feature queries
-│   │   │   ├── protocol.rs    # Protocol/model traits and support catalog
-│   │   │   ├── profile.rs     # Device profile parsing
-│   │   │   ├── command.rs     # HID++ feature commands
+│   │   │   ├── protocol.rs    # Protocol/device traits and support catalog
+│   │   │   ├── profile.rs     # Device profile parsing (`profile` feature)
+│   │   │   ├── command.rs     # HID++ feature commands (`profile` feature)
 │   │   │   ├── logitech_hidpp.rs # HID++ 2.0 transport and battery backend
 │   │   │   └── battery.rs     # HID++ battery decoding
 │   │   └── Cargo.toml
@@ -143,7 +143,9 @@ volty-rs/
 │       │   ├── main.rs        # CLI dispatch and single-instance guard
 │       │   ├── hid_cli.rs     # On-demand HID++ interface/feature diagnostics
 │       │   ├── app.rs         # Event loop and application state
-│       │   ├── app/           # Polling worker, battery ETA, device cache, notifications, labels
+│       │   ├── app/           # Device session, polling worker, battery ETA, notifications, labels
+│       │   ├── provider.rs    # Battery providers the tray polls (HID, optional Bluetooth)
+│       │   ├── provider/      # HID provider (stable identity, slot probing) and device-name cache
 │       │   ├── config.rs      # Per-user TOML settings
 │       │   ├── state.rs       # Local SQLite device and notification runtime state
 │       │   ├── tray.rs        # Tray controller and context menu
@@ -166,48 +168,76 @@ volty-rs/
 HID interface enumeration        Bluetooth battery discovery
         |                                |
         v                                ├── Windows battery-life property (optional)
-SUPPORTED_MICE -> BatteryProtocol       └── Windows-paired BLE GATT Battery Service (optional)
+SUPPORTED_HID_DEVICES -> BatteryProtocol └── Windows-paired BLE GATT Battery Service (optional)
+        |                                |
+   HidProvider                    BluetoothProvider
         |                                |
         └────────────────┬───────────────┘
                          v
-             volty_battery::BatteryStatus
+        BatteryProvider -> DeviceId + DeviceLabel + BatteryStatus
+                         |
+        DeviceSession (poller thread, readings, ETA)
                          |
              tray state, icon, notifications
 ```
 
-`volty-battery` defines the protocol-neutral `BatteryStatus` model.
+`volty-battery` defines the transport-neutral vocabulary: `BatteryStatus`
+(its `source` is a plain label set by the backend), the stable `DeviceId`, and
+the `BatteryProvider` trait. A provider yields readings keyed by `DeviceId`;
+the tray consumes only that and never sees HID++ opcodes, device indices or
+interface paths. A new source (headphones, another HID family) implements
+`BatteryProvider` and is added to `default_providers` in the tray; it does not
+extend the HID catalog or add a branch to the poller.
+
 `volty-hid` owns HID protocol behavior: `BatteryProtocol` implements interface
 matching, device-address iteration, and the protocol-specific battery query.
-`MouseModel` associates a device family with a backend. The `SUPPORTED_MICE`
-catalog is the HID dispatch source: an interface must match exactly one model;
-no match is skipped and overlapping matches are reported. Its current catalog
-contains one Logitech HID++ 2.0 model.
+`HidBatteryDevice` associates a device family with a backend. The
+`SUPPORTED_HID_DEVICES` catalog is the HID dispatch source: an interface must
+match exactly one device; no match is skipped and overlapping matches are
+reported. Its current catalog contains one Logitech HID++ 2.0 device.
 
-`volty-bluetooth` contains experimental Windows Bluetooth battery discovery.
-The tray only compiles and polls it when built with
-`--package volty-tray --features bluetooth`. This integration is currently not
-working as intended and is untested; the default build does not include or
-poll it. Its intended scope and implementation notes are in
+HID identity does not depend on the Windows interface path, which changes when
+USB re-enumerates. `stable_interface_keys` derives a key from VID/PID,
+interface number, usage page/usage and (when present) a hash of the serial
+number; indistinguishable twins are split deterministically. The tray's cache,
+monitor flags and low-battery alert de-duplication all key off
+`hid:{stable key}#{slot}`.
+
+`volty-bluetooth` contains experimental Windows Bluetooth battery discovery,
+exposed to the tray as `BluetoothProvider`. The tray only compiles and polls
+it when built with `--package volty-tray --features bluetooth`. This
+integration is currently not working as intended and is untested; the default
+build does not include or poll it. It stays feature-gated until a single
+Windows reading is reliable and has a stable device identity; until then its
+three probes (battery-life property, SetupAPI, paired GATT) are an
+implementation detail contained inside the crate. Its intended scope and
+implementation notes are in
 [Bluetooth headphone battery support](./docs/bluetooth-headphone-battery-support.md).
 
 `volty-tray` owns polling, configuration, tray presentation, and
 notifications. Its `build.rs` embeds `volty.manifest` in Windows builds.
-The `volty hid` diagnostic commands inspect interfaces and feature mappings or
-send explicitly authorized raw HID++ requests. They are separate from tray
-polling and do not select or register battery backends.
+The `volty hid` diagnostic commands (the `profile` feature of `volty-hid`)
+inspect interfaces and feature mappings or send explicitly authorized raw
+HID++ requests. They are separate from tray polling and do not select or
+register battery backends.
+
+The tray is Windows-only and does not pretend otherwise: `rusqlite` state is
+only built for `x86_64-pc-windows-msvc`. Three native surfaces are in play:
+`hidapi` (HID), `windows-sys` (Win32 UI) and `windows` (WinRT Bluetooth).
 
 Adding a device that shares the existing HID++ wire protocol requires a specific
-`MouseModel` matcher and a catalog entry. `MouseModel` supplies the family
-name, backend, and interface match (`matches` can override the default backend
-match). Add it to `SUPPORTED_MICE`; that is the only tray dispatch catalog.
+`HidBatteryDevice` matcher and a catalog entry. `HidBatteryDevice` supplies the
+family name, backend, and interface match (`matches` can override the default
+backend match). Add it to `SUPPORTED_HID_DEVICES`; that is the only HID
+dispatch catalog.
 
 A new wire protocol needs a new `BatteryProtocol`; a new encoding on an
 existing protocol can extend that backend. Its `supports_interface`
 identifies candidate interfaces, `device_indices` returns addresses to try,
 and `query_battery` performs discovery/transport/decoding and returns a
 normalized `BatteryStatus`. Set `level_percent` only when the device really
-reports a percentage. Add or update a `MouseModel` and register it in
-`SUPPORTED_MICE` when the interface needs a new or more specific match. The
+reports a percentage. Add or update a `HidBatteryDevice` and register it in
+`SUPPORTED_HID_DEVICES` when the interface needs a new or more specific match. The
 existing tray code consumes `BatteryStatus`, so a new backend does not need a
 tray/UI trait or a protocol-specific icon.
 

@@ -1,6 +1,6 @@
 use super::{
-    append_config_error, battery_status_label, format_device_name, record_event, DeviceIdentity,
-    DeviceReading, FileLogger, LogLevel,
+    append_config_error, battery_status_label, record_event, DeviceId, DeviceReading, FileLogger,
+    LogLevel,
 };
 use super::{battery_eta::battery_eta_label, poll::PollResult};
 use crate::tray::{DeviceMonitorEntry, TrayController};
@@ -69,7 +69,7 @@ pub(super) fn update_tray_devices(
     let mut device_statuses = Vec::with_capacity(readings.len());
     let mut lowest_percentage: Option<u8> = None;
     for reading in readings {
-        let device_name = format_device_name(&reading.name, reading.device_index);
+        let device_name = reading.label.display();
         let percentage = reading.battery.level_percent;
         lowest_percentage = match (lowest_percentage, percentage) {
             (Some(current), Some(value)) => Some(current.min(value)),
@@ -114,7 +114,7 @@ pub(super) fn update_tray_devices(
 }
 pub(super) fn update_monitored_device_menu(
     tray: &mut TrayController,
-    devices: &HashMap<DeviceIdentity, String>,
+    devices: &HashMap<DeviceId, String>,
     monitored_devices: &BTreeMap<String, bool>,
     diagnostic_log: &mut VecDeque<String>,
     file_logger: &mut FileLogger,
@@ -122,13 +122,10 @@ pub(super) fn update_monitored_device_menu(
 ) -> io::Result<()> {
     let entries: Vec<_> = devices
         .iter()
-        .map(|(identity, name)| {
-            let config_id = identity.config_id();
-            DeviceMonitorEntry {
-                monitored: is_device_monitored(monitored_devices, &config_id),
-                identity: config_id,
-                name: name.clone(),
-            }
+        .map(|(id, name)| DeviceMonitorEntry {
+            monitored: is_device_monitored(monitored_devices, id.as_str()),
+            identity: id.as_str().to_owned(),
+            name: name.clone(),
         })
         .collect();
     if let Err(error) = tray.update_monitored_devices(&entries) {
@@ -144,7 +141,7 @@ pub(super) fn update_monitored_device_menu(
 }
 pub(super) fn update_visible_devices(
     tray: &mut TrayController,
-    latest_readings: &HashMap<DeviceIdentity, DeviceReading>,
+    latest_readings: &HashMap<DeviceId, DeviceReading>,
     monitored_devices: &BTreeMap<String, bool>,
     notification_config_error: Option<&str>,
     diagnostic_log: &mut VecDeque<String>,
@@ -162,26 +159,24 @@ pub(super) fn update_visible_devices(
     )
 }
 pub(super) fn monitored_readings(
-    latest_readings: &HashMap<DeviceIdentity, DeviceReading>,
+    latest_readings: &HashMap<DeviceId, DeviceReading>,
     monitored_devices: &BTreeMap<String, bool>,
 ) -> Vec<DeviceReading> {
     let mut readings: Vec<_> = latest_readings
         .iter()
-        .filter(|(identity, _)| is_device_monitored(monitored_devices, &identity.config_id()))
+        .filter(|(id, _)| is_device_monitored(monitored_devices, id.as_str()))
         .map(|(_, reading)| reading.clone())
         .collect();
-    readings.sort_by_key(|reading| reading.identity.config_id());
+    readings.sort_by(|left, right| left.id.cmp(&right.id));
     readings
 }
 pub(super) fn retain_monitored_readings(
-    latest_readings: &mut HashMap<DeviceIdentity, DeviceReading>,
+    latest_readings: &mut HashMap<DeviceId, DeviceReading>,
     pending_readings: &mut Vec<DeviceReading>,
     monitored_devices: &BTreeMap<String, bool>,
 ) {
-    latest_readings
-        .retain(|identity, _| is_device_monitored(monitored_devices, &identity.config_id()));
-    pending_readings
-        .retain(|reading| is_device_monitored(monitored_devices, &reading.identity.config_id()));
+    latest_readings.retain(|id, _| is_device_monitored(monitored_devices, id.as_str()));
+    pending_readings.retain(|reading| is_device_monitored(monitored_devices, reading.id.as_str()));
 }
 pub(super) fn is_device_monitored(
     monitored_devices: &BTreeMap<String, bool>,
@@ -191,25 +186,20 @@ pub(super) fn is_device_monitored(
 }
 #[cfg(test)]
 mod tests {
-    use super::super::DeviceIdentity;
     use super::*;
     use std::collections::{BTreeMap, HashMap};
-    use volty_battery::{BatteryLevel, BatterySource, BatteryState, BatteryStatus};
+    use volty_battery::{BatteryLevel, BatteryState, BatteryStatus, DeviceLabel};
     fn test_reading() -> DeviceReading {
         DeviceReading {
-            identity: DeviceIdentity::Hid {
-                interface_path: "test".to_owned(),
-                device_index: 1,
-            },
-            name: "Test device".to_owned(),
-            device_index: Some(1),
+            id: DeviceId::new("hid:test#1"),
+            label: DeviceLabel::new("Test device").with_qualifier("slot 1"),
             battery: BatteryStatus {
                 level_percent: Some(20),
                 level: BatteryLevel::Low,
                 raw_level: 2,
                 state: BatteryState::Discharging,
                 raw_status: Some(0),
-                source: BatterySource::Unified,
+                source: "test",
             },
             estimated_time_remaining: None,
             notification_error: None,
@@ -219,15 +209,10 @@ mod tests {
     fn new_devices_are_monitored_by_default() {
         let hid = test_reading();
         let mut second_hid = test_reading();
-        second_hid.identity = DeviceIdentity::Hid {
-            interface_path: "second-interface".to_owned(),
-            device_index: 2,
-        };
+        second_hid.id = DeviceId::new("hid:second-interface#2");
 
-        let latest_readings = HashMap::from([
-            (hid.identity.clone(), hid),
-            (second_hid.identity.clone(), second_hid),
-        ]);
+        let latest_readings =
+            HashMap::from([(hid.id.clone(), hid), (second_hid.id.clone(), second_hid)]);
         let visible = monitored_readings(&latest_readings, &BTreeMap::new());
 
         assert_eq!(visible.len(), 2);
@@ -236,25 +221,19 @@ mod tests {
     fn unmonitored_devices_are_excluded_from_visible_readings() {
         let included = test_reading();
         let mut excluded = test_reading();
-        excluded.identity = DeviceIdentity::Hid {
-            interface_path: "excluded-interface".to_owned(),
-            device_index: 2,
-        };
-        excluded.name = "Excluded device".to_owned();
+        excluded.id = DeviceId::new("hid:excluded-interface#2");
+        excluded.label = DeviceLabel::new("Excluded device");
 
-        let excluded_identity = excluded.identity.clone();
-        let included_identity = included.identity.clone();
+        let excluded_id = excluded.id.clone();
+        let included_id = included.id.clone();
         let latest_readings = HashMap::from([
-            (included_identity.clone(), included),
-            (excluded_identity.clone(), excluded),
+            (included_id.clone(), included),
+            (excluded_id.clone(), excluded),
         ]);
-        let monitored_devices = BTreeMap::from([(excluded_identity.config_id(), false)]);
+        let monitored_devices = BTreeMap::from([(excluded_id.as_str().to_owned(), false)]);
 
         let visible = monitored_readings(&latest_readings, &monitored_devices);
         assert_eq!(visible.len(), 1);
-        assert_eq!(
-            visible[0].identity.config_id(),
-            included_identity.config_id()
-        );
+        assert_eq!(visible[0].id, included_id);
     }
 }
