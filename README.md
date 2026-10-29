@@ -62,7 +62,7 @@ RGB; device support remains best-effort and hardware validation is limited.
 * **Experimental Bluetooth integration:** Opt-in via the `bluetooth` Cargo feature and currently not working as intended or tested; it is disabled in default builds.
 * **Configurable Color Coding:** The default tray map is green above 30%, yellow from 16–30%, and red at 15% or below. Thresholds and colors can be overridden in the TOML configuration.
 * **Threshold Alerts:** One-time native Windows toast notification per discharge cycle when battery hits warning thresholds.
-* **One-Click Diagnostics:** A native Diagnose window shows recent app logs, backend status, and HID details, with buttons to copy the log or open a GitHub issue draft.
+* **One-Click Diagnostics:** A native Diagnose window shows recent app logs, backend status, and HID details, with buttons to copy the log or open a GitHub issue draft, and saves a machine-readable `.volty.jsonl` hardware capture in addition to the text report for local review.
 * **Retry After Read Errors:** Polling resumes after errors using the configurable retry interval.
 * **Per-Device Control:** Choose which discovered devices are monitored from the tray's **Monitored Devices** submenu; the choice is persisted locally.
 * **Self-Maintaining Logs:** The local log file rotates at 5 MiB and keeps one `.1` backup.
@@ -108,8 +108,15 @@ Windows user and does not require administrator privileges.
 
 Configuration and logs are stored in `%APPDATA%\Volty`. Choose
 **Open Configuration** or **Open Log File** in the tray menu to access them.
-For troubleshooting, choose **Diagnose / Report an Issue**; review the report
-before sharing it. Nothing is uploaded automatically.
+For troubleshooting, choose **Diagnose / Report an Issue**. It saves a text
+report under `%APPDATA%\Volty\reports` and a machine-readable `.volty.jsonl`
+hardware capture under `%APPDATA%\Volty\captures`; the Diagnose window shows
+the exact paths. Review both files before sharing them, because names or log
+messages can identify your setup. Nothing is uploaded automatically. To report
+battery support or behavior, choose the **Hardware report** issue template,
+attach the capture, and describe what you expected versus what Volty showed;
+see [Hardware capture](./docs/hardware-capture.md) for what the file contains
+and what is deliberately left out.
 **Reset Volty** asks for confirmation before deleting
 `%APPDATA%\Volty\config.toml` and
 `%LOCALAPPDATA%\Volty\device-state.sqlite3`. It also disables **Start on Boot**
