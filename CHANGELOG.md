@@ -11,6 +11,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - The tray hover tooltip now shows one compact line per device with its name, battery percentage, and ETA when one is available, instead of falling back to summary text when the full menu labels do not fit. Charge-level wording is kept in the expanded menu only.
 
+### Fixed
+
+- Fixed a crash on the second Bluetooth scan: Windows Runtime was initialized and torn down for every scan while the Windows bindings cache activation factories process-wide. It now stays initialized for each scanning thread's lifetime.
+
 ## [0.3.0] - 2026-10-29
 
 ### Added

@@ -11,7 +11,7 @@ pub(super) const WINDOWS_BATTERY_LIFE_PROPERTY: &str = "System.Devices.BatteryLi
 
 pub(super) fn scan_battery_devices() -> Result<BluetoothScan, BluetoothError> {
     let budget = ScanBudget::new(BLUETOOTH_SCAN_BUDGET);
-    let _apartment = winrt::WinRtApartment::initialize()?;
+    winrt::initialize()?;
     let mut scan = BluetoothScan::default();
     run_scan_phase(
         &mut scan,

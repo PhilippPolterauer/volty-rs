@@ -7,21 +7,59 @@ use windows_future::{AsyncOperationCompletedHandler, IAsyncOperation};
 use super::budget::ScanBudget;
 use crate::{error, BluetoothError};
 
-pub(super) struct WinRtApartment(PhantomData<Rc<()>>);
+thread_local! {
+    /// Windows Runtime is initialized once per thread for the thread's lifetime.
+    ///
+    /// `windows` caches activation factories in process-wide statics that assume
+    /// Windows Runtime stays initialized; tearing it down after every scan leaves
+    /// those cached pointers stale and crashes on the next scan.
+    static APARTMENT: WinRtApartment = WinRtApartment::initialize();
+}
+
+/// Initializes Windows Runtime on the current thread and keeps it initialized
+/// until that thread exits.
+pub(super) fn initialize() -> Result<(), BluetoothError> {
+    APARTMENT.with(WinRtApartment::ensure_initialized)
+}
+
+struct WinRtApartment {
+    initialization_error: Option<String>,
+    _not_send: PhantomData<Rc<()>>,
+}
 
 impl WinRtApartment {
-    pub(super) fn initialize() -> Result<Self, BluetoothError> {
-        // SAFETY: RoInitialize affects this thread and the returned !Send guard balances each successful initialization.
-        unsafe { RoInitialize(RO_INIT_MULTITHREADED) }
-            .map_err(|error| windows_error("could not initialize Windows Runtime", error))?;
-        Ok(Self(PhantomData))
+    fn initialize() -> Self {
+        // SAFETY: RoInitialize affects this thread and the !Send guard balances
+        // each successful initialization when the thread exits.
+        match unsafe { RoInitialize(RO_INIT_MULTITHREADED) } {
+            Ok(()) => Self {
+                initialization_error: None,
+                _not_send: PhantomData,
+            },
+            Err(initialization_error) => Self {
+                initialization_error: Some(
+                    windows_error("could not initialize Windows Runtime", initialization_error)
+                        .to_string(),
+                ),
+                _not_send: PhantomData,
+            },
+        }
+    }
+
+    fn ensure_initialized(&self) -> Result<(), BluetoothError> {
+        match &self.initialization_error {
+            Some(initialization_error) => Err(error(initialization_error.clone())),
+            None => Ok(()),
+        }
     }
 }
 
 impl Drop for WinRtApartment {
     fn drop(&mut self) {
-        // SAFETY: this !Send guard is dropped on the thread whose RoInitialize succeeded.
-        unsafe { RoUninitialize() };
+        if self.initialization_error.is_none() {
+            // SAFETY: this !Send guard is dropped on the thread whose RoInitialize succeeded.
+            unsafe { RoUninitialize() };
+        }
     }
 }
 
