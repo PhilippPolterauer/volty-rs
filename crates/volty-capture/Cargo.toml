@@ -1,0 +1,15 @@
+[package]
+name = "volty-capture"
+version = "0.2.1"
+publish = false
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Versioned, append-only hardware capture format for Volty"
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+
+[lints]
+workspace = true
