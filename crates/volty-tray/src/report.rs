@@ -141,7 +141,7 @@ fn render_diagnostic_report(
         writeln!(report, "{entry}")?;
     }
     let bluetooth_status = if cfg!(feature = "bluetooth") {
-        "Bluetooth integration is enabled but currently does not work as intended and is untested. Bluetooth device IDs and addresses are not included; Bluetooth read results and errors may appear in recent logs."
+        "Bluetooth integration is enabled (opt-in build). Hardware validation is limited to one Bluetooth Classic headset; BLE GATT is not yet hardware-validated. Bluetooth device IDs and addresses are not included; Bluetooth read results and errors may appear in recent logs."
     } else {
         "Bluetooth integration is disabled in this build."
     };
@@ -234,7 +234,7 @@ mod tests {
         assert!(report.contains("[Battery sources]"));
         if cfg!(feature = "bluetooth") {
             assert!(report.contains(
-                "Bluetooth integration is enabled but currently does not work as intended and is untested."
+                "Bluetooth integration is enabled (opt-in build). Hardware validation is limited to one Bluetooth Classic headset; BLE GATT is not yet hardware-validated."
             ));
         } else {
             assert!(report.contains("Bluetooth integration is disabled in this build."));

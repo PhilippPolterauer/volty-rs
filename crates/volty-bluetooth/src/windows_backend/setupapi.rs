@@ -27,9 +27,11 @@ use crate::{
 };
 
 const MAX_DEVICE_INSTANCE_ID_UNITS: u32 = 65_536;
+// System.Devices.BatteryLife, exposed by PnP as DEVPKEY_Device_BatteryLevel.
+// {104EA319-6EE2-4701-BD47-8DDBF425BBE5}, 2
 const BATTERY_LIFE_PROPERTY_KEY: DEVPROPKEY = DEVPROPKEY {
-    fmtid: GUID::from_u128(0x49cd1f76_5626_4b17_a4e8_18b4aa1a2213),
-    pid: 10,
+    fmtid: GUID::from_u128(0x104ea319_6ee2_4701_bd47_8ddbf425bbe5),
+    pid: 2,
 };
 pub(super) fn scan_setupapi_battery_property(
     budget: &ScanBudget,

@@ -1,12 +1,12 @@
 # Bluetooth headphone battery support
 
-> **Status:** The tray Bluetooth integration is disabled by default because it
-> is currently not working as intended and has not been tested. Do not rely on
-> it. This document describes intended scope and implementation notes, not
-> verified support. To opt in locally, run
+> **Status:** The tray Bluetooth integration is opt-in and disabled in default
+> builds. Hardware validation is limited to one Bluetooth Classic headset; the
+> BLE GATT path has not been tested on real hardware. Do not treat Bluetooth
+> support as universal. To opt in locally, run
 > `cargo run --release --package volty-tray --features bluetooth`.
 
-## Intended Bluetooth scope
+## Bluetooth scope
 
 Volty reads battery percentages from connected Bluetooth devices when Windows
 supplies the `System.Devices.BatteryLife` property. It checks both the
@@ -49,6 +49,27 @@ percentage in Windows while Volty has no non-invasive battery source for it.
 Devices that expose neither the Windows battery property nor the standard GATT
 service need a separately implemented protocol.
 
+## Validated hardware
+
+| Device | Transport | Result |
+| --- | --- | --- |
+| Baseus Bass BS2 Lite | Bluetooth Classic (HFP/A2DP) | 100%, Windows PnP battery property |
+
+The reading comes from the headset's Hands-Free AG PnP node through the
+`System.Devices.BatteryLife` property, exposed to SetupAPI as
+`DEVPKEY_Device_BatteryLevel`
+(`{104EA319-6EE2-4701-BD47-8DDBF425BBE5}, 2`). For this headset, neither the
+WinRT connected-device property nor the HFP RFCOMM service metadata returned a
+value, so the SetupAPI PnP phase is required in practice. An earlier build read
+the wrong property key
+(`{49cd1f76-5626-4B17-A4E8-18B4AA1A2213}, 10`), which silently produced no
+readings. The corrected key was verified on live hardware.
+
+Windows reports no charging state for this source, so the headset is shown with
+a percentage and unknown charging state. This validation does not cover BLE
+GATT, disconnect/reconnect behavior, low-battery notifications, or a second
+headset model.
+
 ## Current architecture and integration boundary
 
 The HID path enumerates interfaces, resolves each against
@@ -79,9 +100,10 @@ The implemented structure keeps the backends separate:
 
 Bluetooth stays behind the `bluetooth` feature. Its three probes (battery-life
 property, SetupAPI, paired GATT) are merged by opaque device id under a shared
-budget; that is a discovery strategy, not a protocol. It should only become a
-default peer of HID++ once one Windows reading is trustworthy on its own and
-produces a stable device id.
+budget; that is a discovery strategy, not a protocol. The validated PnP reading
+meets the criteria for a trustworthy Windows reading with a stable device id.
+Default enablement still waits for broader coverage, especially hardware
+validation of the BLE GATT path and a second headset model.
 
 ## Runtime behavior
 
@@ -145,18 +167,27 @@ produces a stable device id.
 - Existing HID++ parsing, polling, notification, and tray behavior remains
   unchanged.
 
-Hardware verification is still required for each target headset:
+Validated so far:
+
+- The Baseus Bass BS2 Lite appears through the Windows PnP battery property
+  with a valid percentage.
+- The Bluetooth scan completes without warnings for that headset, and the
+  reading carries the stable PnP instance id as its device identity.
+- Diagnose output includes Bluetooth scan counts and reading status without
+  Bluetooth addresses or device paths.
+
+Still required:
 
 - A tested BLE headset exposing Battery Service appears in the device list
   with its reported percentage.
-- Removing or disconnecting that headset does not hang the UI or stop HID
-  monitoring; it is found again after reconnect/refresh.
+- Removing or disconnecting a validated headset does not hang the UI or stop
+  HID monitoring; it is found again after reconnect/refresh.
 - With both a supported HID peripheral and headset attached, both appear and
   the tray icon uses the lowest available percentage.
 - Low-battery notification behavior works for the headset without duplicate
   alerts across polls.
-- Diagnostics provide enough information to investigate failures without
-  exposing Bluetooth addresses or device paths.
+- A second Bluetooth Classic headset confirms that the PnP property path is
+  not specific to one device.
 
 ## Follow-up scope
 

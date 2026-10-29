@@ -30,10 +30,11 @@
 ## Current support
 
 Volty supports Logitech HID++ 2.0 interfaces and standard HID battery reports
-on Windows 10/11. The Bluetooth
-tray integration is disabled by default because it is not working as intended
-and has not been tested; do not rely on it. To opt into this experimental code
-in a local build, pass the tray crate's `bluetooth` feature:
+on Windows 10/11. The Bluetooth tray integration is opt-in and disabled in
+default builds because hardware validation is still limited: one Bluetooth
+Classic headset has been verified through the Windows PnP battery property,
+while the BLE GATT path has not been tested on real hardware. To include it in
+a local build, pass the tray crate's `bluetooth` feature:
 
 ```powershell
 cargo run --release --package volty-tray --features bluetooth
@@ -59,7 +60,7 @@ RGB; device support remains best-effort and hardware validation is limited.
 * **HID++ Battery Monitoring:** Polls supported Logitech interfaces and paired-device indexes, prioritizes recently successful receiver slots from a machine-local SQLite cache, caches each slot's battery feature so steady-state polls need one request, and uses each device's HID++ name when available.
 * **Generic HID Battery:** Reads the standard HID battery usages for any device that declares them, shown as "HID Battery".
 * **Battery Runtime Estimate:** Estimates time remaining from the recent discharge rate, using a configurable history window (10 minutes by default).
-* **Experimental Bluetooth integration:** Opt-in via the `bluetooth` Cargo feature and currently not working as intended or tested; it is disabled in default builds.
+* **Experimental Bluetooth integration:** Opt-in via the `bluetooth` Cargo feature and disabled in default builds. Validated with one Bluetooth Classic headset through the Windows PnP battery property; BLE GATT support is implemented but not yet hardware-validated.
 * **Configurable Color Coding:** The default tray map is green above 30%, yellow from 16–30%, and red at 15% or below. Thresholds and colors can be overridden in the TOML configuration.
 * **Threshold Alerts:** One-time native Windows toast notification per discharge cycle when battery hits warning thresholds.
 * **One-Click Diagnostics:** A native Diagnose window shows recent app logs, backend status, and HID details, with buttons to copy the log or open a GitHub issue draft, and saves a machine-readable `.volty.jsonl` hardware capture in addition to the text report for local review.
@@ -86,8 +87,8 @@ On first launch, choose whether to start Volty automatically when you sign in.
 That choice is remembered and can be changed at any time using **Start on
 Boot** in the tray menu. If enabled, Windows starts Volty from the executable's
 current location, so keep the file there. Volty monitors supported HID
-devices while running. Bluetooth is disabled in the default build and is
-currently not working as intended or tested. Its tray icon shows the lowest
+devices while running. Bluetooth is disabled in the default build and remains
+opt-in because hardware validation is limited. Its tray icon shows the lowest
 reported battery level; hover over it for device names, charging status, and
 an estimated time remaining after enough discharge history has accumulated.
 
@@ -228,13 +229,14 @@ monitor flags and low-battery alert de-duplication all key off
 
 `volty-bluetooth` contains experimental Windows Bluetooth battery discovery,
 exposed to the tray as `BluetoothProvider`. The tray only compiles and polls
-it when built with `--package volty-tray --features bluetooth`. This
-integration is currently not working as intended and is untested; the default
-build does not include or poll it. It stays feature-gated until a single
-Windows reading is reliable and has a stable device identity; until then its
-three probes (battery-life property, SetupAPI, paired GATT) are an
-implementation detail contained inside the crate. Its intended scope and
-implementation notes are in
+it when built with `--package volty-tray --features bluetooth`. One
+Bluetooth Classic headset (Baseus Bass BS2 Lite) has been validated through
+the Windows PnP battery property with a stable device identity; the BLE GATT
+path and broader headset coverage still need hardware validation. The
+integration therefore stays feature-gated in default builds. Its three probes
+(battery-life property, SetupAPI, paired GATT) are an implementation detail
+contained inside the crate. Validated hardware, limitations and the remaining
+validation checklist are in
 [Bluetooth headphone battery support](./docs/bluetooth-headphone-battery-support.md).
 
 `volty-tray` owns polling, configuration, tray presentation, and

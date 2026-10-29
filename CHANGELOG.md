@@ -40,6 +40,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - HID device identity no longer depends on the Windows interface path. Ids are now `hid:{stable key}#{slot}` where the key is derived from VID/PID, interface number, usage page/usage and a hash of the serial number (identical twins are split deterministically). The slot cache, monitor flags and low-battery alert de-duplication therefore survive USB re-enumeration instead of splitting.
+- Bluetooth PnP battery reads now request the correct `DEVPKEY_Device_BatteryLevel` property (`{104EA319-6EE2-4701-BD47-8DDBF425BBE5}, 2`). The previous key never contained a value, so devices that expose `System.Devices.BatteryLife` only through a PnP node produced no reading. Validated with a Baseus Bass BS2 Lite headset; the opt-in Bluetooth feature remains off by default while BLE GATT and broader hardware coverage are unverified.
 
 ### Migration
 
