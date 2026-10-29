@@ -28,6 +28,143 @@ pub(crate) enum ReportKind {
     Input,
 }
 
+/// The report type a standard-HID battery field is read from.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum GenericReportKind {
+    Feature,
+    Input,
+}
+
+/// A numeric battery usage declared by a report descriptor.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct GenericBatteryValue {
+    pub page: u16,
+    pub usage: u16,
+    pub report_id: u8,
+    pub kind: GenericReportKind,
+    pub logical_min: i32,
+    pub logical_max: i32,
+}
+
+/// A single-bit charging or discharging usage declared by a report descriptor.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct GenericBatteryButton {
+    pub page: u16,
+    pub usage: u16,
+    pub report_id: u8,
+    pub kind: GenericReportKind,
+}
+
+/// The parsed standard-HID battery capabilities of one interface.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct GenericBatteryLayout {
+    /// Every battery-related numeric usage in the descriptor.
+    pub values: Vec<GenericBatteryValue>,
+    /// Every battery-related button usage in the descriptor.
+    pub buttons: Vec<GenericBatteryButton>,
+    /// The usage selected as the direct percentage source, if any.
+    pub percent: Option<GenericBatteryValue>,
+    /// The remaining/full capacity pair selected as the ratio source, if any.
+    pub ratio: Option<(GenericBatteryValue, GenericBatteryValue)>,
+    pub charging: Option<GenericBatteryButton>,
+    pub discharging: Option<GenericBatteryButton>,
+}
+
+/// One raw numeric value extracted from a battery-related report.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct GenericBatteryValueReading {
+    pub page: u16,
+    pub usage: u16,
+    pub report_id: u8,
+    pub kind: GenericReportKind,
+    pub raw_value: u32,
+}
+
+/// A normalized battery reading together with the raw values it was derived from.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct GenericBatterySample {
+    pub layout: GenericBatteryLayout,
+    pub values: Vec<GenericBatteryValueReading>,
+    pub battery: BatteryStatus,
+}
+
+/// The parsed layout of an interface and one attempted sample from it.
+#[derive(Debug)]
+pub struct GenericBatteryProbe {
+    pub layout: GenericBatteryLayout,
+    pub sample: Result<GenericBatterySample, ProtocolError>,
+}
+
+impl From<ReportKind> for GenericReportKind {
+    fn from(kind: ReportKind) -> Self {
+        match kind {
+            ReportKind::Feature => Self::Feature,
+            ReportKind::Input => Self::Input,
+        }
+    }
+}
+
+impl From<ValueField> for GenericBatteryValue {
+    fn from(field: ValueField) -> Self {
+        Self {
+            page: field.page,
+            usage: field.usage,
+            report_id: field.report_id,
+            kind: field.kind.into(),
+            logical_min: field.logical_min,
+            logical_max: field.logical_max,
+        }
+    }
+}
+
+impl From<ButtonField> for GenericBatteryButton {
+    fn from(field: ButtonField) -> Self {
+        Self {
+            page: field.page,
+            usage: field.usage,
+            report_id: field.report_id,
+            kind: field.kind.into(),
+        }
+    }
+}
+
+impl ValueField {
+    fn reading(self, raw_value: u32) -> GenericBatteryValueReading {
+        GenericBatteryValueReading {
+            page: self.page,
+            usage: self.usage,
+            report_id: self.report_id,
+            kind: self.kind.into(),
+            raw_value,
+        }
+    }
+}
+
+/// A readable battery layout plus the descriptor fields it was selected from.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct ProbedLayout {
+    pub values: Vec<ValueField>,
+    pub buttons: Vec<ButtonField>,
+    pub layout: BatteryLayout,
+}
+
+impl ProbedLayout {
+    pub(crate) fn snapshot(&self) -> GenericBatteryLayout {
+        let (percent, ratio) = match self.layout.level {
+            LevelSource::Percent(field) => (Some(field.into()), None),
+            LevelSource::Ratio { remaining, full } => (None, Some((remaining.into(), full.into()))),
+        };
+        GenericBatteryLayout {
+            values: self.values.iter().copied().map(Into::into).collect(),
+            buttons: self.buttons.iter().copied().map(Into::into).collect(),
+            percent,
+            ratio,
+            charging: self.layout.charging.map(Into::into),
+            discharging: self.layout.discharging.map(Into::into),
+        }
+    }
+}
+
 /// A numeric usage found in a device's report descriptor.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct ValueField {
@@ -42,6 +179,7 @@ pub(crate) struct ValueField {
 /// A single-bit usage found in a device's report descriptor.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct ButtonField {
+    pub page: u16,
     pub usage: u16,
     pub report_id: u8,
     pub kind: ReportKind,
@@ -181,6 +319,61 @@ fn is_probe_candidate(interface: &HidInterfaceInfo) -> bool {
 /// The standard HID battery protocol; the layout is read from the report descriptor.
 pub struct GenericHidBattery;
 
+impl GenericHidBattery {
+    /// Probe the interface, returning its parsed layout and, if readable, one sample.
+    ///
+    /// Results are cached per interface path, so repeated calls reuse the
+    /// descriptor parse. Returns `None` when the platform cannot read standard
+    /// HID reports or the interface declares no readable battery.
+    pub fn probe(&self, interface: &HidInterfaceInfo) -> Option<GenericBatteryProbe> {
+        #[cfg(all(windows, feature = "hidapi"))]
+        {
+            let probed = native::cached_probed_layout(&interface.path)?;
+            let layout = probed.snapshot();
+            let sample =
+                native::read_snapshot(&interface.path, &probed.layout).map(|(battery, values)| {
+                    GenericBatterySample {
+                        layout: layout.clone(),
+                        values,
+                        battery,
+                    }
+                });
+            Some(GenericBatteryProbe { layout, sample })
+        }
+        #[cfg(not(all(windows, feature = "hidapi")))]
+        {
+            let _ = interface;
+            None
+        }
+    }
+
+    /// Read one sample using the cached/probed layout.
+    ///
+    /// Returns only battery-related extracted values, never full input reports.
+    pub fn read(
+        &self,
+        interface: &HidInterfaceInfo,
+    ) -> Result<GenericBatterySample, ProtocolError> {
+        #[cfg(all(windows, feature = "hidapi"))]
+        {
+            let probed = native::known_probed_layout(&interface.path).ok_or_else(|| {
+                ProtocolError::from("the interface no longer reports a battery level")
+            })?;
+            let (battery, values) = native::read_snapshot(&interface.path, &probed.layout)?;
+            Ok(GenericBatterySample {
+                layout: probed.snapshot(),
+                values,
+                battery,
+            })
+        }
+        #[cfg(not(all(windows, feature = "hidapi")))]
+        {
+            let _ = interface;
+            Err("HID battery reports require Windows and the `hidapi` feature".into())
+        }
+    }
+}
+
 impl BatteryProtocol for GenericHidBattery {
     fn name(&self) -> &'static str {
         "HID battery reports"
@@ -263,6 +456,7 @@ mod tests {
 
     fn button(usage: u16) -> ButtonField {
         ButtonField {
+            page: PAGE_BATTERY_SYSTEM,
             usage,
             report_id: 2,
             kind: ReportKind::Input,
@@ -404,5 +598,124 @@ mod tests {
         assert!(is_probe_candidate(&interface));
         interface.usage_page = None;
         assert!(!is_probe_candidate(&interface));
+    }
+
+    #[test]
+    fn probed_percent_layout_maps_to_public_snapshot() {
+        let relative = value(
+            PAGE_BATTERY_SYSTEM,
+            USAGE_RELATIVE_STATE_OF_CHARGE,
+            ReportKind::Feature,
+            0,
+            100,
+        );
+        let strength = value(
+            PAGE_GENERIC_DEVICE,
+            USAGE_BATTERY_STRENGTH,
+            ReportKind::Input,
+            0,
+            255,
+        );
+        let charging = button(USAGE_CHARGING);
+        let discharging = button(USAGE_DISCHARGING);
+        let layout = select_layout(&[strength, relative], &[discharging, charging]).unwrap();
+        let probed = ProbedLayout {
+            values: vec![strength, relative],
+            buttons: vec![discharging, charging],
+            layout,
+        };
+
+        let snapshot = probed.snapshot();
+        assert_eq!(
+            snapshot.values,
+            [
+                GenericBatteryValue {
+                    page: PAGE_GENERIC_DEVICE,
+                    usage: USAGE_BATTERY_STRENGTH,
+                    report_id: 1,
+                    kind: GenericReportKind::Input,
+                    logical_min: 0,
+                    logical_max: 255,
+                },
+                GenericBatteryValue {
+                    page: PAGE_BATTERY_SYSTEM,
+                    usage: USAGE_RELATIVE_STATE_OF_CHARGE,
+                    report_id: 1,
+                    kind: GenericReportKind::Feature,
+                    logical_min: 0,
+                    logical_max: 100,
+                },
+            ]
+        );
+        assert_eq!(
+            snapshot.percent,
+            Some(GenericBatteryValue {
+                page: PAGE_BATTERY_SYSTEM,
+                usage: USAGE_RELATIVE_STATE_OF_CHARGE,
+                report_id: 1,
+                kind: GenericReportKind::Feature,
+                logical_min: 0,
+                logical_max: 100,
+            })
+        );
+        assert_eq!(snapshot.ratio, None);
+        assert_eq!(
+            snapshot.buttons,
+            [
+                GenericBatteryButton {
+                    page: PAGE_BATTERY_SYSTEM,
+                    usage: USAGE_DISCHARGING,
+                    report_id: 2,
+                    kind: GenericReportKind::Input,
+                },
+                GenericBatteryButton {
+                    page: PAGE_BATTERY_SYSTEM,
+                    usage: USAGE_CHARGING,
+                    report_id: 2,
+                    kind: GenericReportKind::Input,
+                },
+            ]
+        );
+        assert_eq!(snapshot.charging, Some(snapshot.buttons[1]));
+        assert_eq!(snapshot.discharging, Some(snapshot.buttons[0]));
+    }
+
+    #[test]
+    fn probed_ratio_layout_and_raw_readings_keep_usage_metadata() {
+        let remaining = value(
+            PAGE_BATTERY_SYSTEM,
+            USAGE_REMAINING_CAPACITY,
+            ReportKind::Feature,
+            0,
+            65535,
+        );
+        let full = value(
+            PAGE_BATTERY_SYSTEM,
+            USAGE_FULL_CHARGE_CAPACITY,
+            ReportKind::Feature,
+            0,
+            65535,
+        );
+        let layout = select_layout(&[remaining, full], &[]).unwrap();
+        let probed = ProbedLayout {
+            values: vec![remaining, full],
+            buttons: Vec::new(),
+            layout,
+        };
+
+        let snapshot = probed.snapshot();
+        assert_eq!(snapshot.percent, None);
+        assert_eq!(snapshot.ratio, Some((remaining.into(), full.into())));
+        assert_eq!(
+            remaining.reading(4321),
+            GenericBatteryValueReading {
+                page: PAGE_BATTERY_SYSTEM,
+                usage: USAGE_REMAINING_CAPACITY,
+                report_id: 1,
+                kind: GenericReportKind::Feature,
+                raw_value: 4321,
+            }
+        );
+        assert_eq!(full.reading(5000).raw_value, 5000);
     }
 }

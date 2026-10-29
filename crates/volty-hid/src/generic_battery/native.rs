@@ -1,8 +1,8 @@
 //! Windows HID parser bindings that discover and read standard battery usages.
 use super::{
     battery_status, is_battery_button, is_battery_value, ratio_percent, scale_percent,
-    select_layout, BatteryLayout, ButtonField, LevelSource, ReportKind, ValueField,
-    PAGE_BATTERY_SYSTEM,
+    select_layout, BatteryLayout, ButtonField, GenericBatteryValueReading, LevelSource,
+    ProbedLayout, ReportKind, ValueField, PAGE_BATTERY_SYSTEM,
 };
 use crate::protocol::ProtocolError;
 use crate::{BatteryStatus, HidInterfaceInfo};
@@ -23,24 +23,38 @@ use windows_sys::Win32::Storage::FileSystem::{
 };
 
 /// Probe results per interface path; `None` records an interface without a usable battery.
-static LAYOUTS: LazyLock<Mutex<HashMap<CString, Option<BatteryLayout>>>> =
+static LAYOUTS: LazyLock<Mutex<HashMap<CString, Option<ProbedLayout>>>> =
     LazyLock::new(Mutex::default);
 
 pub(super) fn cached_layout(path: &CStr) -> Option<BatteryLayout> {
+    cached_probed_layout(path).map(|probed| probed.layout)
+}
+
+pub(super) fn cached_probed_layout(path: &CStr) -> Option<ProbedLayout> {
     let known = LAYOUTS
         .lock()
         .unwrap_or_else(PoisonError::into_inner)
         .get(path)
-        .copied();
-    if let Some(layout) = known {
-        return layout;
+        .cloned();
+    if let Some(known) = known {
+        return known;
     }
     let layout = probe(path);
     LAYOUTS
         .lock()
         .unwrap_or_else(PoisonError::into_inner)
-        .insert(path.to_owned(), layout);
+        .insert(path.to_owned(), layout.clone());
     layout
+}
+
+/// Returns only an already cached probe result, without opening the device.
+pub(super) fn known_probed_layout(path: &CStr) -> Option<ProbedLayout> {
+    LAYOUTS
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .get(path)
+        .cloned()
+        .flatten()
 }
 
 pub(super) fn forget_absent_interfaces(interfaces: &[HidInterfaceInfo]) {
@@ -51,42 +65,61 @@ pub(super) fn forget_absent_interfaces(interfaces: &[HidInterfaceInfo]) {
         .retain(|path, _| present.contains(path.as_c_str()));
 }
 
+pub(super) fn read_snapshot(
+    path: &CStr,
+    layout: &BatteryLayout,
+) -> Result<(BatteryStatus, Vec<GenericBatteryValueReading>), ProtocolError> {
+    read_with(&HidCollection::open(path)?, layout)
+}
+
 pub(super) fn read_battery(
     path: &CStr,
     layout: &BatteryLayout,
 ) -> Result<BatteryStatus, ProtocolError> {
-    read_with(&HidCollection::open(path)?, layout)
+    read_snapshot(path, layout).map(|(battery, _)| battery)
 }
 
 /// Accepts a layout only if the battery can actually be read, so a declared but
 /// unreadable field never turns into a recurring poll error.
-fn probe(path: &CStr) -> Option<BatteryLayout> {
+fn probe(path: &CStr) -> Option<ProbedLayout> {
     let device = HidCollection::open(path).ok()?;
     let (values, buttons) = device.battery_fields();
     let layout = select_layout(&values, &buttons)?;
-    read_with(&device, &layout).ok().map(|_| layout)
+    read_with(&device, &layout).ok()?;
+    Some(ProbedLayout {
+        values,
+        buttons,
+        layout,
+    })
 }
 
 fn read_with(
     device: &HidCollection,
     layout: &BatteryLayout,
-) -> Result<BatteryStatus, ProtocolError> {
+) -> Result<(BatteryStatus, Vec<GenericBatteryValueReading>), ProtocolError> {
+    let mut readings = Vec::new();
     let mut reports = Reports {
         device,
         fetched: Vec::new(),
     };
     let percent = match layout.level {
         LevelSource::Percent(field) => {
-            scale_percent(reports.value(&field)?, field.logical_min, field.logical_max)
+            let raw = reports.value(&field)?;
+            readings.push(field.reading(raw));
+            scale_percent(raw, field.logical_min, field.logical_max)
         }
         LevelSource::Ratio { remaining, full } => {
-            ratio_percent(reports.value(&remaining)?, reports.value(&full)?)
+            let raw_remaining = reports.value(&remaining)?;
+            readings.push(remaining.reading(raw_remaining));
+            let raw_full = reports.value(&full)?;
+            readings.push(full.reading(raw_full));
+            ratio_percent(raw_remaining, raw_full)
         }
     }
     .ok_or_else(|| ProtocolError::from("the battery level is outside its declared range"))?;
     let charging = layout.charging.and_then(|field| reports.pressed(&field));
     let discharging = layout.discharging.and_then(|field| reports.pressed(&field));
-    Ok(battery_status(percent, charging, discharging))
+    Ok((battery_status(percent, charging, discharging), readings))
 }
 
 /// Reports fetched during one read, so fields sharing a report cost a single call.
@@ -243,6 +276,7 @@ impl HidCollection {
                 for usage in (first..=last).filter(|usage| is_battery_button(cap.UsagePage, *usage))
                 {
                     buttons.push(ButtonField {
+                        page: cap.UsagePage,
                         usage,
                         report_id: cap.ReportID,
                         kind,
