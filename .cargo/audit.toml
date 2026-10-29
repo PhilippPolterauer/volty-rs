@@ -1,0 +1,16 @@
+# cargo-audit configuration.
+#
+# These advisories come from the Linux GTK dependencies of `tray-icon` and
+# `muda`. Volty is a Windows-only application, so the affected crates are not
+# compiled into the shipped binary. The audit gate stays strict for every
+# dependency that is actually built.
+
+[advisories]
+ignore = [
+    # `proc-macro-error` is an unmaintained build dependency of the GTK
+    # bindings' proc macros; it is not present on the Windows target.
+    "RUSTSEC-2024-0370",
+    # `glib::VariantStrIter` unsoundness in the GTK bindings; the crate is
+    # Linux-only for this workspace and the affected iterator is unused.
+    "RUSTSEC-2024-0429",
+]

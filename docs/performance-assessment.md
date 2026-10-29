@@ -42,8 +42,6 @@ The UI loop no longer polls on a timer; it blocks until a window message, poll r
 
 The battery ETA uses a per-device discharge history, defaulting to a 10-minute window (configurable from 1 to 180 minutes). With 10-second polling, this retains about 60 samples per device. The estimate needs a full window of usable readings, resets while charging or after a level increase, and requires no additional device I/O.
 
-Battery ETA uses a bounded per-device history, defaulting to a 10-minute window (configurable from 1 to 180 minutes). With 10-second polling, that is about 60 samples per device. The estimate is unavailable until the window is populated and is cleared on charging or an increasing percentage; this adds small in-memory state but no additional device I/O.
-
 ### Optional Bluetooth path
 
 Bluetooth is not enabled by default in the tray crate. ([Cargo.toml](../crates/volty-tray/Cargo.toml))

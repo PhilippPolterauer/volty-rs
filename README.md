@@ -45,6 +45,9 @@ support covers devices whose report descriptor declares a battery level (Generic
 Device Controls *Battery Strength* or the Battery System page); a device that
 only exposes its battery through a vendor-defined report is not detected.
 
+The project owner's current primary use case is the Logitech G502 X Superlight
+RGB; device support remains best-effort and hardware validation is limited.
+
 > **Project status:** Volty is a vibe-coded hobby project. It is experimental,
 > has limited hardware testing, and is not production-ready or affiliated with
 > Logitech. Treat device support and battery readings as best-effort.
@@ -82,8 +85,8 @@ starts directly in the Windows notification area without opening a terminal.
 On first launch, choose whether to start Volty automatically when you sign in.
 That choice is remembered and can be changed at any time using **Start on
 Boot** in the tray menu. If enabled, Windows starts Volty from the executable's
-current location, so keep the file there. Volty monitors supported Logitech
-HID++ devices while running. Bluetooth is disabled in the default build and is
+current location, so keep the file there. Volty monitors supported HID
+devices while running. Bluetooth is disabled in the default build and is
 currently not working as intended or tested. Its tray icon shows the lowest
 reported battery level; hover over it for device names, charging status, and
 an estimated time remaining after enough discharge history has accumulated.
@@ -396,19 +399,27 @@ Prerequisites: Windows 10/11 and the `x86_64-pc-windows-msvc` Rust toolchain
 written to `target\release\volty.exe`.
 
 ```powershell
-cargo build --release --package volty-tray
-cargo test --workspace
+cargo build --release --package volty-tray --locked
+cargo test --workspace --all-features --locked
 ```
 
 CI runs the same checks on every push and pull request, plus a build with the
-`bluetooth` feature:
+`bluetooth` feature, a workspace check on the minimum supported Rust version
+(1.89.0), and a dependency audit on Ubuntu:
 
 ```powershell
 cargo fmt --all -- --check
-cargo clippy --workspace --all-targets --all-features -- -D warnings
-cargo test --workspace
-cargo build -p volty-tray --features bluetooth
+cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+cargo test --workspace --all-features --locked
+cargo build -p volty-tray --features bluetooth --locked
+cargo check --workspace --all-features --locked
+cargo audit --deny warnings
 ```
+
+The `cargo check` command runs in the MSRV job with Rust 1.89.0; the `cargo
+audit` command runs in the audit job against the committed `Cargo.lock`.
+`.cargo/audit.toml` documents the two ignored advisories from Linux-only GTK
+dependencies of `tray-icon`, which are not compiled on Windows.
 
 See the [sustained-run performance assessment](./docs/performance-assessment.md)
 for one-minute resource measurements and polling-path limitations.
@@ -427,7 +438,8 @@ are required.
 
 Protocol-frame unit tests use mock byte buffers and do not require a connected
 mouse. Device communication and tray behavior should be verified on Windows
-with compatible Logitech Lightspeed hardware.
+with compatible hardware; the current primary target is the Logitech G502 X
+Superlight RGB.
 
 ## License
 

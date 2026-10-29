@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Corrected the HID support documentation to describe generic HID battery support as implemented, name the Logitech G502 X Superlight RGB as the current primary use case, and remove stale "Logitech-only" claims. No new hardware validation is claimed.
+- Hardened CI: Clippy, tests, and builds run with `--locked`, tests use `--all-features`, a Rust 1.89.0 MSRV job checks the workspace, and an Ubuntu job runs `cargo audit --deny warnings` against `Cargo.lock`.
 - **Breaking:** introduced the `BatteryProvider` trait in `volty-battery`. A provider yields readings keyed by a stable `DeviceId` plus a `DeviceLabel` and `BatteryStatus`; the tray polls a list of providers (`HidProvider`, and `BluetoothProvider` with the `bluetooth` feature) instead of hard-coding the HID query and a Bluetooth branch.
 - **Breaking:** `BatteryStatus.source` is now a plain `&'static str` label set by each backend; the transport-specific `BatterySource` enum is removed from `volty-battery`.
 - **Breaking:** renamed the HID catalog vocabulary to be device-neutral: `MouseModel` → `HidBatteryDevice`, `SUPPORTED_MICE` → `SUPPORTED_HID_DEVICES`, `resolve_mouse_model` → `resolve_hid_device`, `AmbiguousMouseModel` → `AmbiguousHidDevice`, `LogitechHidppMouse` → `LogitechHidppDevice`.

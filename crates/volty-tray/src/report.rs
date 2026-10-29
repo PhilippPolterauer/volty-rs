@@ -197,7 +197,6 @@ mod tests {
         assert!(report.contains("Volty Diagnose Log"));
         assert!(report.contains("Low-battery threshold: 20%"));
         assert!(report.contains("Battery ETA window: 10 minutes"));
-        assert!(report.contains("Battery ETA window: 10 minutes"));
         assert!(report.contains(
             "Tray color map: red <= 15% (#d23030), yellow <= 30% (#ebbe23), green > 30% (#2daa4b)"
         ));

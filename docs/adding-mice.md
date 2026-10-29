@@ -1,9 +1,11 @@
 # First backend example: Logitech HID++ mouse
 
 This is Volty's first backend example: it covers diagnosing a Logitech HID++
-mouse and deciding whether it already works or needs a code change. For the
-generic HID battery-level goal and backend architecture, see
-[Generic HID battery-level support](./hid-battery-support.md).
+mouse and deciding whether it already works or needs a code change. The project
+owner's current primary use case is the Logitech G502 X Superlight RGB; this
+worked example is guided by that setup, but device support remains best-effort
+and hardware validation is limited. For the generic HID battery-level goal and
+backend architecture, see [Generic HID battery-level support](./hid-battery-support.md).
 
 ## What is supported today
 
@@ -18,6 +20,10 @@ features:
 Feature runtime indexes are discovered from Root for each query; do not
 hard-code an index shown by one device. If a mouse implements either standard
 feature correctly, it should work without model-specific code.
+
+Standard HID battery reports are handled separately by the generic HID battery
+matcher and do not require this HID++ flow. A Logitech mouse that exposes its
+battery only through HID++ still needs `0x1004` or `0x1000` as described here.
 
 The tray queries its built-in battery features directly. It keeps each
 successful interface/device-index reading and shows every readable device;
