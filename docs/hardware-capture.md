@@ -65,24 +65,33 @@ behavior, not executable instructions.
 If the capture file is not created, include the text report and the error shown
 by the Diagnose window in your issue.
 
-## Planned command-line capture
+## Command-line capture
 
-The following `volty capture` commands are planned and are not available in the
-current release. Do not rely on them until they appear in a release or the CLI
-help output. The tray export is the current capture path.
+`volty capture` writes the same read-only snapshot from a console:
 
 ```text
 volty capture
-volty capture --duration 60
+volty capture --output .\g502.volty.jsonl
 volty capture --strict
+```
+
+- `volty capture` writes a timestamped file under `%APPDATA%\Volty\captures` and
+  prints its path plus a summary.
+- `--output <path>` writes to a specific file instead.
+- `--strict` omits model-level manufacturer and product strings, keeping only
+  numeric identifiers and protocol evidence.
+
+The following commands are planned and are not available in the current
+release. Do not rely on them until they appear in a release or the CLI help
+output.
+
+```text
+volty capture --duration 60
 volty capture inspect <capture.volty.jsonl>
 volty capture replay <capture.volty.jsonl>
 ```
 
-- `volty capture` is intended to take a snapshot of the current HID state.
 - `--duration` is intended to record a session for a bounded period.
-- `--strict` is intended to validate while exporting and reject records outside
-  the allowed schema and privacy rules instead of writing them.
 - `inspect` is intended to summarize and schema-check a capture without opening
   a device.
 - `replay` is intended to feed recorded HID++ frames and generic layouts through
@@ -99,11 +108,12 @@ Bluetooth addresses, device names, and anything else specific to your setup.
 
 The format is designed to exclude paths, serial numbers, usernames, computer
 names, and Bluetooth addresses, but review the actual file before attaching it
-to a public issue. If strict capture validation is available in your build, use
-it as an additional check; it does not replace reading the file. Do not hand-edit
-a capture that you want maintainers to replay, because a modified file is no
-longer evidence. Remove the file from the report and describe the concern
-instead.
+to a public issue. If you want to omit model-level manufacturer and product
+strings as well, generate the capture with `volty capture --strict`; the tray
+export uses the standard profile. Strict mode is an extra privacy option, not a
+substitute for reading the file. Do not hand-edit a capture that you want
+maintainers to replay, because a modified file is no longer evidence. Remove the
+file from the report and describe the concern instead.
 
 ## Submit a capture
 

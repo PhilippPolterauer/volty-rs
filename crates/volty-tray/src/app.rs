@@ -275,17 +275,30 @@ impl App {
     }
     fn show_diagnostic_report(&mut self) -> Result<(), Box<dyn Error>> {
         match generate_diagnostic_report(self.active_config, &self.diagnostic_log) {
-            Ok((path, report)) => {
-                let path_text = path.display().to_string();
-                match show_diagnose_window(&report) {
+            Ok(export) => {
+                let path_text = export.report_path.display().to_string();
+                let capture_status = match (&export.capture_path, &export.capture_error) {
+                    (Some(path), _) => format!("; capture saved: {}", path.display()),
+                    (None, Some(error)) => format!("; capture not created: {error}"),
+                    (None, None) => String::new(),
+                };
+                if let Some(error) = &export.capture_error {
+                    self.record_event(
+                        LogLevel::Warn,
+                        &format!("Hardware capture not created: {error}"),
+                    )?;
+                }
+                match show_diagnose_window(&export.report) {
                     Ok(()) => {
                         self.record_event(
                             LogLevel::Info,
-                            &format!("Diagnostic report saved: {path_text}"),
+                            &format!("Diagnostic report saved: {path_text}{capture_status}"),
                         )?;
                         if let Err(error) = self.tray.update_status(
                             "",
-                            &format!("Diagnose window closed; report saved: {path_text}"),
+                            &format!(
+                                "Diagnose window closed; report saved: {path_text}{capture_status}"
+                            ),
                             None,
                         ) {
                             self.record_event(
@@ -296,7 +309,7 @@ impl App {
                     }
                     Err(error) => self.report_error(
                         "Diagnose window error",
-                        &format!("{error}; report saved at {path_text}"),
+                        &format!("{error}; report saved at {path_text}{capture_status}"),
                     )?,
                 }
             }

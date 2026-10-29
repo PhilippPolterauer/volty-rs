@@ -10,12 +10,20 @@ use std::{
 
 use volty_hid::enumerate_hid_devices;
 
-use crate::config::AppConfig;
+use crate::{capture, config::AppConfig};
+
+/// The text report and the optional capture written by the Diagnose action.
+pub struct DiagnosticExport {
+    pub report_path: PathBuf,
+    pub report: String,
+    pub capture_path: Option<PathBuf>,
+    pub capture_error: Option<String>,
+}
 
 pub fn generate_diagnostic_report(
     config: AppConfig,
     log: &VecDeque<String>,
-) -> Result<(PathBuf, String), Box<dyn Error>> {
+) -> Result<DiagnosticExport, Box<dyn Error>> {
     let devices = enumerate_hid_devices()?;
     let app_data = std::env::var_os("APPDATA")
         .map(PathBuf::from)
@@ -35,7 +43,25 @@ pub fn generate_diagnostic_report(
         timestamp.subsec_nanos()
     ));
 
-    let report = render_diagnostic_report(&devices, timestamp, config, log)?;
+    let mut report = render_diagnostic_report(&devices, timestamp, config, log)?;
+    let (capture_path, capture_error, capture_note) = match capture::write_default_snapshot() {
+        Ok(capture) => (
+            Some(capture.path.clone()),
+            None,
+            format!(
+                "Saved: {}\nReview the capture before sharing it. Nothing is uploaded automatically.",
+                capture.path.display()
+            ),
+        ),
+        Err(error) => (None, Some(error.to_string()), format!("Not created: {error}")),
+    };
+    use std::fmt::Write as _;
+    write!(
+        report,
+        "\n\n[Hardware capture]\n{capture_note}\n\
+         The capture contains HID interface metadata, read-only protocol exchanges, and normalized readings.\n\
+         It never contains device paths, serial numbers, usernames, computer names, or full input reports."
+    )?;
 
     let mut file = OpenOptions::new()
         .write(true)
@@ -53,7 +79,12 @@ pub fn generate_diagnostic_report(
             report_path.display()
         )
     })?;
-    Ok((report_path, report))
+    Ok(DiagnosticExport {
+        report_path,
+        report,
+        capture_path,
+        capture_error,
+    })
 }
 
 fn render_diagnostic_report(

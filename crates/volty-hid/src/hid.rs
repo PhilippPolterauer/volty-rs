@@ -143,6 +143,11 @@ impl HidppSession {
         })
     }
 
+    /// Opens an already enumerated interface without selecting it again.
+    pub fn open_for_interface(info: &HidInterfaceInfo) -> Result<Self, HidppError> {
+        open_hidpp_session(info)
+    }
+
     pub fn info(&self) -> &HidInterfaceInfo {
         &self.info
     }

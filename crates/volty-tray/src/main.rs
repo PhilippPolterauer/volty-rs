@@ -4,6 +4,8 @@
 mod about;
 #[cfg(windows)]
 mod app;
+#[cfg(windows)]
+mod capture;
 mod config;
 #[cfg(windows)]
 mod diagnose;
@@ -27,7 +29,7 @@ mod win32;
 
 fn main() {
     #[cfg(windows)]
-    let cli_mode = std::env::args().nth(1).as_deref() == Some("hid");
+    let cli_mode = matches!(std::env::args().nth(1).as_deref(), Some("hid" | "capture"));
 
     #[cfg(windows)]
     if !cli_mode {
@@ -182,8 +184,11 @@ fn attach_cli_console() -> std::io::Result<()> {
 
 fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut args = std::env::args().skip(1);
-    if args.next().as_deref() == Some("hid") {
-        return hid_cli::run(&args.collect::<Vec<_>>()).map_err(Into::into);
+    match args.next().as_deref() {
+        Some("hid") => return hid_cli::run(&args.collect::<Vec<_>>()).map_err(Into::into),
+        #[cfg(windows)]
+        Some("capture") => return capture::run_cli(&args.collect::<Vec<_>>()),
+        _ => {}
     }
 
     #[cfg(windows)]

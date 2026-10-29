@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Added `volty capture` for read-only hardware snapshots, with `--output` and `--strict` (privacy profile) options. The tray Diagnose action writes the same `.volty.jsonl` format.
 - Documented the hardware capture format and workflow, and added a **Hardware report** issue template for device-specific battery behavior.
 - The Diagnose window now also saves a redacted `.volty.jsonl` diagnostic capture for local review; captures are not uploaded automatically.
 

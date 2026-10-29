@@ -1646,6 +1646,7 @@ dependencies = [
  "tray-icon",
  "volty-battery",
  "volty-bluetooth",
+ "volty-capture",
  "volty-hid",
  "windows-sys 0.59.0",
  "winreg",
