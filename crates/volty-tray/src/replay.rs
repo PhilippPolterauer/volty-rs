@@ -327,7 +327,9 @@ fn replay_root(
     }
     let logical = u16::from_be_bytes([request.params[0], request.params[1]]);
     let metadata = (response.params[0], response.params[1], response.params[2]);
-    if metadata.0 != 0 {
+    // Index zero means "unsupported" for an ordinary feature, but it is the
+    // real runtime index of Root when a device lists Root in FeatureSet.
+    if metadata.0 != 0 || logical == FEATURE_ROOT {
         observed.insert(
             (exchange.id.clone(), exchange.device_index, logical),
             metadata,
@@ -932,6 +934,38 @@ mod tests {
         assert_eq!(report.features, 1);
         assert_eq!(report.readings, 1);
         assert_eq!(report.transport_errors, 0);
+    }
+
+    #[test]
+    fn root_feature_entry_is_verified_from_its_own_root_response() {
+        let mut file = unified_capture();
+        let CaptureRecord::HidppFeatures(table) = &mut file.records[2] else {
+            panic!("expected feature table");
+        };
+        table.features.push(HidppFeature {
+            logical_id: FEATURE_ROOT,
+            runtime_index: 0,
+            feature_type: 0,
+            version: 2,
+        });
+        let mut response = [0; 16];
+        response[..3].copy_from_slice(&[0, 0, 2]);
+        file.records.insert(
+            4,
+            CaptureRecord::HidppExchange(CaptureHidppExchange {
+                id: "iface-1".to_owned(),
+                device_index: 1,
+                t_ms: 2,
+                request: unified_frame(1, 0, FUNCTION_GET_FEATURE, 2, [0; 16]),
+                response: Some(unified_frame(1, 0, FUNCTION_GET_FEATURE, 2, response)),
+                error: None,
+                elapsed_ms: 1,
+            }),
+        );
+
+        let report = replay_capture(&file).unwrap();
+        assert_eq!(report.features, 2);
+        assert_eq!(report.readings, 1);
     }
 
     #[test]
