@@ -1,0 +1,97 @@
+name: Hardware report
+description: Report battery support or behavior for a specific device.
+title: "[hardware] "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for testing Volty with real hardware. This form is for device
+        support and battery behavior. Describe what Volty showed, then attach a
+        reviewed hardware capture.
+
+  - type: input
+    id: device-model
+    attributes:
+      label: Device model
+      description: The exact model name, including any revision or variant.
+      placeholder: Logitech G502 X Superlight RGB
+    validations:
+      required: true
+
+  - type: dropdown
+    id: connection
+    attributes:
+      label: Connection
+      description: How the device is connected to this Windows PC.
+      options:
+        - USB cable
+        - Lightspeed receiver
+        - Bluetooth
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: observed
+    attributes:
+      label: What Volty shows
+      description: Battery level, charging state, device name, or the error you see.
+      placeholder: Volty shows 55% and charging, but the tray icon is red.
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected / vendor software reading
+      description: Include the reading from Logitech G HUB or another vendor tool if available.
+      placeholder: I expected 80% because G HUB reports 80% and the mouse is not charging.
+    validations:
+      required: true
+
+  - type: input
+    id: volty-version
+    attributes:
+      label: Volty version
+      description: The version shown in About Volty or in the executable filename.
+      placeholder: 0.2.1
+    validations:
+      required: true
+
+  - type: input
+    id: windows-version
+    attributes:
+      label: Windows version
+      description: For example, Windows 11 24H2 or Windows 10 22H2.
+      placeholder: Windows 11 24H2
+    validations:
+      required: true
+
+  - type: markdown
+    attributes:
+      value: |
+        ### Attach a hardware capture
+
+        In the Volty tray, choose **Diagnose / Report an Issue**. Volty saves a
+        text report under `%APPDATA%\Volty\reports` and a machine-readable
+        `.volty.jsonl` capture under `%APPDATA%\Volty\captures`. The Diagnose
+        window shows the exact paths.
+
+        Review the capture before sharing it. After submitting this form, drag
+        the `.volty.jsonl` file into the comment box on the issue to attach it.
+        Do not paste the file contents into the form. See the
+        [hardware capture guide](https://github.com/PhilippPolterauer/volty-rs/blob/main/docs/hardware-capture.md)
+        for what is recorded and what is deliberately left out.
+
+  - type: checkboxes
+    id: privacy
+    attributes:
+      label: Privacy checklist
+      description: Captures are attached publicly. Review the file before sharing it.
+      options:
+        - label: I reviewed the capture
+          required: true
+        - label: It contains no paths/serials/names I do not want to share
+          required: true
+        - label: I understand nothing is uploaded automatically
+          required: true

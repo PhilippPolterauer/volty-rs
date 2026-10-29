@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Documented the hardware capture format and workflow, and added a **Hardware report** issue template for device-specific battery behavior.
+- The Diagnose window now also saves a redacted `.volty.jsonl` diagnostic capture for local review; captures are not uploaded automatically.
+
 ### Changed
 
 - Corrected the HID support documentation to describe generic HID battery support as implemented, name the Logitech G502 X Superlight RGB as the current primary use case, and remove stale "Logitech-only" claims. No new hardware validation is claimed.
