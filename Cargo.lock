@@ -1603,11 +1603,11 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 
 [[package]]
 name = "volty-battery"
-version = "0.3.0"
+version = "0.3.1"
 
 [[package]]
 name = "volty-bluetooth"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "volty-battery",
  "windows",
@@ -1617,7 +1617,7 @@ dependencies = [
 
 [[package]]
 name = "volty-capture"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "serde",
  "serde_json",
@@ -1625,7 +1625,7 @@ dependencies = [
 
 [[package]]
 name = "volty-hid"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "hidapi",
  "toml 0.8.2",
@@ -1635,7 +1635,7 @@ dependencies = [
 
 [[package]]
 name = "volty-tray"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "image",
  "notify",
