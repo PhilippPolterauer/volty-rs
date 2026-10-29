@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- The tray hover tooltip now shows one compact line per device with its battery percentage, ETA, or charge state, so two monitored devices fit without falling back to the summary text.
+
 ## [0.3.0] - 2026-10-29
 
 ### Added

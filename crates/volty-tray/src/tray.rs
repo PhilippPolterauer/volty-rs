@@ -363,17 +363,18 @@ impl TrayController {
     }
 
     /// Displays each readable device at the top of the tray menu. The tooltip
-    /// contains the full list when it fits.
+    /// shows each device on its own compact line when they fit.
     pub fn update_devices(
         &mut self,
         summary: &str,
         device_statuses: &[String],
+        tooltip_statuses: &[String],
         percentage: Option<u8>,
     ) -> Result<(), TrayError> {
         let percentage = percentage.map(|value| value.min(100));
         let icon_percentage = self.update_percentage(percentage, device_statuses.is_empty());
 
-        let tooltip = tooltip_for_devices(summary, device_statuses);
+        let tooltip = tooltip_for_devices(summary, tooltip_statuses);
         let empty_status = "No device status available".to_owned();
         let menu_device_statuses = if device_statuses.is_empty() {
             std::slice::from_ref(&empty_status)
@@ -639,8 +640,11 @@ fn sorted_monitored_devices_if_changed(
     (devices != known_devices).then_some(devices)
 }
 
-fn tooltip_for_devices(summary: &str, device_statuses: &[String]) -> String {
-    let details = device_statuses.join("; ");
+fn tooltip_for_devices(summary: &str, tooltip_statuses: &[String]) -> String {
+    if tooltip_statuses.is_empty() {
+        return shorten_tooltip(summary);
+    }
+    let details = tooltip_statuses.join("\n");
     if details.encode_utf16().count() <= MAX_TOOLTIP_UTF16_UNITS {
         return details;
     }
@@ -757,13 +761,36 @@ mod tests {
     #[test]
     fn tooltip_includes_all_device_statuses_when_they_fit() {
         let statuses = vec![
-            "Mouse A (slot 1): 85% (Discharging)".to_owned(),
-            "Mouse B (slot 2): 42% (Charging)".to_owned(),
+            "Mouse A (slot 1): 85% · Charging".to_owned(),
+            "Mouse B (slot 2): 42% · ETA 3h 12m".to_owned(),
         ];
 
         assert_eq!(
             tooltip_for_devices("2 devices monitored", &statuses),
-            statuses.join("; ")
+            statuses.join("\n")
+        );
+    }
+
+    #[test]
+    fn tooltip_shows_two_compact_device_lines() {
+        let statuses = vec![
+            "G502 X PLUS (slot 1): 56% · ETA 9h 20m".to_owned(),
+            "Baseus Bass BS2 Lite Hands-Free AG: 100% · ETA calculating".to_owned(),
+        ];
+
+        let tooltip = tooltip_for_devices("2 devices monitored", &statuses);
+
+        assert_eq!(tooltip.lines().count(), 2);
+        assert!(tooltip.starts_with("G502 X PLUS (slot 1): 56% · ETA 9h 20m\n"));
+        assert!(tooltip.ends_with("Baseus Bass BS2 Lite Hands-Free AG: 100% · ETA calculating"));
+        assert!(tooltip.encode_utf16().count() <= MAX_TOOLTIP_UTF16_UNITS);
+    }
+
+    #[test]
+    fn empty_tooltip_falls_back_to_the_summary() {
+        assert_eq!(
+            tooltip_for_devices("No supported devices discovered", &[]),
+            "No supported devices discovered"
         );
     }
 

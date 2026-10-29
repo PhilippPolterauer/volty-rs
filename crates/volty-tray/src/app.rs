@@ -11,7 +11,7 @@ use device_ui::{
     apply_poll_result, is_device_monitored, update_monitored_device_menu, update_tray_devices,
     update_visible_devices,
 };
-use labels::{append_config_error, battery_is_full, battery_status_label};
+use labels::{append_config_error, battery_is_full, battery_state_label, battery_status_label};
 use notifications::{process_device_reading, DeviceNotifications};
 use poll::PollUpdate;
 use session::DeviceSession;

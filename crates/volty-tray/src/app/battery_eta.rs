@@ -211,15 +211,17 @@ impl BatteryEtaEstimator {
     }
 }
 pub(super) fn battery_eta_label(reading: &DeviceReading) -> Option<String> {
-    if let Some(eta) = reading.estimated_time_remaining {
-        return Some(format!("ETA ~{}", format_battery_eta(eta)));
+    let level_percent = reading.battery.level_percent?;
+    if level_percent >= 100 || matches!(reading.battery.state, BatteryState::Charged) {
+        return None;
     }
-    if reading.battery.level_percent.is_some()
-        && matches!(
-            reading.battery.state,
-            BatteryState::Discharging | BatteryState::Unknown
-        )
-    {
+    if let Some(eta) = reading.estimated_time_remaining {
+        return Some(format!("ETA {}", format_battery_eta(eta)));
+    }
+    if matches!(
+        reading.battery.state,
+        BatteryState::Discharging | BatteryState::Unknown
+    ) {
         return Some("ETA calculating".to_owned());
     }
     None
@@ -248,7 +250,7 @@ pub(super) fn format_battery_eta(eta: Duration) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use volty_battery::BatteryLevel;
+    use volty_battery::{BatteryLevel, DeviceLabel};
     fn eta_battery(level_percent: u8, state: BatteryState) -> BatteryStatus {
         BatteryStatus {
             level_percent: Some(level_percent),
@@ -258,6 +260,26 @@ mod tests {
             raw_status: None,
             source: "test",
         }
+    }
+    fn eta_reading(battery: BatteryStatus) -> DeviceReading {
+        DeviceReading {
+            id: DeviceId::new("hid:test#1"),
+            label: DeviceLabel::new("Test device"),
+            battery,
+            estimated_time_remaining: None,
+            notification_error: None,
+        }
+    }
+    #[test]
+    fn battery_eta_label_is_omitted_for_a_full_battery() {
+        assert_eq!(
+            battery_eta_label(&eta_reading(eta_battery(100, BatteryState::Unknown))),
+            None
+        );
+        assert_eq!(
+            battery_eta_label(&eta_reading(eta_battery(99, BatteryState::Unknown))),
+            Some("ETA calculating".to_owned())
+        );
     }
     #[test]
     fn battery_eta_projects_remaining_time_after_the_configured_window() {

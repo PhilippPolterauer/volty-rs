@@ -5,8 +5,8 @@ pub(super) fn append_config_error(status: &mut String, error: Option<&str>) {
         status.push_str(error);
     }
 }
-pub(super) fn battery_status_label(battery: &BatteryStatus) -> String {
-    let state = match battery.state {
+pub(super) fn battery_state_label(battery: &BatteryStatus) -> &'static str {
+    match battery.state {
         BatteryState::Unknown => "Unknown charge state",
         BatteryState::Discharging => "Discharging",
         BatteryState::Charging => "Charging",
@@ -16,7 +16,10 @@ pub(super) fn battery_status_label(battery: &BatteryStatus) -> String {
         BatteryState::InvalidBattery => "Battery error: invalid battery",
         BatteryState::ThermalError => "Battery error: thermal",
         BatteryState::ChargingError => "Battery error: charging",
-    };
+    }
+}
+pub(super) fn battery_status_label(battery: &BatteryStatus) -> String {
+    let state = battery_state_label(battery);
     let level = match battery.level {
         BatteryLevel::Unknown => None,
         BatteryLevel::Critical => Some("critical level"),

@@ -117,8 +117,9 @@ Boot** in the tray menu. If enabled, Windows starts Volty from the executable's
 current location, so keep the file there. Volty monitors supported HID
 devices while running. Bluetooth is disabled in the default build and remains
 opt-in because hardware validation is limited. Its tray icon shows the lowest
-reported battery level; hover over it for device names, charging status, and
-an estimated time remaining after enough discharge history has accumulated.
+reported battery level; hover over it for one compact line per device with its
+name, battery level, charging status, and an estimated time remaining after
+enough discharge history has accumulated.
 
 ![Volty tray icon showing a monitored device's battery and charging status](./docs/tray.png)
 

@@ -1,6 +1,6 @@
 use super::{
-    append_config_error, battery_status_label, record_event, DeviceId, DeviceReading, FileLogger,
-    LogLevel,
+    append_config_error, battery_is_full, battery_state_label, battery_status_label, record_event,
+    DeviceId, DeviceReading, FileLogger, LogLevel,
 };
 use super::{battery_eta::battery_eta_label, poll::PollResult};
 use crate::tray::{DeviceMonitorEntry, TrayController};
@@ -67,6 +67,7 @@ pub(super) fn update_tray_devices(
     started: Instant,
 ) -> io::Result<()> {
     let mut device_statuses = Vec::with_capacity(readings.len());
+    let mut tooltip_statuses = Vec::with_capacity(readings.len());
     let mut lowest_percentage: Option<u8> = None;
     for reading in readings {
         let device_name = reading.label.display();
@@ -90,6 +91,7 @@ pub(super) fn update_tray_devices(
             |value| format!("{value}%"),
         );
         device_statuses.push(format!("{device_name}: {percentage_label} ({status})"));
+        tooltip_statuses.push(compact_device_status(reading));
     }
     let device_count = device_statuses.len();
     if let Some(error) = notification_config_error {
@@ -101,7 +103,12 @@ pub(super) fn update_tray_devices(
     );
     append_config_error(&mut summary, notification_config_error);
 
-    if let Err(error) = tray.update_devices(&summary, &device_statuses, lowest_percentage) {
+    if let Err(error) = tray.update_devices(
+        &summary,
+        &device_statuses,
+        &tooltip_statuses,
+        lowest_percentage,
+    ) {
         record_event(
             diagnostic_log,
             file_logger,
@@ -112,6 +119,21 @@ pub(super) fn update_tray_devices(
     }
     Ok(())
 }
+
+fn compact_device_status(reading: &DeviceReading) -> String {
+    let percentage = reading
+        .battery
+        .level_percent
+        .map_or_else(|| "battery unknown".to_owned(), |value| format!("{value}%"));
+    let detail = if battery_is_full(&reading.battery) {
+        "Full".to_owned()
+    } else {
+        battery_eta_label(reading)
+            .unwrap_or_else(|| battery_state_label(&reading.battery).to_owned())
+    };
+    format!("{}: {percentage} · {detail}", reading.label.display())
+}
+
 pub(super) fn update_monitored_device_menu(
     tray: &mut TrayController,
     devices: &HashMap<DeviceId, String>,
@@ -188,6 +210,7 @@ pub(super) fn is_device_monitored(
 mod tests {
     use super::*;
     use std::collections::{BTreeMap, HashMap};
+    use std::time::Duration;
     use volty_battery::{BatteryLevel, BatteryState, BatteryStatus, DeviceLabel};
     fn test_reading() -> DeviceReading {
         DeviceReading {
@@ -235,5 +258,54 @@ mod tests {
         let visible = monitored_readings(&latest_readings, &monitored_devices);
         assert_eq!(visible.len(), 1);
         assert_eq!(visible[0].id, included_id);
+    }
+
+    #[test]
+    fn compact_device_status_keeps_percentage_and_eta_on_one_line() {
+        let mut reading = test_reading();
+        reading.estimated_time_remaining = Some(Duration::from_secs(90 * 60));
+
+        assert_eq!(
+            compact_device_status(&reading),
+            "Test device (slot 1): 20% · ETA 1h 30m"
+        );
+    }
+
+    #[test]
+    fn compact_device_status_uses_the_charge_state_without_an_eta() {
+        let mut reading = test_reading();
+        reading.battery.level_percent = Some(87);
+        reading.battery.level = BatteryLevel::Good;
+        reading.battery.state = BatteryState::Charging;
+
+        assert_eq!(
+            compact_device_status(&reading),
+            "Test device (slot 1): 87% · Charging"
+        );
+    }
+
+    #[test]
+    fn compact_device_status_reports_unknown_percentages() {
+        let mut reading = test_reading();
+        reading.battery.level_percent = None;
+        reading.battery.state = BatteryState::Charged;
+
+        assert_eq!(
+            compact_device_status(&reading),
+            "Test device (slot 1): battery unknown · Full"
+        );
+    }
+
+    #[test]
+    fn compact_device_status_shows_full_at_one_hundred_percent() {
+        let mut reading = test_reading();
+        reading.battery.level_percent = Some(100);
+        reading.battery.level = BatteryLevel::Unknown;
+        reading.battery.state = BatteryState::Unknown;
+
+        assert_eq!(
+            compact_device_status(&reading),
+            "Test device (slot 1): 100% · Full"
+        );
     }
 }
