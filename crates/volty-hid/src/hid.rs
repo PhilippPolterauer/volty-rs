@@ -1,3 +1,4 @@
+use crate::battery_query::{discover_battery_feature, read_battery, BatteryFeature, QUERY_TIMEOUT};
 use crate::logitech_hidpp::{transact_io, ReportIo};
 use crate::*;
 use hidapi::{DeviceInfo, HidApi, HidDevice};
@@ -179,6 +180,17 @@ impl HidppSession {
         self.software_ids = software_ids;
         result
     }
+
+    /// Runs `f` with the session allocator while `self` is borrowed as the transport.
+    fn with_software_ids<R>(
+        &mut self,
+        f: impl FnOnce(&mut Self, &mut SoftwareIdAllocator) -> R,
+    ) -> R {
+        let mut software_ids = std::mem::take(&mut self.software_ids);
+        let result = f(self, &mut software_ids);
+        self.software_ids = software_ids;
+        result
+    }
 }
 
 impl ReportIo for HidDevice {
@@ -242,22 +254,6 @@ fn open_hidpp_session(info: &HidInterfaceInfo) -> Result<HidppSession, HidppErro
     })
 }
 
-const PROBE_TIMEOUT: Duration = Duration::from_secs(1);
-const QUERY_TIMEOUT: Duration = Duration::from_secs(2);
-
-/// Where a device keeps its battery, resolved once so later polls skip the
-/// Root and capability round trips.
-#[derive(Clone, Copy)]
-enum BatteryFeature {
-    Unified {
-        index: u8,
-        capabilities: UnifiedBatteryCapabilities,
-    },
-    Legacy {
-        index: u8,
-    },
-}
-
 type FeatureKey = (CString, u8);
 
 static BATTERY_FEATURES: LazyLock<Mutex<HashMap<FeatureKey, BatteryFeature>>> =
@@ -297,66 +293,15 @@ fn forget_absent_interfaces(interfaces: &[HidInterfaceInfo]) {
     crate::generic_battery::forget_absent_interfaces(interfaces);
 }
 
-fn discover_battery_feature(
-    session: &mut HidppSession,
-    device_index: u8,
-) -> Result<BatteryFeature, HidppError> {
-    // Only the first request can hit an empty slot, so only it uses the short probe timeout.
-    if let Some(feature) =
-        session.get_feature(device_index, FEATURE_UNIFIED_BATTERY, PROBE_TIMEOUT)?
-    {
-        let response = transact_feature(
-            session,
-            device_index,
-            feature.feature_index,
-            FUNCTION_GET_UNIFIED_BATTERY_CAPABILITIES,
-            QUERY_TIMEOUT,
-        )?;
-        return Ok(BatteryFeature::Unified {
-            index: feature.feature_index,
-            capabilities: parse_unified_battery_capabilities(&response)?,
-        });
-    }
-    if let Some(feature) =
-        session.get_feature(device_index, FEATURE_BATTERY_STATUS, QUERY_TIMEOUT)?
-    {
-        return Ok(BatteryFeature::Legacy {
-            index: feature.feature_index,
-        });
-    }
-    Err(HidppError::UnsupportedBatteryFeature)
-}
-
-fn read_battery(
-    session: &mut HidppSession,
-    device_index: u8,
-    feature: BatteryFeature,
-) -> Result<BatteryStatus, HidppError> {
-    match feature {
-        BatteryFeature::Unified {
-            index,
-            capabilities,
-        } => {
-            let response = transact_feature(
-                session,
-                device_index,
-                index,
-                FUNCTION_GET_UNIFIED_BATTERY_INFO,
-                QUERY_TIMEOUT,
-            )?;
-            parse_unified_battery(&response, capabilities)
-        }
-        BatteryFeature::Legacy { index } => read_legacy_battery(session, device_index, index),
-    }
-}
-
 fn query_battery_session(
     session: &mut HidppSession,
     device_index: u8,
 ) -> Result<BatteryStatus, HidppError> {
     let key = (session.info.path.clone(), device_index);
     if let Some(feature) = cached_feature(&key) {
-        match read_battery(session, device_index, feature) {
+        match session.with_software_ids(|transport, software_ids| {
+            read_battery(transport, device_index, software_ids, feature)
+        }) {
             Ok(battery) => return Ok(battery),
             // The device did not answer, which says nothing about its feature layout.
             Err(error @ (HidppError::Timeout | HidppError::HidApi(_))) => return Err(error),
@@ -364,8 +309,12 @@ fn query_battery_session(
             Err(_) => forget_feature(&key),
         }
     }
-    let feature = discover_battery_feature(session, device_index)?;
-    let battery = read_battery(session, device_index, feature)?;
+    let feature = session.with_software_ids(|transport, software_ids| {
+        discover_battery_feature(transport, device_index, software_ids)
+    })?;
+    let battery = session.with_software_ids(|transport, software_ids| {
+        read_battery(transport, device_index, software_ids, feature)
+    })?;
     cache_feature(key, feature);
     Ok(battery)
 }
@@ -374,41 +323,13 @@ fn query_device_session(
     session: &mut HidppSession,
     device_index: u8,
 ) -> Result<(Result<Option<String>, HidppError>, BatteryStatus), HidppError> {
-    let feature = discover_battery_feature(session, device_index)?;
+    let feature = session.with_software_ids(|transport, software_ids| {
+        discover_battery_feature(transport, device_index, software_ids)
+    })?;
     let name = session.get_device_name(device_index, QUERY_TIMEOUT);
-    let battery = read_battery(session, device_index, feature)?;
+    let battery = session.with_software_ids(|transport, software_ids| {
+        read_battery(transport, device_index, software_ids, feature)
+    })?;
     cache_feature((session.info.path.clone(), device_index), feature);
     Ok((name, battery))
-}
-
-fn read_legacy_battery(
-    session: &mut HidppSession,
-    device_index: u8,
-    feature_index: u8,
-) -> Result<BatteryStatus, HidppError> {
-    let response = transact_feature(
-        session,
-        device_index,
-        feature_index,
-        FUNCTION_GET_BATTERY_STATUS,
-        Duration::from_secs(2),
-    )?;
-    parse_legacy_battery_status(&response)
-}
-
-fn transact_feature(
-    session: &mut HidppSession,
-    device_index: u8,
-    feature_index: u8,
-    function_id: u8,
-    timeout: Duration,
-) -> Result<HidppFrame, HidppError> {
-    let request = HidppFrame::long(
-        device_index,
-        feature_index,
-        function_id,
-        session.software_ids.allocate(),
-        [0; 16],
-    );
-    session.transact(&request, timeout)
 }
