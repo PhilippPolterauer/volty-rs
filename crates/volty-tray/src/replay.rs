@@ -1022,6 +1022,7 @@ mod tests {
         let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/hardware");
         for name in [
             "synthetic-g502x-unified.volty.jsonl",
+            "g502x-plus-unified.volty.jsonl",
             "synthetic-generic-battery.volty.jsonl",
         ] {
             let file = CaptureFile::read(root.join(name)).unwrap();

@@ -10,7 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - Added `volty capture` for read-only hardware snapshots, with `--output` and `--strict` (privacy profile) options. The tray Diagnose action writes the same `.volty.jsonl` format.
-- Added `volty capture inspect` and `volty capture replay` for offline schema checks and decoder/reading verification, plus synthetic fixtures under `tests/hardware`.
+- Added `volty capture inspect` and `volty capture replay` for offline schema checks and decoder/reading verification, plus synthetic and reviewed hardware fixtures under `tests/hardware`.
 - Generic HID capture samples now include charging and discharging state bits so layout replay can reproduce the normalized battery state without full input reports.
 - Snapshot capture now uses previously discovered HID++ slots when available, avoiding a full multi-slot probe on the common path.
 - Documented the hardware capture format and workflow, and added a **Hardware report** issue template for device-specific battery behavior.

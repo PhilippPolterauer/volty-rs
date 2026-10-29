@@ -150,10 +150,10 @@ A capture supports two kinds of follow-up through `volty capture replay`:
 
 Replay checks the decoder, not the device. A successful replay means Volty
 reproduces the recorded outcome; it does not prove that every device with the
-same IDs behaves the same way. The repository's synthetic fixtures in
-`tests/hardware` exercise both paths. Add a reviewed hardware capture there only
-when it contains no private data and its behavior should become a regression
-expectation.
+same IDs behaves the same way. The repository's fixtures in `tests/hardware`
+exercise both paths, including a pruned G502 X capture. Add a reviewed hardware
+capture there only when it contains no private data and its behavior should
+become a regression expectation.
 
 Captures in the test corpus can be marked with one of these states:
 
