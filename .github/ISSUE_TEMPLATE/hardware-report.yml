@@ -54,7 +54,7 @@ body:
     attributes:
       label: Volty version
       description: The version shown in About Volty or in the executable filename.
-      placeholder: 0.2.1
+      placeholder: 0.3.0
     validations:
       required: true
 

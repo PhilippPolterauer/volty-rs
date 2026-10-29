@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-10-29
+
 ### Added
 
 - Added `volty capture` for read-only hardware snapshots, with `--output` and `--strict` (privacy profile) options. The tray Diagnose action writes the same `.volty.jsonl` format.
@@ -19,6 +21,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Added a tested-device table to the README with each device's connection, battery backend, verified functionality, and support status. The table tracks verified, experimental, and known-unsupported hardware and is the place to add newly tested devices.
 - `volty-bluetooth` now keeps the pure property and GATT decoders available by default and gates the Windows backend behind its default `windows-backend` feature. The tray enables that backend only with its opt-in `bluetooth` feature, so hardware capture replay works in default builds.
 - Corrected the HID support documentation to describe generic HID battery support as implemented, name the Logitech G502 X Superlight RGB as the current primary use case, and remove stale "Logitech-only" claims. No new hardware validation is claimed.
 - Hardened CI: Clippy, tests, and builds run with `--locked`, tests use `--all-features`, a Rust 1.89.0 MSRV job checks the workspace, and an Ubuntu job runs `cargo audit --deny warnings` against `Cargo.lock`.

@@ -27,14 +27,39 @@
 
 ---
 
-## Current support
+## Device support
 
 Volty supports Logitech HID++ 2.0 interfaces and standard HID battery reports
-on Windows 10/11. The Bluetooth tray integration is opt-in and disabled in
-default builds because hardware validation is still limited: one Bluetooth
-Classic headset has been verified through the Windows PnP battery property,
-while the BLE GATT path has not been tested on real hardware. To include it in
-a local build, pass the tray crate's `bluetooth` feature:
+on Windows 10/11. The table below tracks devices that have actually been tested
+on hardware. Devices that use a supported protocol are handled best-effort even
+when they are not listed, but they are not marked as verified until a reading
+and its capture replay are confirmed.
+
+| Device | Connection | Battery backend | Tested functionality | Status |
+| --- | --- | --- | --- | --- |
+| Logitech G502 X Superlight RGB | USB cable or Lightspeed receiver | Logitech HID++ 2.0 Unified Battery (`0x1004`) | Battery percentage, charging/discharging state, HID++ capture and offline replay | Verified |
+| Baseus Bass BS2 Lite | Bluetooth Classic (HFP/A2DP) | Windows PnP battery property (`DEVPKEY_Device_BatteryLevel`) | Battery percentage, Bluetooth property capture and offline replay; charging state is not reported | Verified, opt-in Bluetooth build |
+| Keychron K8 Pro | USB cable or Bluetooth | None exposed to Windows | No standard HID battery, BLE GATT Battery Service, or usable vendor battery command | Not supported |
+| Generic HID battery devices | Any HID transport | Standard HID battery usages | Battery percentage, charging state when the descriptor reports it, layout capture and offline replay | Experimental; no named hardware verified |
+
+Status meanings:
+
+- **Verified:** a battery reading was observed on real hardware and reproduced
+  from a hardware capture.
+- **Experimental:** the code path is implemented and covered by synthetic
+  fixtures, but no named hardware has been verified.
+- **Not supported:** tested on real hardware and no non-invasive host-readable
+  battery source was found.
+
+To add a device, collect a reviewed hardware capture and open a **Hardware
+report** issue. See [Hardware capture](./docs/hardware-capture.md). A device is
+added to this table only after its reading is verified.
+
+The Bluetooth tray integration is opt-in and disabled in default builds because
+hardware validation is still limited: one Bluetooth Classic headset has been
+verified through the Windows PnP battery property, while the BLE GATT path has
+not been tested on real hardware. To include it in a local build, pass the tray
+crate's `bluetooth` feature:
 
 ```powershell
 cargo run --release --package volty-tray --features bluetooth
@@ -447,7 +472,7 @@ User-facing changes are tracked in [CHANGELOG.md](./CHANGELOG.md).
 
 To cut a release, bump the workspace crates' version, move the
 `[Unreleased]` changelog entries under the new version heading, commit, and
-push a matching tag such as `v0.2.1`. The Windows release workflow verifies the
+push a matching tag such as `v0.3.0`. The Windows release workflow verifies the
 tag against the `volty-tray` package version, runs format, Clippy, and test
 checks, and publishes a standalone `x86_64-pc-windows-msvc` executable with a
 SHA-256 checksum to the GitHub Release. No installer or sidecar runtime files
