@@ -22,8 +22,9 @@ use super::{
     WINDOWS_BATTERY_LIFE_PROPERTY,
 };
 use crate::{
-    battery_status, decode_windows_battery_life, error, BluetoothBatteryReading, BluetoothError,
-    BluetoothScan, FALLBACK_DEVICE_NAME,
+    battery_status, decode_windows_battery_life, error, BluetoothBatteryReading,
+    BluetoothDeviceKind, BluetoothError, BluetoothEvidence, BluetoothObservation, BluetoothScan,
+    FALLBACK_DEVICE_NAME,
 };
 
 const MAX_DEVICE_INSTANCE_ID_UNITS: u32 = 65_536;
@@ -178,6 +179,16 @@ fn inspect_bluetooth_device(
         return outcome;
     }
     let name = read_device_name(device_info_set, info, scan);
+    scan.evidence.push(BluetoothEvidence {
+        device_id: instance_id.clone(),
+        name: name.clone(),
+        kind: BluetoothDeviceKind::Pnp,
+        observation: BluetoothObservation::Property {
+            property: "DEVPKEY_Device_BatteryLevel",
+            property_type: "byte",
+            raw_value: bytes[0],
+        },
+    });
     match decode_windows_battery_life(bytes[0]) {
         Ok(Some(level)) => {
             scan.discovery_events.push(format!(
@@ -186,6 +197,7 @@ fn inspect_bluetooth_device(
             scan.readings.push(BluetoothBatteryReading {
                 device_id: instance_id,
                 name,
+                kind: BluetoothDeviceKind::Pnp,
                 battery: battery_status(level, crate::SOURCE_DEVICE_PROPERTY),
             });
         }

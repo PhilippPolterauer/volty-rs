@@ -158,6 +158,33 @@ validation of the BLE GATT path and a second headset model.
   internally for stable notification identity; they are not written to logs
   or reports. HID interface paths are also excluded from discovery logs.
 
+## Hardware capture and replay
+
+When the tray is built with the `bluetooth` feature, `volty capture` and the
+Diagnose action add Bluetooth records to the same `.volty.jsonl` file used for
+HID captures:
+
+- `bluetooth_device` identifies each observed device with a capture-local
+  `bt-N` id and records whether Windows exposed it as classic, PnP, or BLE.
+- `bluetooth_property` keeps the raw Windows property byte, property name, and
+  type before validation.
+- `bluetooth_gatt` keeps the raw Battery Level payload plus the service and
+  characteristic UUIDs.
+- `reading` records the normalized result with `device_index` set to `null`.
+
+Bluetooth addresses and opaque Windows device ids are never written. Friendly
+names follow the capture privacy profile and are omitted by `--strict`.
+
+`volty capture replay` works without a Bluetooth backend and without hardware:
+it re-runs the recorded property or GATT bytes through the same decoders used
+by the tray and fails if the normalized reading does not match. A capture made
+by a Bluetooth-enabled build can therefore be verified in a default build.
+Replay reproduces what Windows exposed on the captured machine; it does not
+prove support for other headsets or transports.
+
+See [Hardware capture](./hardware-capture.md) for the record format, privacy
+rules, and the capture submission workflow.
+
 ## Verification and hardware validation
 
 ### Automated tests
@@ -166,6 +193,12 @@ validation of the BLE GATT path and a second headset model.
   malformed or out-of-range values.
 - Existing HID++ parsing, polling, notification, and tray behavior remains
   unchanged.
+- Bluetooth capture mapping replaces opaque device ids with capture-local
+  `bt-N` ids, honors both privacy profiles, and never serializes a Windows
+  device id or Bluetooth address.
+- Property and GATT replay re-decode synthetic evidence to the recorded
+  reading, reject mismatches and unknown sentinels, and require a matching
+  device record.
 
 Validated so far:
 
@@ -173,11 +206,20 @@ Validated so far:
   with a valid percentage.
 - The Bluetooth scan completes without warnings for that headset, and the
   reading carries the stable PnP instance id as its device identity.
+- A Bluetooth-enabled build records the headset as `bt-1` with a raw
+  `bluetooth_property` value and a reading whose `device_index` is `null`.
+  `volty capture replay` reproduces the 100% reading in both Bluetooth-enabled
+  and default builds.
+- The generated capture contains no Bluetooth address, opaque PnP instance id,
+  or device path; only the capture-local `bt-1` id and the privacy-filtered
+  friendly name appear.
 - Diagnose output includes Bluetooth scan counts and reading status without
   Bluetooth addresses or device paths.
 
 Still required:
 
+- A live BLE GATT capture from a headset exposing Battery Service, replayed
+  without hardware.
 - A tested BLE headset exposing Battery Service appears in the device list
   with its reported percentage.
 - Removing or disconnecting a validated headset does not hang the UI or stop

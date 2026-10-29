@@ -35,6 +35,11 @@ impl Redactor {
         None
     }
 
+    /// Bluetooth friendly names follow the same policy as product strings.
+    pub fn bluetooth_name(&self, value: Option<&str>) -> Option<String> {
+        self.model_string(value)
+    }
+
     fn model_string(&self, value: Option<&str>) -> Option<String> {
         match self.profile {
             PrivacyProfile::Standard => value.map(str::to_owned),

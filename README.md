@@ -45,6 +45,9 @@ vendor-specific Bluetooth protocols are not currently supported. Generic HID
 support covers devices whose report descriptor declares a battery level (Generic
 Device Controls *Battery Strength* or the Battery System page); a device that
 only exposes its battery through a vendor-defined report is not detected.
+Hardware captures made by a `bluetooth` build also record raw Bluetooth
+property or GATT evidence, and `volty capture replay` validates that evidence
+even in default builds.
 
 The project owner's current primary use case is the Logitech G502 X Superlight
 RGB; device support remains best-effort and hardware validation is limited.
@@ -63,7 +66,7 @@ RGB; device support remains best-effort and hardware validation is limited.
 * **Experimental Bluetooth integration:** Opt-in via the `bluetooth` Cargo feature and disabled in default builds. Validated with one Bluetooth Classic headset through the Windows PnP battery property; BLE GATT support is implemented but not yet hardware-validated.
 * **Configurable Color Coding:** The default tray map is green above 30%, yellow from 16–30%, and red at 15% or below. Thresholds and colors can be overridden in the TOML configuration.
 * **Threshold Alerts:** One-time native Windows toast notification per discharge cycle when battery hits warning thresholds.
-* **One-Click Diagnostics:** A native Diagnose window shows recent app logs, backend status, and HID details, with buttons to copy the log or open a GitHub issue draft, and saves a machine-readable `.volty.jsonl` hardware capture in addition to the text report for local review.
+* **One-Click Diagnostics:** A native Diagnose window shows recent app logs, backend status, and HID details, with buttons to copy the log or open a GitHub issue draft, and saves a machine-readable `.volty.jsonl` hardware capture (including Bluetooth property and GATT evidence when built with the `bluetooth` feature) in addition to the text report for local review.
 * **Retry After Read Errors:** Polling resumes after errors using the configurable retry interval.
 * **Per-Device Control:** Choose which discovered devices are monitored from the tray's **Monitored Devices** submenu; the choice is persisted locally.
 * **Self-Maintaining Logs:** The local log file rotates at 5 MiB and keeps one `.1` backup.
@@ -112,16 +115,17 @@ Configuration and logs are stored in `%APPDATA%\Volty`. Choose
 For troubleshooting, choose **Diagnose / Report an Issue**. It saves a text
 report under `%APPDATA%\Volty\reports` and a machine-readable `.volty.jsonl`
 hardware capture under `%APPDATA%\Volty\captures`; the Diagnose window shows
-the exact paths. Review both files before sharing them, because names or log
-messages can identify your setup. Nothing is uploaded automatically. To report
-battery support or behavior, choose the **Hardware report** issue template,
-attach the capture, and describe what you expected versus what Volty showed;
-see [Hardware capture](./docs/hardware-capture.md) for what the file contains
-and what is deliberately left out. For a console snapshot, run
-`volty capture`; add `--strict` to omit model strings or `--output <path>` to
-choose the file. `volty capture inspect <file>` validates a capture, and
-`volty capture replay <file>` checks that its recorded readings can be decoded
-again without hardware.
+the exact paths. Bluetooth evidence is included when Volty was built with the
+opt-in `bluetooth` feature. Review both files before sharing them, because
+names or log messages can identify your setup. Nothing is uploaded
+automatically. To report battery support or behavior, choose the **Hardware
+report** issue template, attach the capture, and describe what you expected
+versus what Volty showed; see [Hardware capture](./docs/hardware-capture.md)
+for what the file contains and what is deliberately left out. For a console
+snapshot, run `volty capture`; add `--strict` to omit model strings or
+`--output <path>` to choose the file. `volty capture inspect <file>` validates
+a capture, and `volty capture replay <file>` checks that its recorded HID or
+Bluetooth readings can be decoded again without hardware.
 **Reset Volty** asks for confirmation before deleting
 `%APPDATA%\Volty\config.toml` and
 `%LOCALAPPDATA%\Volty\device-state.sqlite3`. It also disables **Start on Boot**

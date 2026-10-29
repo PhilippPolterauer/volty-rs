@@ -61,6 +61,9 @@ pub enum CaptureRecord {
     Header(CaptureHeader),
     Interface(CaptureInterface),
     Match(CaptureMatch),
+    BluetoothDevice(CaptureBluetoothDevice),
+    BluetoothProperty(CaptureBluetoothProperty),
+    BluetoothGatt(CaptureBluetoothGatt),
     HidppFeatures(CaptureHidppFeatures),
     HidLayout(CaptureHidLayout),
     HidppExchange(CaptureHidppExchange),
@@ -78,6 +81,9 @@ impl CaptureRecord {
             Self::Header(_) => "header",
             Self::Interface(_) => "interface",
             Self::Match(_) => "match",
+            Self::BluetoothDevice(_) => "bluetooth_device",
+            Self::BluetoothProperty(_) => "bluetooth_property",
+            Self::BluetoothGatt(_) => "bluetooth_gatt",
             Self::HidppFeatures(_) => "hidpp_features",
             Self::HidLayout(_) => "hid_layout",
             Self::HidppExchange(_) => "hidpp_exchange",
@@ -142,6 +148,59 @@ pub struct CaptureMatch {
     pub outcome: MatchOutcome,
     /// Short reason for the outcome.
     pub detail: Option<String>,
+}
+
+/// Which Windows Bluetooth surface exposed a device.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CaptureBluetoothKind {
+    /// A Windows Classic Bluetooth device or one of its profiles.
+    Classic,
+    /// A present Bluetooth PnP device node.
+    Pnp,
+    /// A paired Bluetooth Low Energy device.
+    Ble,
+}
+
+/// One Bluetooth device or PnP node observed during a capture.
+///
+/// Bluetooth addresses and opaque Windows device ids are deliberately not part
+/// of this record. [`Self::id`] is capture-local and only correlates records.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CaptureBluetoothDevice {
+    pub id: String,
+    pub kind: CaptureBluetoothKind,
+    /// Friendly name, subject to the capture's privacy profile.
+    pub name: Option<String>,
+}
+
+/// A raw Windows battery property value observed for a Bluetooth device.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CaptureBluetoothProperty {
+    pub id: String,
+    pub t_ms: u64,
+    /// Windows property name, such as `System.Devices.BatteryLife`.
+    pub property: String,
+    /// Windows property type, such as `byte` or `uint8`.
+    pub property_type: String,
+    /// Byte value before range validation.
+    pub raw_value: u8,
+}
+
+/// A raw GATT Battery Level payload observed for a Bluetooth device.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CaptureBluetoothGatt {
+    pub id: String,
+    pub t_ms: u64,
+    /// Service UUID without a `0x` prefix.
+    pub service: String,
+    /// Characteristic UUID without a `0x` prefix.
+    pub characteristic: String,
+    /// Lowercase hex without a `0x` prefix.
+    pub value: String,
 }
 
 /// HID++ feature table discovered for one device.
@@ -272,7 +331,8 @@ pub struct HidButtonSample {
 #[serde(deny_unknown_fields)]
 pub struct CaptureReading {
     pub id: String,
-    pub device_index: u8,
+    /// HID device index when the reading came from a HID transport.
+    pub device_index: Option<u8>,
     pub t_ms: u64,
     pub backend: String,
     pub label: Option<String>,

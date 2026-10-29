@@ -62,6 +62,7 @@ fn merge_scan(target: &mut BluetoothScan, mut source: BluetoothScan) {
             target.readings.push(reading);
         }
     }
+    target.evidence.append(&mut source.evidence);
     target.discovery_events.append(&mut source.discovery_events);
     target.warnings.append(&mut source.warnings);
 }
@@ -69,13 +70,30 @@ fn merge_scan(target: &mut BluetoothScan, mut source: BluetoothScan) {
 #[cfg(test)]
 mod tests {
     use super::merge_scan;
-    use crate::{battery_status, BluetoothBatteryReading, BluetoothScan, SOURCE_GATT};
+    use crate::{
+        battery_status, BluetoothBatteryReading, BluetoothDeviceKind, BluetoothEvidence,
+        BluetoothObservation, BluetoothScan, SOURCE_GATT,
+    };
 
     fn reading(device_id: &str, level: u8) -> BluetoothBatteryReading {
         BluetoothBatteryReading {
             device_id: device_id.to_owned(),
             name: format!("device-{device_id}"),
+            kind: BluetoothDeviceKind::Ble,
             battery: battery_status(level, SOURCE_GATT),
+        }
+    }
+
+    fn evidence(device_id: &str) -> BluetoothEvidence {
+        BluetoothEvidence {
+            device_id: device_id.to_owned(),
+            name: format!("device-{device_id}"),
+            kind: BluetoothDeviceKind::Ble,
+            observation: BluetoothObservation::Gatt {
+                service: "180f",
+                characteristic: "2a19",
+                value: vec![50],
+            },
         }
     }
 
@@ -83,12 +101,14 @@ mod tests {
     fn merge_scan_keeps_first_reading_and_appends_scan_metadata() {
         let mut target = BluetoothScan {
             readings: vec![reading("same", 20)],
+            evidence: vec![evidence("same")],
             warnings: vec!["first warning".to_owned()],
             discovery_events: vec!["first event".to_owned()],
             devices_examined: 2,
         };
         let source = BluetoothScan {
             readings: vec![reading("same", 80), reading("new", 60)],
+            evidence: vec![evidence("same"), evidence("new")],
             warnings: vec!["second warning".to_owned()],
             discovery_events: vec!["second event".to_owned()],
             devices_examined: 3,
@@ -100,6 +120,7 @@ mod tests {
         assert_eq!(target.readings.len(), 2);
         assert_eq!(target.readings[0].battery.level_percent, Some(20));
         assert_eq!(target.readings[1].device_id, "new");
+        assert_eq!(target.evidence.len(), 3);
         assert_eq!(target.warnings, ["first warning", "second warning"]);
         assert_eq!(target.discovery_events, ["first event", "second event"]);
     }

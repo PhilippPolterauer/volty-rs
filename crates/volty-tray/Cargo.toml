@@ -9,7 +9,7 @@ description = "Windows system tray application for Volty"
 
 [features]
 default = []
-bluetooth = ["dep:volty-bluetooth"]
+bluetooth = ["volty-bluetooth/windows-backend"]
 
 [[bin]]
 name = "volty"
@@ -24,7 +24,7 @@ winres = "0.1"
 
 [target.'cfg(windows)'.dependencies]
 volty-battery.workspace = true
-volty-bluetooth = { path = "../volty-bluetooth", optional = true }
+volty-bluetooth = { path = "../volty-bluetooth", default-features = false }
 volty-capture = { path = "../volty-capture" }
 volty-hid = { path = "../volty-hid", features = ["hidapi", "profile"] }
 tray-icon = "0.14"
@@ -49,6 +49,9 @@ winreg = "0.52"
 
 [target.x86_64-pc-windows-msvc.dependencies]
 rusqlite = { version = "0.41.0", features = ["bundled"], default-features = false }
+
+[dev-dependencies]
+serde_json.workspace = true
 
 [lints]
 workspace = true

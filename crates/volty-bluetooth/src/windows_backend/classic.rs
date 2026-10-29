@@ -18,7 +18,8 @@ use super::{
 };
 use crate::{
     battery_status, decode_windows_battery_life, normalize_device_name, BluetoothBatteryReading,
-    BluetoothError, BluetoothScan, FALLBACK_DEVICE_NAME,
+    BluetoothDeviceKind, BluetoothError, BluetoothEvidence, BluetoothObservation, BluetoothScan,
+    FALLBACK_DEVICE_NAME,
 };
 
 const HFP_HANDSFREE_SERVICE_ID: u32 = 0x111e;
@@ -88,9 +89,21 @@ pub(super) fn scan_windows_battery_property(
                 scan.discovery_events.push(format!(
                     "{name:?}: matched battery support because Windows supplied a valid {WINDOWS_BATTERY_LIFE_PROPERTY} value"
                 ));
-                scan.readings.push(BluetoothBatteryReading {
-                    device_id: device_id.to_string_lossy(),
+                let device_key = device_id.to_string_lossy();
+                scan.evidence.push(BluetoothEvidence {
+                    device_id: device_key.clone(),
                     name: name.clone(),
+                    kind: BluetoothDeviceKind::Classic,
+                    observation: BluetoothObservation::Property {
+                        property: WINDOWS_BATTERY_LIFE_PROPERTY,
+                        property_type: "uint8",
+                        raw_value: level,
+                    },
+                });
+                scan.readings.push(BluetoothBatteryReading {
+                    device_id: device_key,
+                    name: name.clone(),
+                    kind: BluetoothDeviceKind::Classic,
                     battery: battery_status(level, crate::SOURCE_DEVICE_PROPERTY),
                 });
                 Some(level)
@@ -171,9 +184,21 @@ fn scan_hfp_service_battery_property(
         match read_windows_battery_life(&service) {
             Ok(Some(level)) => {
                 battery_properties_found += 1;
-                scan.readings.push(BluetoothBatteryReading {
-                    device_id: device_id.to_string_lossy(),
+                let device_key = device_id.to_string_lossy();
+                scan.evidence.push(BluetoothEvidence {
+                    device_id: device_key.clone(),
                     name: name.to_owned(),
+                    kind: BluetoothDeviceKind::Classic,
+                    observation: BluetoothObservation::Property {
+                        property: WINDOWS_BATTERY_LIFE_PROPERTY,
+                        property_type: "uint8",
+                        raw_value: level,
+                    },
+                });
+                scan.readings.push(BluetoothBatteryReading {
+                    device_id: device_key,
+                    name: name.to_owned(),
+                    kind: BluetoothDeviceKind::Classic,
                     battery: battery_status(level, crate::SOURCE_DEVICE_PROPERTY),
                 });
             }

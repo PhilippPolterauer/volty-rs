@@ -6,9 +6,12 @@
 
 use std::{collections::HashMap, error::Error, fmt::Write as _, io, path::Path};
 
+use volty_bluetooth::{
+    decode_battery_level, decode_windows_battery_life, SOURCE_DEVICE_PROPERTY, SOURCE_GATT,
+};
 use volty_capture::{
-    from_hex, CaptureFile, CaptureHidLayout, CaptureHidppExchange, CaptureHidppFeatures,
-    CaptureRecord, HidReportKind,
+    from_hex, CaptureBluetoothGatt, CaptureBluetoothProperty, CaptureFile, CaptureHidLayout,
+    CaptureHidppExchange, CaptureHidppFeatures, CaptureRecord, HidReportKind,
 };
 use volty_hid::{
     decode_generic_battery, parse_legacy_battery_status, parse_unified_battery,
@@ -32,6 +35,8 @@ pub struct ReplayReport {
     pub readings: usize,
     pub layouts: usize,
     pub samples: usize,
+    pub bluetooth_evidence: usize,
+    pub bluetooth_readings: usize,
 }
 
 impl ReplayReport {
@@ -45,6 +50,11 @@ impl ReplayReport {
             text,
             "generic layouts: {} checked, {} samples matched",
             self.layouts, self.samples
+        );
+        let _ = writeln!(
+            text,
+            "bluetooth: {} evidence records, {} readings matched",
+            self.bluetooth_evidence, self.bluetooth_readings
         );
         text
     }
@@ -98,6 +108,7 @@ pub fn replay_capture(file: &CaptureFile) -> Result<ReplayReport, Box<dyn Error>
     features.verify(file, &observed, &mut report)?;
     verify_hidpp_readings(file, &decoded, &mut report)?;
     replay_generic(file, &mut report)?;
+    replay_bluetooth(file, &mut report)?;
     Ok(report)
 }
 
@@ -398,23 +409,29 @@ fn verify_hidpp_readings(
         if reading.backend != LOGITECH_HIDPP_20.name() {
             continue;
         }
+        let device_index = reading.device_index.ok_or_else(|| {
+            io::Error::other(format!(
+                "HID++ reading for {} has no HID device index",
+                reading.id
+            ))
+        })?;
         let battery = decoded
             .iter()
             .filter(|(id, device, t_ms, _)| {
-                id == &reading.id && *device == reading.device_index && *t_ms <= reading.t_ms
+                id == &reading.id && *device == device_index && *t_ms <= reading.t_ms
             })
             .max_by_key(|(_, _, t_ms, _)| *t_ms)
             .map(|(_, _, _, battery)| battery)
             .ok_or_else(|| {
                 io::Error::other(format!(
                     "reading for {} (device {}) has no decoded HID++ response",
-                    reading.id, reading.device_index
+                    reading.id, device_index
                 ))
             })?;
         if battery_snapshot(battery) != reading.battery {
             return Err(io::Error::other(format!(
                 "reading for {} (device {}) does not match the decoded HID++ response",
-                reading.id, reading.device_index
+                reading.id, device_index
             ))
             .into());
         }
@@ -489,6 +506,164 @@ fn verify_generic_reading(
         .into());
     }
     Ok(())
+}
+
+fn replay_bluetooth(file: &CaptureFile, report: &mut ReplayReport) -> Result<(), Box<dyn Error>> {
+    let devices: std::collections::HashSet<_> = file
+        .records
+        .iter()
+        .filter_map(|record| match record {
+            CaptureRecord::BluetoothDevice(device) => Some(device.id.as_str()),
+            _ => None,
+        })
+        .collect();
+
+    for record in &file.records {
+        match record {
+            CaptureRecord::BluetoothProperty(property) => {
+                report.bluetooth_evidence += 1;
+                if !devices.contains(property.id.as_str()) {
+                    return Err(io::Error::other(format!(
+                        "property evidence for {} has no device record",
+                        property.id
+                    ))
+                    .into());
+                }
+                if property.property.is_empty() || property.property_type.is_empty() {
+                    return Err(io::Error::other(format!(
+                        "property evidence for {} has an empty property name or type",
+                        property.id
+                    ))
+                    .into());
+                }
+            }
+            CaptureRecord::BluetoothGatt(gatt) => {
+                report.bluetooth_evidence += 1;
+                if !devices.contains(gatt.id.as_str()) {
+                    return Err(io::Error::other(format!(
+                        "GATT evidence for {} has no device record",
+                        gatt.id
+                    ))
+                    .into());
+                }
+                if gatt.service.is_empty() || gatt.characteristic.is_empty() {
+                    return Err(io::Error::other(format!(
+                        "GATT evidence for {} has an empty service or characteristic",
+                        gatt.id
+                    ))
+                    .into());
+                }
+                from_hex(&gatt.value).map_err(|error| {
+                    io::Error::other(format!("GATT evidence for {}: {error}", gatt.id))
+                })?;
+            }
+            _ => {}
+        }
+    }
+
+    for record in &file.records {
+        let CaptureRecord::Reading(reading) = record else {
+            continue;
+        };
+        if reading.device_index.is_some() {
+            continue;
+        }
+        if !devices.contains(reading.id.as_str()) {
+            return Err(io::Error::other(format!(
+                "Bluetooth reading for {} has no device record",
+                reading.id
+            ))
+            .into());
+        }
+        let battery = match reading.backend.as_str() {
+            SOURCE_DEVICE_PROPERTY => {
+                let property =
+                    latest_property(file, &reading.id, reading.t_ms).ok_or_else(|| {
+                        io::Error::other(format!(
+                            "Bluetooth reading for {} has no property evidence at or before {} ms",
+                            reading.id, reading.t_ms
+                        ))
+                    })?;
+                let level = decode_windows_battery_life(property.raw_value).map_err(|error| {
+                    io::Error::other(format!(
+                        "property evidence for {} is invalid: {error}",
+                        reading.id
+                    ))
+                })?;
+                let level = level.ok_or_else(|| {
+                    io::Error::other(format!(
+                        "property evidence for {} is the unknown sentinel, so no reading is possible",
+                        reading.id
+                    ))
+                })?;
+                bluetooth_battery(level, SOURCE_DEVICE_PROPERTY)
+            }
+            SOURCE_GATT => {
+                let gatt = latest_gatt(file, &reading.id, reading.t_ms).ok_or_else(|| {
+                    io::Error::other(format!(
+                        "Bluetooth reading for {} has no GATT evidence at or before {} ms",
+                        reading.id, reading.t_ms
+                    ))
+                })?;
+                let payload = from_hex(&gatt.value)?;
+                let level = decode_battery_level(&payload).map_err(|error| {
+                    io::Error::other(format!(
+                        "GATT evidence for {} is invalid: {error}",
+                        reading.id
+                    ))
+                })?;
+                bluetooth_battery(level, SOURCE_GATT)
+            }
+            other => {
+                return Err(io::Error::other(format!(
+                    "reading for {} has no HID device index and an unknown backend {other:?}",
+                    reading.id
+                ))
+                .into())
+            }
+        };
+        if battery != reading.battery {
+            return Err(io::Error::other(format!(
+                "Bluetooth reading for {} does not match its recorded evidence",
+                reading.id
+            ))
+            .into());
+        }
+        report.bluetooth_readings += 1;
+    }
+    Ok(())
+}
+
+fn latest_property<'a>(
+    file: &'a CaptureFile,
+    id: &str,
+    t_ms: u64,
+) -> Option<&'a CaptureBluetoothProperty> {
+    file.records
+        .iter()
+        .filter_map(|record| match record {
+            CaptureRecord::BluetoothProperty(property)
+                if property.id == id && property.t_ms <= t_ms =>
+            {
+                Some(property)
+            }
+            _ => None,
+        })
+        .max_by_key(|property| property.t_ms)
+}
+
+fn latest_gatt<'a>(file: &'a CaptureFile, id: &str, t_ms: u64) -> Option<&'a CaptureBluetoothGatt> {
+    file.records
+        .iter()
+        .filter_map(|record| match record {
+            CaptureRecord::BluetoothGatt(gatt) if gatt.id == id && gatt.t_ms <= t_ms => Some(gatt),
+            _ => None,
+        })
+        .max_by_key(|gatt| gatt.t_ms)
+}
+
+fn bluetooth_battery(level: u8, source: &'static str) -> volty_capture::BatterySnapshot {
+    battery_snapshot(&volty_bluetooth::battery_status(level, source))
 }
 
 fn build_generic_layout(layout: &CaptureHidLayout) -> Result<GenericBatteryLayout, Box<dyn Error>> {
@@ -664,10 +839,11 @@ mod tests {
     use super::*;
     use std::path::PathBuf;
     use volty_capture::{
-        to_hex, BatterySnapshot, CaptureFooter, CaptureHeader, CaptureHidSample, CaptureMatch,
-        CaptureMode, CaptureReading, CaptureWriter, HidButtonCapability, HidFieldRef,
-        HidSelectedLayout, HidValueCapability, HidValueSample, HidppFeature, MatchOutcome,
-        PrivacyProfile, SCHEMA,
+        to_hex, BatterySnapshot, CaptureBluetoothDevice, CaptureBluetoothGatt,
+        CaptureBluetoothKind, CaptureBluetoothProperty, CaptureFooter, CaptureHeader,
+        CaptureHidSample, CaptureMatch, CaptureMode, CaptureReading, CaptureWriter,
+        HidButtonCapability, HidFieldRef, HidSelectedLayout, HidValueCapability, HidValueSample,
+        HidppFeature, MatchOutcome, PrivacyProfile, SCHEMA,
     };
 
     fn header() -> CaptureHeader {
@@ -810,7 +986,7 @@ mod tests {
         ));
         records.push(CaptureRecord::Reading(CaptureReading {
             id: "iface-1".to_owned(),
-            device_index: 1,
+            device_index: Some(1),
             t_ms: 4,
             backend: LOGITECH_HIDPP_20.name().to_owned(),
             label: None,
@@ -912,7 +1088,7 @@ mod tests {
                 }),
                 CaptureRecord::Reading(CaptureReading {
                     id: "iface-1".to_owned(),
-                    device_index: 0xff,
+                    device_index: Some(0xff),
                     t_ms: 2,
                     backend: GENERIC_HID_BATTERY.name().to_owned(),
                     label: None,
@@ -1017,6 +1193,143 @@ mod tests {
         assert!(error.contains("does not match"));
     }
 
+    fn bluetooth_capture(
+        kind: CaptureBluetoothKind,
+        backend: &'static str,
+        evidence: CaptureRecord,
+        battery: BatterySnapshot,
+    ) -> CaptureFile {
+        let mut records = vec![
+            CaptureRecord::BluetoothDevice(CaptureBluetoothDevice {
+                id: "bt-1".to_owned(),
+                kind,
+                name: Some("Headset".to_owned()),
+            }),
+            evidence,
+            CaptureRecord::Reading(CaptureReading {
+                id: "bt-1".to_owned(),
+                device_index: None,
+                t_ms: 10,
+                backend: backend.to_owned(),
+                label: Some("Headset".to_owned()),
+                battery,
+            }),
+        ];
+        let footer = CaptureFooter {
+            schema: SCHEMA.to_owned(),
+            records: u64::try_from(records.len()).unwrap() + 1,
+            complete: true,
+        };
+        CaptureFile {
+            header: header(),
+            records: std::mem::take(&mut records),
+            footer,
+        }
+    }
+
+    #[test]
+    fn bluetooth_property_evidence_replays_to_the_recorded_reading() {
+        let file = bluetooth_capture(
+            CaptureBluetoothKind::Pnp,
+            SOURCE_DEVICE_PROPERTY,
+            CaptureRecord::BluetoothProperty(CaptureBluetoothProperty {
+                id: "bt-1".to_owned(),
+                t_ms: 5,
+                property: "DEVPKEY_Device_BatteryLevel".to_owned(),
+                property_type: "byte".to_owned(),
+                raw_value: 100,
+            }),
+            status(100, "unknown", "unknown", 100, None, SOURCE_DEVICE_PROPERTY),
+        );
+
+        let report = replay_capture(&file).unwrap();
+        assert_eq!(report.bluetooth_evidence, 1);
+        assert_eq!(report.bluetooth_readings, 1);
+        assert_eq!(report.readings, 0);
+    }
+
+    #[test]
+    fn bluetooth_gatt_evidence_replays_to_the_recorded_reading() {
+        let file = bluetooth_capture(
+            CaptureBluetoothKind::Ble,
+            SOURCE_GATT,
+            CaptureRecord::BluetoothGatt(CaptureBluetoothGatt {
+                id: "bt-1".to_owned(),
+                t_ms: 5,
+                service: "180f".to_owned(),
+                characteristic: "2a19".to_owned(),
+                value: "64".to_owned(),
+            }),
+            status(100, "unknown", "unknown", 100, None, SOURCE_GATT),
+        );
+
+        let report = replay_capture(&file).unwrap();
+        assert_eq!(report.bluetooth_evidence, 1);
+        assert_eq!(report.bluetooth_readings, 1);
+    }
+
+    #[test]
+    fn bluetooth_reading_must_match_its_evidence() {
+        let mut file = bluetooth_capture(
+            CaptureBluetoothKind::Pnp,
+            SOURCE_DEVICE_PROPERTY,
+            CaptureRecord::BluetoothProperty(CaptureBluetoothProperty {
+                id: "bt-1".to_owned(),
+                t_ms: 5,
+                property: "DEVPKEY_Device_BatteryLevel".to_owned(),
+                property_type: "byte".to_owned(),
+                raw_value: 100,
+            }),
+            status(55, "unknown", "unknown", 55, None, SOURCE_DEVICE_PROPERTY),
+        );
+        let CaptureRecord::Reading(reading) = &mut file.records[2] else {
+            panic!("expected reading");
+        };
+        reading.battery.percent = Some(54);
+        let error = replay_capture(&file).unwrap_err().to_string();
+        assert!(error.contains("does not match"), "{error}");
+    }
+
+    #[test]
+    fn bluetooth_reading_requires_a_device_record() {
+        let mut file = bluetooth_capture(
+            CaptureBluetoothKind::Pnp,
+            SOURCE_DEVICE_PROPERTY,
+            CaptureRecord::BluetoothProperty(CaptureBluetoothProperty {
+                id: "bt-1".to_owned(),
+                t_ms: 5,
+                property: "DEVPKEY_Device_BatteryLevel".to_owned(),
+                property_type: "byte".to_owned(),
+                raw_value: 100,
+            }),
+            status(100, "unknown", "unknown", 100, None, SOURCE_DEVICE_PROPERTY),
+        );
+        file.records.remove(0);
+        let error = replay_capture(&file).unwrap_err().to_string();
+        assert!(error.contains("no device record"), "{error}");
+    }
+
+    #[test]
+    fn bluetooth_evidence_requires_a_device_record() {
+        let mut file = bluetooth_capture(
+            CaptureBluetoothKind::Pnp,
+            SOURCE_DEVICE_PROPERTY,
+            CaptureRecord::BluetoothProperty(CaptureBluetoothProperty {
+                id: "bt-1".to_owned(),
+                t_ms: 5,
+                property: "DEVPKEY_Device_BatteryLevel".to_owned(),
+                property_type: "byte".to_owned(),
+                raw_value: 100,
+            }),
+            status(100, "unknown", "unknown", 100, None, SOURCE_DEVICE_PROPERTY),
+        );
+        file.records.remove(0);
+        file.records
+            .retain(|record| !matches!(record, CaptureRecord::Reading(_)));
+        let error = replay_capture(&file).unwrap_err().to_string();
+        assert!(error.contains("no device record"), "{error}");
+    }
+
     #[test]
     fn fixture_files_validate_and_replay() {
         let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/hardware");
@@ -1024,10 +1337,14 @@ mod tests {
             "synthetic-g502x-unified.volty.jsonl",
             "g502x-plus-unified.volty.jsonl",
             "synthetic-generic-battery.volty.jsonl",
+            "synthetic-bluetooth-headset.volty.jsonl",
         ] {
             let file = CaptureFile::read(root.join(name)).unwrap();
             let report = replay_capture(&file).unwrap();
-            assert!(report.exchanges > 0 || report.samples > 0, "{name}");
+            assert!(
+                report.exchanges > 0 || report.samples > 0 || report.bluetooth_readings > 0,
+                "{name}"
+            );
         }
     }
 

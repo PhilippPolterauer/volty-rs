@@ -1,0 +1,5 @@
+{"type":"header","schema":"volty.capture/v1","capture_id":"synthetic-bluetooth-headset","created_at":"2026-10-29T00:00:00Z","app_version":"0.2.1","app_commit":null,"os":"windows","architecture":"x86_64","mode":"snapshot","privacy":"standard","features":["bluetooth"]}
+{"type":"bluetooth_device","id":"bt-1","kind":"pnp","name":"Headset"}
+{"type":"bluetooth_property","id":"bt-1","t_ms":5,"property":"DEVPKEY_Device_BatteryLevel","property_type":"byte","raw_value":100}
+{"type":"reading","id":"bt-1","device_index":null,"t_ms":10,"backend":"Windows Bluetooth battery property","label":"Headset","battery":{"percent":100,"level":"unknown","state":"unknown","raw_level":100,"raw_status":null,"source":"Windows Bluetooth battery property"}}
+{"type":"footer","schema":"volty.capture/v1","records":4,"complete":true}

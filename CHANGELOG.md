@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - Added `volty capture` for read-only hardware snapshots, with `--output` and `--strict` (privacy profile) options. The tray Diagnose action writes the same `.volty.jsonl` format.
+- Hardware captures can now include Bluetooth evidence: capture-local `bt-N` device records plus raw Windows battery-property and GATT Battery Level payloads. `volty capture replay` re-decodes that evidence without hardware in default builds. Captures never contain Bluetooth addresses or opaque Windows device ids; recording requires a tray build with the opt-in `bluetooth` feature.
 - Added `volty capture inspect` and `volty capture replay` for offline schema checks and decoder/reading verification, plus synthetic and reviewed hardware fixtures under `tests/hardware`.
 - Generic HID capture samples now include charging and discharging state bits so layout replay can reproduce the normalized battery state without full input reports.
 - Snapshot capture now uses previously discovered HID++ slots when available, avoiding a full multi-slot probe on the common path.
@@ -18,6 +19,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `volty-bluetooth` now keeps the pure property and GATT decoders available by default and gates the Windows backend behind its default `windows-backend` feature. The tray enables that backend only with its opt-in `bluetooth` feature, so hardware capture replay works in default builds.
 - Corrected the HID support documentation to describe generic HID battery support as implemented, name the Logitech G502 X Superlight RGB as the current primary use case, and remove stale "Logitech-only" claims. No new hardware validation is claimed.
 - Hardened CI: Clippy, tests, and builds run with `--locked`, tests use `--all-features`, a Rust 1.89.0 MSRV job checks the workspace, and an Ubuntu job runs `cargo audit --deny warnings` against `Cargo.lock`.
 - **Breaking:** introduced the `BatteryProvider` trait in `volty-battery`. A provider yields readings keyed by a stable `DeviceId` plus a `DeviceLabel` and `BatteryStatus`; the tray polls a list of providers (`HidProvider`, and `BluetoothProvider` with the `bluetooth` feature) instead of hard-coding the HID query and a Bluetooth branch.

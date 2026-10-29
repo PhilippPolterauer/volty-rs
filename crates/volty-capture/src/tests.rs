@@ -86,6 +86,30 @@ fn sample_records() -> Vec<CaptureRecord> {
             outcome: MatchOutcome::Matched,
             detail: Some("vendor and product id matched".to_owned()),
         }),
+        CaptureRecord::BluetoothDevice(CaptureBluetoothDevice {
+            id: "bt-1".to_owned(),
+            kind: CaptureBluetoothKind::Pnp,
+            name: Some("Headset".to_owned()),
+        }),
+        CaptureRecord::BluetoothProperty(CaptureBluetoothProperty {
+            id: "bt-1".to_owned(),
+            t_ms: 100,
+            property: "DEVPKEY_Device_BatteryLevel".to_owned(),
+            property_type: "byte".to_owned(),
+            raw_value: 85,
+        }),
+        CaptureRecord::BluetoothDevice(CaptureBluetoothDevice {
+            id: "bt-2".to_owned(),
+            kind: CaptureBluetoothKind::Ble,
+            name: None,
+        }),
+        CaptureRecord::BluetoothGatt(CaptureBluetoothGatt {
+            id: "bt-2".to_owned(),
+            t_ms: 200,
+            service: "180f".to_owned(),
+            characteristic: "2a19".to_owned(),
+            value: "64".to_owned(),
+        }),
         CaptureRecord::HidppFeatures(CaptureHidppFeatures {
             id: "features-1".to_owned(),
             device_index: 1,
@@ -168,7 +192,7 @@ fn sample_records() -> Vec<CaptureRecord> {
         }),
         CaptureRecord::Reading(CaptureReading {
             id: "reading-1".to_owned(),
-            device_index: 1,
+            device_index: Some(1),
             t_ms: 1_000,
             backend: "logitech-hidpp".to_owned(),
             label: Some("G502 X Plus".to_owned()),
@@ -489,9 +513,13 @@ fn render_summary_includes_counts_and_sensitive_values_are_unrepresentable() {
     assert!(summary.contains("privacy: strict"));
     assert!(summary.contains("interfaces: 1"));
     assert!(summary.contains("matches: 1"));
+    assert!(summary.contains("bluetooth_devices: 2"));
+    assert!(summary.contains("bluetooth_properties: 1"));
+    assert!(summary.contains("bluetooth_gatt: 1"));
     assert!(summary.contains("readings: 1"));
     assert!(summary.contains("events: 1"));
     assert!(summary.contains("iface-1"));
+    assert!(summary.contains("bt-1: kind=pnp name=Headset"));
     assert!(summary.contains("reading-1"));
     assert!(!summary.contains("SERIAL-SECRET"));
     assert!(!summary.contains("C:\\"));

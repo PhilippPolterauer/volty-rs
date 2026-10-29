@@ -1641,6 +1641,7 @@ dependencies = [
  "notify",
  "notify-rust",
  "rusqlite",
+ "serde_json",
  "toml 0.8.2",
  "toml_edit 0.20.2",
  "tray-icon",

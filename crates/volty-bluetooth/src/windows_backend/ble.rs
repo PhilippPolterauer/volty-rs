@@ -19,8 +19,8 @@ use super::{
     winrt::{await_operation, windows_error},
 };
 use crate::{
-    battery_status, decode_battery_level, error, BluetoothBatteryReading, BluetoothError,
-    BluetoothScan,
+    battery_status, decode_battery_level, error, BluetoothBatteryReading, BluetoothDeviceKind,
+    BluetoothError, BluetoothEvidence, BluetoothObservation, BluetoothScan, SOURCE_GATT,
 };
 pub(super) fn scan_paired_ble_devices(
     budget: &ScanBudget,
@@ -83,14 +83,26 @@ pub(super) fn scan_paired_ble_devices(
             break;
         }
         match read_battery(&device_id, budget) {
-            Ok(Some(battery)) => {
+            Ok(Some(gatt)) => {
                 scan.discovery_events.push(format!(
                     "{name:?}: matched the standard GATT Battery Service (0x180F) and Battery Level characteristic (0x2A19)"
                 ));
+                let device_key = device_id.to_string_lossy();
+                scan.evidence.push(BluetoothEvidence {
+                    device_id: device_key.clone(),
+                    name: name.clone(),
+                    kind: BluetoothDeviceKind::Ble,
+                    observation: BluetoothObservation::Gatt {
+                        service: "180f",
+                        characteristic: "2a19",
+                        value: gatt.payload,
+                    },
+                });
                 scan.readings.push(BluetoothBatteryReading {
-                    device_id: device_id.to_string_lossy(),
+                    device_id: device_key,
                     name,
-                    battery,
+                    kind: BluetoothDeviceKind::Ble,
+                    battery: battery_status(gatt.level, SOURCE_GATT),
                 });
             }
             Ok(None) => scan.discovery_events.push(format!(
@@ -106,26 +118,28 @@ pub(super) fn scan_paired_ble_devices(
     Ok(scan)
 }
 
+struct GattBatteryReading {
+    payload: Vec<u8>,
+    level: u8,
+}
+
 fn read_battery(
     device_id: &HSTRING,
     budget: &ScanBudget,
-) -> Result<Option<volty_battery::BatteryStatus>, BluetoothError> {
+) -> Result<Option<GattBatteryReading>, BluetoothError> {
     let device = await_operation(
         BluetoothLEDevice::FromIdAsync(device_id)
             .map_err(|error| windows_error("could not open Bluetooth LE device", error))?,
         "Bluetooth LE connection",
         budget,
     )?;
-    let Some(level) = read_battery_level(&device, budget)? else {
-        return Ok(None);
-    };
-    Ok(Some(battery_status(level, crate::SOURCE_GATT)))
+    read_battery_level(&device, budget)
 }
 
 fn read_battery_level(
     device: &BluetoothLEDevice,
     budget: &ScanBudget,
-) -> Result<Option<u8>, BluetoothError> {
+) -> Result<Option<GattBatteryReading>, BluetoothError> {
     let service_uuid = GattServiceUuids::Battery()
         .map_err(|error| windows_error("could not resolve the Battery Service UUID", error))?;
     let services = await_operation(
@@ -163,7 +177,7 @@ fn read_battery_level(
 fn read_battery_characteristic(
     service: &GattDeviceService,
     budget: &ScanBudget,
-) -> Result<u8, BluetoothError> {
+) -> Result<GattBatteryReading, BluetoothError> {
     let characteristic_uuid = GattCharacteristicUuids::BatteryLevel()
         .map_err(|error| windows_error("could not resolve the Battery Level UUID", error))?;
     let characteristics = await_operation(
@@ -204,7 +218,7 @@ fn read_battery_characteristic(
 fn read_battery_characteristic_value(
     characteristic: &GattCharacteristic,
     budget: &ScanBudget,
-) -> Result<u8, BluetoothError> {
+) -> Result<GattBatteryReading, BluetoothError> {
     let value = await_operation(
         characteristic
             .ReadValueWithCacheModeAsync(BluetoothCacheMode::Uncached)
@@ -231,7 +245,8 @@ fn read_battery_characteristic_value(
     reader
         .ReadBytes(&mut payload)
         .map_err(|error| windows_error("could not read Battery Level payload", error))?;
-    decode_battery_level(&payload)
+    let level = decode_battery_level(&payload)?;
+    Ok(GattBatteryReading { payload, level })
 }
 
 fn check_gatt_status(status: GattCommunicationStatus) -> Result<(), BluetoothError> {

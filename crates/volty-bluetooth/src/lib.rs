@@ -7,9 +7,12 @@ use volty_battery::{
 
 const BATTERY_LEVEL_MIN: u8 = 0;
 const BATTERY_LEVEL_MAX: u8 = 100;
+#[cfg(all(windows, feature = "windows-backend"))]
 const FALLBACK_DEVICE_NAME: &str = "Bluetooth device";
-pub(crate) const SOURCE_GATT: &str = "Bluetooth GATT Battery Service";
-pub(crate) const SOURCE_DEVICE_PROPERTY: &str = "Windows Bluetooth battery property";
+/// Source label for a battery read from the standard GATT Battery Service.
+pub const SOURCE_GATT: &str = "Bluetooth GATT Battery Service";
+/// Source label for a battery read from a Windows device property.
+pub const SOURCE_DEVICE_PROPERTY: &str = "Windows Bluetooth battery property";
 
 #[derive(Debug)]
 pub struct BluetoothError(String);
@@ -26,6 +29,7 @@ fn error(message: impl Into<String>) -> BluetoothError {
     BluetoothError(message.into())
 }
 
+#[cfg(all(windows, feature = "windows-backend"))]
 fn normalize_device_name(name: &str) -> String {
     let name = name.trim();
     if name.is_empty() {
@@ -35,17 +39,70 @@ fn normalize_device_name(name: &str) -> String {
     }
 }
 
+/// Which Windows Bluetooth surface produced an observation.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum BluetoothDeviceKind {
+    /// A Windows Classic Bluetooth device or one of its profiles.
+    Classic,
+    /// A present Bluetooth PnP device node.
+    Pnp,
+    /// A paired Bluetooth Low Energy device.
+    Ble,
+}
+
+impl BluetoothDeviceKind {
+    /// The lowercase name used by captures and diagnostics.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Classic => "classic",
+            Self::Pnp => "pnp",
+            Self::Ble => "ble",
+        }
+    }
+}
+
+/// Raw, privacy-safe evidence for one battery observation.
+///
+/// `device_id` is an opaque Windows identity and must not be included in logs
+/// or diagnostic reports. Capture writers map it to a local identifier.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BluetoothEvidence {
+    pub device_id: String,
+    pub name: String,
+    pub kind: BluetoothDeviceKind,
+    pub observation: BluetoothObservation,
+}
+
+/// The evidence behind one normalized Bluetooth reading.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum BluetoothObservation {
+    /// A Windows property value, before range validation.
+    Property {
+        property: &'static str,
+        property_type: &'static str,
+        raw_value: u8,
+    },
+    /// A raw GATT Battery Level payload, before length or range validation.
+    Gatt {
+        service: &'static str,
+        characteristic: &'static str,
+        value: Vec<u8>,
+    },
+}
+
 /// A Bluetooth battery reading. `device_id` is an opaque Windows identity and
 /// must not be included in logs or diagnostic reports.
 pub struct BluetoothBatteryReading {
     pub device_id: String,
     pub name: String,
+    pub kind: BluetoothDeviceKind,
     pub battery: BatteryStatus,
 }
 
 #[derive(Default)]
 pub struct BluetoothScan {
     pub readings: Vec<BluetoothBatteryReading>,
+    pub evidence: Vec<BluetoothEvidence>,
     pub warnings: Vec<String>,
     pub discovery_events: Vec<String>,
     pub devices_examined: usize,
@@ -68,7 +125,8 @@ pub fn decode_battery_level(value: &[u8]) -> Result<u8, BluetoothError> {
     Ok(*level)
 }
 
-fn battery_status(level_percent: u8, source: &'static str) -> BatteryStatus {
+/// Builds the normalized reading for a Bluetooth battery percentage.
+pub fn battery_status(level_percent: u8, source: &'static str) -> BatteryStatus {
     BatteryStatus {
         level_percent: Some(level_percent),
         level: BatteryLevel::Unknown,
@@ -79,7 +137,14 @@ fn battery_status(level_percent: u8, source: &'static str) -> BatteryStatus {
     }
 }
 
-fn decode_windows_battery_life(value: u8) -> Result<Option<u8>, BluetoothError> {
+/// Decodes the single-byte value exposed through `System.Devices.BatteryLife`.
+///
+/// Values from 0 through 100 are percentages. The value 101 is Window's
+/// unknown sentinel and returns `Ok(None)`.
+///
+/// # Errors
+/// Returns an error for values outside 0 through 101.
+pub fn decode_windows_battery_life(value: u8) -> Result<Option<u8>, BluetoothError> {
     match value {
         BATTERY_LEVEL_MIN..=BATTERY_LEVEL_MAX => Ok(Some(value)),
         101 => Ok(None),
@@ -89,7 +154,7 @@ fn decode_windows_battery_life(value: u8) -> Result<Option<u8>, BluetoothError> 
     }
 }
 
-#[cfg(windows)]
+#[cfg(all(windows, feature = "windows-backend"))]
 mod windows_backend;
 
 /// Reads battery levels from connected Bluetooth devices when Windows exposes
@@ -98,21 +163,25 @@ mod windows_backend;
 /// Windows does not report an active BLE connection.
 ///
 /// # Errors
-/// Returns an error if Windows Runtime initialization fails.
-#[cfg(windows)]
+/// Returns an error if Windows Runtime initialization fails or the Windows
+/// backend was not compiled in.
+#[cfg(all(windows, feature = "windows-backend"))]
 pub fn scan_battery_devices() -> Result<BluetoothScan, BluetoothError> {
     windows_backend::scan_battery_devices()
 }
 
-/// Bluetooth battery discovery is available only on Windows.
+/// Bluetooth battery discovery requires Windows and the `windows-backend`
+/// feature.
 ///
 /// # Errors
-/// Always returns an error because Bluetooth battery reads require Windows.
-#[cfg(not(windows))]
+/// Always returns an error when the backend is unavailable.
+#[cfg(not(all(windows, feature = "windows-backend")))]
 pub fn scan_battery_devices() -> Result<BluetoothScan, BluetoothError> {
-    Err(error(
-        "Bluetooth battery reads are supported only on Windows",
-    ))
+    Err(error(if cfg!(windows) {
+        "Bluetooth backend is not enabled in this build"
+    } else {
+        "Bluetooth battery reads are supported only on Windows"
+    }))
 }
 
 /// Bluetooth battery source for the tray. It scans fully on every poll because
@@ -170,8 +239,8 @@ fn scan_events(scan: BluetoothScan, poll: &mut ProviderPoll) -> Vec<ProviderEven
 #[cfg(test)]
 mod tests {
     use super::{
-        battery_status, decode_battery_level, decode_windows_battery_life, normalize_device_name,
-        scan_events, BluetoothBatteryReading, BluetoothScan, FALLBACK_DEVICE_NAME, SOURCE_GATT,
+        battery_status, decode_battery_level, decode_windows_battery_life, scan_events,
+        BluetoothBatteryReading, BluetoothDeviceKind, BluetoothScan, SOURCE_GATT,
     };
     use volty_battery::{BatteryState, ProviderEvent, ProviderPoll};
 
@@ -181,8 +250,10 @@ mod tests {
             readings: vec![BluetoothBatteryReading {
                 device_id: "opaque".to_owned(),
                 name: "Headset".to_owned(),
+                kind: BluetoothDeviceKind::Ble,
                 battery: battery_status(55, SOURCE_GATT),
             }],
+            evidence: Vec::new(),
             warnings: vec!["probe failed".to_owned()],
             discovery_events: vec!["found one".to_owned()],
             devices_examined: 3,
@@ -217,13 +288,18 @@ mod tests {
     }
 
     #[test]
+    #[cfg(all(windows, feature = "windows-backend"))]
     fn device_name_normalization_trims_useful_names() {
-        assert_eq!(normalize_device_name("  Headset \t"), "Headset");
+        assert_eq!(super::normalize_device_name("  Headset \t"), "Headset");
     }
 
     #[test]
+    #[cfg(all(windows, feature = "windows-backend"))]
     fn device_name_normalization_uses_the_fallback_for_blank_names() {
-        assert_eq!(normalize_device_name(" \t\r\n"), FALLBACK_DEVICE_NAME);
+        assert_eq!(
+            super::normalize_device_name(" \t\r\n"),
+            super::FALLBACK_DEVICE_NAME
+        );
     }
 
     #[test]

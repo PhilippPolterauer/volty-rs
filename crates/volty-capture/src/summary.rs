@@ -1,35 +1,59 @@
 use crate::{
-    CaptureFile, CaptureInterface, CaptureMode, CaptureReading, CaptureRecord, PrivacyProfile,
+    CaptureBluetoothDevice, CaptureFile, CaptureInterface, CaptureMode, CaptureReading,
+    CaptureRecord, PrivacyProfile,
 };
 
 const MAX_LISTED_INTERFACES: usize = 20;
+const MAX_LISTED_BLUETOOTH_DEVICES: usize = 20;
 const MAX_LISTED_READINGS: usize = 40;
+
+#[derive(Default)]
+struct RecordCounts {
+    interfaces: usize,
+    matches: usize,
+    bluetooth_devices: usize,
+    bluetooth_properties: usize,
+    bluetooth_gatt: usize,
+    hidpp_features: usize,
+    hid_layouts: usize,
+    hidpp_exchanges: usize,
+    hid_samples: usize,
+    readings: usize,
+    events: usize,
+    markers: usize,
+}
+
+impl RecordCounts {
+    fn collect(records: &[CaptureRecord]) -> Self {
+        let mut counts = Self::default();
+        for record in records {
+            match record {
+                CaptureRecord::Interface(_) => counts.interfaces += 1,
+                CaptureRecord::Match(_) => counts.matches += 1,
+                CaptureRecord::BluetoothDevice(_) => counts.bluetooth_devices += 1,
+                CaptureRecord::BluetoothProperty(_) => counts.bluetooth_properties += 1,
+                CaptureRecord::BluetoothGatt(_) => counts.bluetooth_gatt += 1,
+                CaptureRecord::HidppFeatures(_) => counts.hidpp_features += 1,
+                CaptureRecord::HidLayout(_) => counts.hid_layouts += 1,
+                CaptureRecord::HidppExchange(_) => counts.hidpp_exchanges += 1,
+                CaptureRecord::HidSample(_) => counts.hid_samples += 1,
+                CaptureRecord::Reading(_) => counts.readings += 1,
+                CaptureRecord::Event(_) => counts.events += 1,
+                CaptureRecord::Marker(_) => counts.markers += 1,
+                CaptureRecord::Header(_) | CaptureRecord::Footer(_) => {}
+            }
+        }
+        counts
+    }
+}
 
 impl CaptureFile {
     /// Renders a concise, privacy-safe overview of the capture.
     ///
     /// The summary is bounded to roughly 80 lines; long captures list a prefix
-    /// of their interfaces and readings.
+    /// of their devices and readings.
     pub fn render_summary(&self) -> String {
-        let mut counts = [0usize; 10];
-        for record in &self.records {
-            let slot = match record {
-                CaptureRecord::Interface(_) => Some(0),
-                CaptureRecord::Match(_) => Some(1),
-                CaptureRecord::HidppFeatures(_) => Some(2),
-                CaptureRecord::HidLayout(_) => Some(3),
-                CaptureRecord::HidppExchange(_) => Some(4),
-                CaptureRecord::HidSample(_) => Some(5),
-                CaptureRecord::Reading(_) => Some(6),
-                CaptureRecord::Event(_) => Some(7),
-                CaptureRecord::Marker(_) => Some(8),
-                CaptureRecord::Header(_) | CaptureRecord::Footer(_) => None,
-            };
-            if let Some(slot) = slot {
-                counts[slot] += 1;
-            }
-        }
-        counts[9] = self.records.len();
+        let counts = RecordCounts::collect(&self.records);
 
         let mut lines = vec![
             format!("schema: {}", self.header.schema),
@@ -41,19 +65,22 @@ impl CaptureFile {
             format!("privacy: {}", privacy_name(self.header.privacy)),
             format!("features: {}", join_or_dash(&self.header.features)),
             format!("records: {}", self.footer.records),
-            format!("data_records: {}", counts[9]),
-            format!("interfaces: {}", counts[0]),
-            format!("matches: {}", counts[1]),
-            format!("hidpp_features: {}", counts[2]),
-            format!("hid_layouts: {}", counts[3]),
-            format!("hidpp_exchanges: {}", counts[4]),
-            format!("hid_samples: {}", counts[5]),
-            format!("readings: {}", counts[6]),
-            format!("events: {}", counts[7]),
-            format!("markers: {}", counts[8]),
+            format!("data_records: {}", self.records.len()),
+            format!("interfaces: {}", counts.interfaces),
+            format!("matches: {}", counts.matches),
+            format!("bluetooth_devices: {}", counts.bluetooth_devices),
+            format!("bluetooth_properties: {}", counts.bluetooth_properties),
+            format!("bluetooth_gatt: {}", counts.bluetooth_gatt),
+            format!("hidpp_features: {}", counts.hidpp_features),
+            format!("hid_layouts: {}", counts.hid_layouts),
+            format!("hidpp_exchanges: {}", counts.hidpp_exchanges),
+            format!("hid_samples: {}", counts.hid_samples),
+            format!("readings: {}", counts.readings),
+            format!("events: {}", counts.events),
+            format!("markers: {}", counts.markers),
         ];
 
-        if counts[0] > 0 {
+        if counts.interfaces > 0 {
             lines.push("interface details:".to_owned());
             let mut listed = 0;
             for record in &self.records {
@@ -65,12 +92,35 @@ impl CaptureFile {
                     listed += 1;
                 }
             }
-            if counts[0] > listed {
-                lines.push(format!("  ... {} more interfaces", counts[0] - listed));
+            if counts.interfaces > listed {
+                lines.push(format!(
+                    "  ... {} more interfaces",
+                    counts.interfaces - listed
+                ));
             }
         }
 
-        if counts[6] > 0 {
+        if counts.bluetooth_devices > 0 {
+            lines.push("bluetooth device details:".to_owned());
+            let mut listed = 0;
+            for record in &self.records {
+                if let CaptureRecord::BluetoothDevice(device) = record {
+                    if listed == MAX_LISTED_BLUETOOTH_DEVICES {
+                        break;
+                    }
+                    lines.push(render_bluetooth_device(device));
+                    listed += 1;
+                }
+            }
+            if counts.bluetooth_devices > listed {
+                lines.push(format!(
+                    "  ... {} more bluetooth devices",
+                    counts.bluetooth_devices - listed
+                ));
+            }
+        }
+
+        if counts.readings > 0 {
             lines.push("reading details:".to_owned());
             let mut listed = 0;
             for record in &self.records {
@@ -82,8 +132,8 @@ impl CaptureFile {
                     listed += 1;
                 }
             }
-            if counts[6] > listed {
-                lines.push(format!("  ... {} more readings", counts[6] - listed));
+            if counts.readings > listed {
+                lines.push(format!("  ... {} more readings", counts.readings - listed));
             }
         }
 
@@ -112,15 +162,27 @@ fn render_interface(interface: &CaptureInterface) -> String {
     )
 }
 
+fn render_bluetooth_device(device: &CaptureBluetoothDevice) -> String {
+    format!(
+        "  - {}: kind={} name={}",
+        device.id,
+        bluetooth_kind_name(device.kind),
+        device.name.as_deref().unwrap_or("-"),
+    )
+}
+
 fn render_reading(reading: &CaptureReading) -> String {
     let percent = reading
         .battery
         .percent
         .map_or_else(|| "-".to_owned(), |percent| format!("{percent}%"));
+    let device = reading
+        .device_index
+        .map_or_else(|| "-".to_owned(), |index| index.to_string());
     let mut line = format!(
         "  - {}: device={} t={}ms backend={} battery={} level={} state={} source={}",
         reading.id,
-        reading.device_index,
+        device,
         reading.t_ms,
         reading.backend,
         percent,
@@ -146,6 +208,14 @@ fn privacy_name(privacy: PrivacyProfile) -> &'static str {
     match privacy {
         PrivacyProfile::Standard => "standard",
         PrivacyProfile::Strict => "strict",
+    }
+}
+
+fn bluetooth_kind_name(kind: crate::CaptureBluetoothKind) -> &'static str {
+    match kind {
+        crate::CaptureBluetoothKind::Classic => "classic",
+        crate::CaptureBluetoothKind::Pnp => "pnp",
+        crate::CaptureBluetoothKind::Ble => "ble",
     }
 }
 

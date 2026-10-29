@@ -1,5 +1,7 @@
 //! Read-only hardware capture snapshots written by the tray and `volty capture`.
 
+#[cfg(feature = "bluetooth")]
+use std::collections::HashMap;
 use std::{
     error::Error,
     fs, io,
@@ -14,6 +16,10 @@ use volty_capture::{
     HidButtonSample, HidFieldRef, HidRatioRef, HidReportKind, HidSelectedLayout,
     HidValueCapability, HidValueSample, HidppFeature, MatchOutcome, PrivacyProfile, Redactor,
     SCHEMA,
+};
+#[cfg(feature = "bluetooth")]
+use volty_capture::{
+    CaptureBluetoothDevice, CaptureBluetoothGatt, CaptureBluetoothKind, CaptureBluetoothProperty,
 };
 use volty_hid::{
     enumerate_features, enumerate_hid_interfaces, query_battery_with_transport, resolve_hid_device,
@@ -221,6 +227,9 @@ fn write_capture(
         }
     }
 
+    #[cfg(feature = "bluetooth")]
+    capture_bluetooth(&mut writer, started, &redactor)?;
+
     writer.finish(true)?;
     let file = CaptureFile::read(path)?;
     Ok(CaptureOutcome {
@@ -265,7 +274,7 @@ fn capture_hidpp(
                     writer,
                     started,
                     id,
-                    device_index,
+                    Some(device_index),
                     LOGITECH_HIDPP_20.name(),
                     label.clone(),
                     &battery,
@@ -391,7 +400,7 @@ fn capture_generic(
                 writer,
                 started,
                 id,
-                DIRECT_DEVICE_INDEX,
+                Some(DIRECT_DEVICE_INDEX),
                 GENERIC_HID_BATTERY.name(),
                 label,
                 &sample.battery,
@@ -413,11 +422,166 @@ fn capture_generic(
     Ok(())
 }
 
+#[cfg(feature = "bluetooth")]
+fn capture_bluetooth(
+    writer: &mut CaptureWriter,
+    started: Instant,
+    redactor: &Redactor,
+) -> Result<(), Box<dyn Error>> {
+    let scan = match volty_bluetooth::scan_battery_devices() {
+        Ok(scan) => scan,
+        Err(error) => {
+            write_event(
+                writer,
+                started,
+                None,
+                EventLevel::Error,
+                format!(
+                    "Bluetooth discovery failed: {}",
+                    safe_error(&error.to_string())
+                ),
+            )?;
+            return Ok(());
+        }
+    };
+    for record in bluetooth_capture_records(&scan, elapsed_ms(started), redactor) {
+        writer.write(&record)?;
+    }
+    write_event(
+        writer,
+        started,
+        None,
+        EventLevel::Info,
+        format!(
+            "Bluetooth scan examined {} device entries and found {} reading(s), {} evidence record(s), and {} warning(s)",
+            scan.devices_examined,
+            scan.readings.len(),
+            scan.evidence.len(),
+            scan.warnings.len()
+        ),
+    )?;
+    if redactor.profile() == PrivacyProfile::Standard {
+        for warning in &scan.warnings {
+            write_event(
+                writer,
+                started,
+                None,
+                EventLevel::Warning,
+                format!("Bluetooth: {}", safe_error(warning)),
+            )?;
+        }
+    }
+    Ok(())
+}
+
+/// Converts a Bluetooth scan into capture records without exposing opaque
+/// Windows device ids or Bluetooth addresses.
+#[cfg(feature = "bluetooth")]
+fn bluetooth_capture_records(
+    scan: &volty_bluetooth::BluetoothScan,
+    t_ms: u64,
+    redactor: &Redactor,
+) -> Vec<CaptureRecord> {
+    let mut map = BluetoothCaptureMap::new(redactor);
+    let mut evidence = Vec::new();
+    for item in &scan.evidence {
+        let id = map.id(&item.device_id, &item.name, capture_kind(item.kind));
+        evidence.push(match &item.observation {
+            volty_bluetooth::BluetoothObservation::Property {
+                property,
+                property_type,
+                raw_value,
+            } => CaptureRecord::BluetoothProperty(CaptureBluetoothProperty {
+                id,
+                t_ms,
+                property: (*property).to_owned(),
+                property_type: (*property_type).to_owned(),
+                raw_value: *raw_value,
+            }),
+            volty_bluetooth::BluetoothObservation::Gatt {
+                service,
+                characteristic,
+                value,
+            } => CaptureRecord::BluetoothGatt(CaptureBluetoothGatt {
+                id,
+                t_ms,
+                service: (*service).to_owned(),
+                characteristic: (*characteristic).to_owned(),
+                value: to_hex(value),
+            }),
+        });
+    }
+
+    let mut readings = Vec::new();
+    for reading in &scan.readings {
+        let id = map.id(
+            &reading.device_id,
+            &reading.name,
+            capture_kind(reading.kind),
+        );
+        readings.push(CaptureRecord::Reading(CaptureReading {
+            id,
+            device_index: None,
+            t_ms,
+            backend: reading.battery.source.to_owned(),
+            label: redactor.bluetooth_name(Some(&reading.name)),
+            battery: battery_snapshot(&reading.battery),
+        }));
+    }
+
+    let mut records = map.devices;
+    records.extend(evidence);
+    records.extend(readings);
+    records
+}
+
+#[cfg(feature = "bluetooth")]
+struct BluetoothCaptureMap<'a> {
+    redactor: &'a Redactor,
+    ids: HashMap<String, String>,
+    devices: Vec<CaptureRecord>,
+}
+
+#[cfg(feature = "bluetooth")]
+impl<'a> BluetoothCaptureMap<'a> {
+    fn new(redactor: &'a Redactor) -> Self {
+        Self {
+            redactor,
+            ids: HashMap::new(),
+            devices: Vec::new(),
+        }
+    }
+
+    fn id(&mut self, device_id: &str, name: &str, kind: CaptureBluetoothKind) -> String {
+        if let Some(id) = self.ids.get(device_id) {
+            return id.clone();
+        }
+        let id = format!("bt-{}", self.ids.len() + 1);
+        self.ids.insert(device_id.to_owned(), id.clone());
+        self.devices
+            .push(CaptureRecord::BluetoothDevice(CaptureBluetoothDevice {
+                id: id.clone(),
+                kind,
+                name: self.redactor.bluetooth_name(Some(name)),
+            }));
+        id
+    }
+}
+
+#[cfg(feature = "bluetooth")]
+const fn capture_kind(kind: volty_bluetooth::BluetoothDeviceKind) -> CaptureBluetoothKind {
+    match kind {
+        volty_bluetooth::BluetoothDeviceKind::Classic => CaptureBluetoothKind::Classic,
+        volty_bluetooth::BluetoothDeviceKind::Pnp => CaptureBluetoothKind::Pnp,
+        volty_bluetooth::BluetoothDeviceKind::Ble => CaptureBluetoothKind::Ble,
+    }
+}
+
 fn write_reading(
     writer: &mut CaptureWriter,
     started: Instant,
     id: &str,
-    device_index: u8,
+    device_index: Option<u8>,
     backend: &str,
     label: Option<String>,
     battery: &BatteryStatus,
@@ -750,6 +914,64 @@ mod tests {
             "failed to open <device path omitted>"
         );
         assert_eq!(safe_error("timed out"), "timed out");
+    }
+
+    #[test]
+    #[cfg(feature = "bluetooth")]
+    fn bluetooth_records_use_local_ids_and_follow_privacy_profiles() {
+        use volty_bluetooth::{
+            battery_status, BluetoothBatteryReading, BluetoothDeviceKind, BluetoothEvidence,
+            BluetoothObservation, BluetoothScan, SOURCE_DEVICE_PROPERTY,
+        };
+
+        let internal_id = r"BTHENUM\DEV_A4403D5A7BF3\8&1A2B3C4D&0";
+        let scan = BluetoothScan {
+            readings: vec![BluetoothBatteryReading {
+                device_id: internal_id.to_owned(),
+                name: "Headset".to_owned(),
+                kind: BluetoothDeviceKind::Pnp,
+                battery: battery_status(100, SOURCE_DEVICE_PROPERTY),
+            }],
+            evidence: vec![BluetoothEvidence {
+                device_id: internal_id.to_owned(),
+                name: "Headset".to_owned(),
+                kind: BluetoothDeviceKind::Pnp,
+                observation: BluetoothObservation::Property {
+                    property: "DEVPKEY_Device_BatteryLevel",
+                    property_type: "byte",
+                    raw_value: 100,
+                },
+            }],
+            ..BluetoothScan::default()
+        };
+
+        let standard =
+            bluetooth_capture_records(&scan, 5, &Redactor::new(PrivacyProfile::Standard));
+        let text = serde_json::to_string(&standard).unwrap();
+        assert!(!text.contains("A4403D5A7BF3"));
+        assert!(!text.contains("BTHENUM"));
+        assert!(text.contains(r#""id":"bt-1""#));
+        assert!(text.contains("DEVPKEY_Device_BatteryLevel"));
+        assert!(text.contains(r#""name":"Headset""#));
+        let reading = standard
+            .iter()
+            .find_map(|record| match record {
+                CaptureRecord::Reading(reading) => Some(reading),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(reading.device_index, None);
+        assert_eq!(reading.label.as_deref(), Some("Headset"));
+
+        let strict = bluetooth_capture_records(&scan, 5, &Redactor::new(PrivacyProfile::Strict));
+        let device = strict
+            .iter()
+            .find_map(|record| match record {
+                CaptureRecord::BluetoothDevice(device) => Some(device),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(device.name, None);
     }
 
     #[test]

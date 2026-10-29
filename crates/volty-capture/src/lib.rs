@@ -18,7 +18,8 @@ pub use error::CaptureError;
 pub use reader::{CaptureFile, CaptureReader};
 pub use redact::Redactor;
 pub use schema::{
-    from_hex, to_hex, BatterySnapshot, CaptureEvent, CaptureFooter, CaptureHeader,
+    from_hex, to_hex, BatterySnapshot, CaptureBluetoothDevice, CaptureBluetoothGatt,
+    CaptureBluetoothKind, CaptureBluetoothProperty, CaptureEvent, CaptureFooter, CaptureHeader,
     CaptureHidLayout, CaptureHidSample, CaptureHidppExchange, CaptureHidppFeatures,
     CaptureInterface, CaptureMarker, CaptureMatch, CaptureMode, CaptureReading, CaptureRecord,
     EventLevel, HidButtonCapability, HidButtonSample, HidFieldRef, HidRatioRef, HidReportKind,
