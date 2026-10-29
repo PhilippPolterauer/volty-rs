@@ -761,7 +761,7 @@ mod tests {
     #[test]
     fn tooltip_includes_all_device_statuses_when_they_fit() {
         let statuses = vec![
-            "Mouse A (slot 1): 85% · Charging".to_owned(),
+            "Mouse A (slot 1): 85%".to_owned(),
             "Mouse B (slot 2): 42% · ETA 3h 12m".to_owned(),
         ];
 
@@ -774,15 +774,15 @@ mod tests {
     #[test]
     fn tooltip_shows_two_compact_device_lines() {
         let statuses = vec![
-            "G502 X PLUS (slot 1): 56% · ETA 9h 20m".to_owned(),
-            "Baseus Bass BS2 Lite Hands-Free AG: 100% · ETA calculating".to_owned(),
+            "G502 X PLUS (slot 1): 56% · ETA 1d 8h".to_owned(),
+            "Baseus Bass BS2 Lite Hands-Free AG: 90% · ETA calculating".to_owned(),
         ];
 
         let tooltip = tooltip_for_devices("2 devices monitored", &statuses);
 
         assert_eq!(tooltip.lines().count(), 2);
-        assert!(tooltip.starts_with("G502 X PLUS (slot 1): 56% · ETA 9h 20m\n"));
-        assert!(tooltip.ends_with("Baseus Bass BS2 Lite Hands-Free AG: 100% · ETA calculating"));
+        assert!(tooltip.starts_with("G502 X PLUS (slot 1): 56% · ETA 1d 8h\n"));
+        assert!(tooltip.ends_with("Baseus Bass BS2 Lite Hands-Free AG: 90% · ETA calculating"));
         assert!(tooltip.encode_utf16().count() <= MAX_TOOLTIP_UTF16_UNITS);
     }
 

@@ -1,6 +1,6 @@
 use super::{
-    append_config_error, battery_is_full, battery_state_label, battery_status_label, record_event,
-    DeviceId, DeviceReading, FileLogger, LogLevel,
+    append_config_error, battery_status_label, record_event, DeviceId, DeviceReading, FileLogger,
+    LogLevel,
 };
 use super::{battery_eta::battery_eta_label, poll::PollResult};
 use crate::tray::{DeviceMonitorEntry, TrayController};
@@ -121,17 +121,14 @@ pub(super) fn update_tray_devices(
 }
 
 fn compact_device_status(reading: &DeviceReading) -> String {
-    let percentage = reading
-        .battery
-        .level_percent
-        .map_or_else(|| "battery unknown".to_owned(), |value| format!("{value}%"));
-    let detail = if battery_is_full(&reading.battery) {
-        "Full".to_owned()
-    } else {
-        battery_eta_label(reading)
-            .unwrap_or_else(|| battery_state_label(&reading.battery).to_owned())
+    let name = reading.label.display();
+    let Some(percentage) = reading.battery.level_percent else {
+        return format!("{name}: battery unknown");
     };
-    format!("{}: {percentage} · {detail}", reading.label.display())
+    match battery_eta_label(reading) {
+        Some(eta) => format!("{name}: {percentage}% · {eta}"),
+        None => format!("{name}: {percentage}%"),
+    }
 }
 
 pub(super) fn update_monitored_device_menu(
@@ -272,16 +269,13 @@ mod tests {
     }
 
     #[test]
-    fn compact_device_status_uses_the_charge_state_without_an_eta() {
+    fn compact_device_status_omits_charge_state_without_an_eta() {
         let mut reading = test_reading();
         reading.battery.level_percent = Some(87);
         reading.battery.level = BatteryLevel::Good;
         reading.battery.state = BatteryState::Charging;
 
-        assert_eq!(
-            compact_device_status(&reading),
-            "Test device (slot 1): 87% · Charging"
-        );
+        assert_eq!(compact_device_status(&reading), "Test device (slot 1): 87%");
     }
 
     #[test]
@@ -292,12 +286,12 @@ mod tests {
 
         assert_eq!(
             compact_device_status(&reading),
-            "Test device (slot 1): battery unknown · Full"
+            "Test device (slot 1): battery unknown"
         );
     }
 
     #[test]
-    fn compact_device_status_shows_full_at_one_hundred_percent() {
+    fn compact_device_status_omits_the_eta_when_full() {
         let mut reading = test_reading();
         reading.battery.level_percent = Some(100);
         reading.battery.level = BatteryLevel::Unknown;
@@ -305,7 +299,7 @@ mod tests {
 
         assert_eq!(
             compact_device_status(&reading),
-            "Test device (slot 1): 100% · Full"
+            "Test device (slot 1): 100%"
         );
     }
 }
