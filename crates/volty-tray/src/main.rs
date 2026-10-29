@@ -19,6 +19,8 @@ mod notify;
 #[cfg(windows)]
 mod provider;
 #[cfg(windows)]
+mod replay;
+#[cfg(windows)]
 mod report;
 #[cfg(windows)]
 mod state;

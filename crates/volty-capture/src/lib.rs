@@ -21,7 +21,8 @@ pub use schema::{
     from_hex, to_hex, BatterySnapshot, CaptureEvent, CaptureFooter, CaptureHeader,
     CaptureHidLayout, CaptureHidSample, CaptureHidppExchange, CaptureHidppFeatures,
     CaptureInterface, CaptureMarker, CaptureMatch, CaptureMode, CaptureReading, CaptureRecord,
-    EventLevel, HidButtonCapability, HidFieldRef, HidRatioRef, HidReportKind, HidSelectedLayout,
-    HidValueCapability, HidValueSample, HidppFeature, MatchOutcome, PrivacyProfile, SCHEMA,
+    EventLevel, HidButtonCapability, HidButtonSample, HidFieldRef, HidRatioRef, HidReportKind,
+    HidSelectedLayout, HidValueCapability, HidValueSample, HidppFeature, MatchOutcome,
+    PrivacyProfile, SCHEMA,
 };
 pub use writer::CaptureWriter;

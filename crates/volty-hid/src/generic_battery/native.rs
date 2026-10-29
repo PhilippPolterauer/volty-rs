@@ -1,7 +1,7 @@
 //! Windows HID parser bindings that discover and read standard battery usages.
 use super::{
-    battery_status, is_battery_button, is_battery_value, ratio_percent, scale_percent,
-    select_layout, BatteryLayout, ButtonField, GenericBatteryValueReading, LevelSource,
+    decode_captured, is_battery_button, is_battery_value, select_layout, BatteryLayout,
+    ButtonField, GenericBatteryButtonReading, GenericBatteryValueReading, LevelSource,
     ProbedLayout, ReportKind, ValueField, PAGE_BATTERY_SYSTEM,
 };
 use crate::protocol::ProtocolError;
@@ -68,7 +68,14 @@ pub(super) fn forget_absent_interfaces(interfaces: &[HidInterfaceInfo]) {
 pub(super) fn read_snapshot(
     path: &CStr,
     layout: &BatteryLayout,
-) -> Result<(BatteryStatus, Vec<GenericBatteryValueReading>), ProtocolError> {
+) -> Result<
+    (
+        BatteryStatus,
+        Vec<GenericBatteryValueReading>,
+        Vec<GenericBatteryButtonReading>,
+    ),
+    ProtocolError,
+> {
     read_with(&HidCollection::open(path)?, layout)
 }
 
@@ -76,7 +83,7 @@ pub(super) fn read_battery(
     path: &CStr,
     layout: &BatteryLayout,
 ) -> Result<BatteryStatus, ProtocolError> {
-    read_snapshot(path, layout).map(|(battery, _)| battery)
+    read_snapshot(path, layout).map(|(battery, _, _)| battery)
 }
 
 /// Accepts a layout only if the battery can actually be read, so a declared but
@@ -96,30 +103,41 @@ fn probe(path: &CStr) -> Option<ProbedLayout> {
 fn read_with(
     device: &HidCollection,
     layout: &BatteryLayout,
-) -> Result<(BatteryStatus, Vec<GenericBatteryValueReading>), ProtocolError> {
+) -> Result<
+    (
+        BatteryStatus,
+        Vec<GenericBatteryValueReading>,
+        Vec<GenericBatteryButtonReading>,
+    ),
+    ProtocolError,
+> {
     let mut readings = Vec::new();
+    let mut buttons = Vec::new();
     let mut reports = Reports {
         device,
         fetched: Vec::new(),
     };
-    let percent = match layout.level {
+    match layout.level {
         LevelSource::Percent(field) => {
             let raw = reports.value(&field)?;
             readings.push(field.reading(raw));
-            scale_percent(raw, field.logical_min, field.logical_max)
         }
         LevelSource::Ratio { remaining, full } => {
             let raw_remaining = reports.value(&remaining)?;
             readings.push(remaining.reading(raw_remaining));
             let raw_full = reports.value(&full)?;
             readings.push(full.reading(raw_full));
-            ratio_percent(raw_remaining, raw_full)
         }
     }
-    .ok_or_else(|| ProtocolError::from("the battery level is outside its declared range"))?;
-    let charging = layout.charging.and_then(|field| reports.pressed(&field));
-    let discharging = layout.discharging.and_then(|field| reports.pressed(&field));
-    Ok((battery_status(percent, charging, discharging), readings))
+    for field in [layout.charging, layout.discharging].into_iter().flatten() {
+        if let Some(pressed) = reports.pressed(&field) {
+            buttons.push(field.reading(pressed));
+        }
+    }
+    let battery = decode_captured(layout, &readings, &buttons).ok_or_else(|| {
+        ProtocolError::from("a selected battery field is missing or outside its declared range")
+    })?;
+    Ok((battery, readings, buttons))
 }
 
 /// Reports fetched during one read, so fields sharing a report cost a single call.

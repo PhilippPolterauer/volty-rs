@@ -157,6 +157,13 @@ fn sample_records() -> Vec<CaptureRecord> {
                 kind: HidReportKind::Input,
                 raw_value: 85,
             }],
+            buttons: vec![HidButtonSample {
+                page: 0x0085,
+                usage: 0x0045,
+                report_id: 1,
+                kind: HidReportKind::Input,
+                pressed: true,
+            }],
             battery: sample_battery(),
         }),
         CaptureRecord::Reading(CaptureReading {
@@ -223,6 +230,20 @@ fn every_record_variant_round_trips_through_writer_and_reader() {
         sample_footer(u64::try_from(records.len()).unwrap() + 1, true)
     );
     file.validate().unwrap();
+}
+
+#[test]
+fn hid_samples_without_state_bits_from_older_captures_still_parse() {
+    let record: CaptureRecord = serde_json::from_str(
+        r#"{"type":"hid_sample","id":"iface-1","device_index":null,"t_ms":1,
+            "values":[],"battery":{"percent":50,"level":"good","state":"unknown",
+            "raw_level":50,"raw_status":null,"source":"HID Battery"}}"#,
+    )
+    .unwrap();
+    let CaptureRecord::HidSample(sample) = record else {
+        panic!("expected a HID sample");
+    };
+    assert!(sample.buttons.is_empty());
 }
 
 #[test]

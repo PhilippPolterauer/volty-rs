@@ -1,0 +1,9 @@
+{"type":"header","schema":"volty.capture/v1","capture_id":"synthetic-g502x-unified","created_at":"2026-10-29T00:00:00Z","app_version":"0.2.1","app_commit":null,"os":"windows","architecture":"x86_64","mode":"snapshot","privacy":"standard","features":["hidapi","profile"]}
+{"type":"interface","id":"iface-1","bus":"Usb","vendor_id":1133,"product_id":50503,"release_number":1026,"usage_page":65280,"usage":2,"interface_number":2,"manufacturer":"Logitech","product":"USB Receiver","serial_present":false}
+{"type":"match","id":"iface-1","device_index":null,"backend":"Logitech HID++ 2.0","outcome":"matched","detail":null}
+{"type":"hidpp_exchange","id":"iface-1","device_index":1,"t_ms":1,"request":"1101000110040000000000000000000000000000","response":"1101000106000100000000000000000000000000","error":null,"elapsed_ms":1}
+{"type":"hidpp_exchange","id":"iface-1","device_index":1,"t_ms":2,"request":"1101060200000000000000000000000000000000","response":"110106020f030000000000000000000000000000","error":null,"elapsed_ms":1}
+{"type":"hidpp_exchange","id":"iface-1","device_index":1,"t_ms":3,"request":"1101061300000000000000000000000000000000","response":"1101061357040100000000000000000000000000","error":null,"elapsed_ms":1}
+{"type":"reading","id":"iface-1","device_index":1,"t_ms":4,"backend":"Logitech HID++ 2.0","label":"USB Receiver","battery":{"percent":87,"level":"good","state":"charging","raw_level":4,"raw_status":1,"source":"HID++ Unified Battery"}}
+{"type":"hidpp_features","id":"iface-1","device_index":1,"features":[{"logical_id":4100,"runtime_index":6,"feature_type":0,"version":1}]}
+{"type":"footer","schema":"volty.capture/v1","records":8,"complete":true}

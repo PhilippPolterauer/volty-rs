@@ -118,7 +118,9 @@ attach the capture, and describe what you expected versus what Volty showed;
 see [Hardware capture](./docs/hardware-capture.md) for what the file contains
 and what is deliberately left out. For a console snapshot, run
 `volty capture`; add `--strict` to omit model strings or `--output <path>` to
-choose the file.
+choose the file. `volty capture inspect <file>` validates a capture, and
+`volty capture replay <file>` checks that its recorded readings can be decoded
+again without hardware.
 **Reset Volty** asks for confirmation before deleting
 `%APPDATA%\Volty\config.toml` and
 `%LOCALAPPDATA%\Volty\device-state.sqlite3`. It also disables **Start on Boot**

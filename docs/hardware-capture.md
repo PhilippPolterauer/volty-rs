@@ -4,8 +4,8 @@ A hardware capture is a local, machine-readable record of what Volty observed
 from a HID device. It separates evidence from expectations: a bug report can
 say what a device should show, while the capture contains the interface
 metadata, protocol frames, extracted values, and normalized reading that Volty
-actually saw. The same records are intended to become replayable regression
-fixtures for protocol and decoder tests.
+actually saw. The same records can be replayed locally as regression fixtures
+for protocol and decoder tests.
 
 Captures are read-only evidence. Volty does not upload them, and creating one
 does not change device settings, pairing, or configuration. The current primary
@@ -24,8 +24,9 @@ A capture can contain these kinds of records:
   and versions reported by the device.
 - **HID++ exchanges:** raw request and response frames, limited to an allowlist
   of read-only queries such as feature discovery and battery status.
-- **Generic HID layout:** battery-related report-descriptor capabilities and the
-  values extracted from them, not the full input report.
+- **Generic HID layout:** battery-related report-descriptor capabilities, the
+  values extracted from them, and the charging or discharging state bits, not
+  the full input report.
 - **Normalized readings:** the source label, reported level when the device
   truly reports a percentage, charging or full state, unknown state, and
   timestamp.
@@ -81,23 +82,26 @@ volty capture --strict
 - `--strict` omits model-level manufacturer and product strings, keeping only
   numeric identifiers and protocol evidence.
 
-The following commands are planned and are not available in the current
-release. Do not rely on them until they appear in a release or the CLI help
-output.
+Inspect or replay a captured file without opening a device:
 
 ```text
-volty capture --duration 60
-volty capture inspect <capture.volty.jsonl>
-volty capture replay <capture.volty.jsonl>
+volty capture inspect .\g502.volty.jsonl
+volty capture replay .\g502.volty.jsonl
 ```
 
-- `--duration` is intended to record a session for a bounded period.
-- `inspect` is intended to summarize and schema-check a capture without opening
-  a device.
-- `replay` is intended to feed recorded HID++ frames and generic layouts through
-  the decoders without contacting hardware.
+- `inspect` validates the schema and prints the same bounded summary as a fresh
+  snapshot.
+- `replay` decodes recorded HID++ exchanges and generic HID layouts through the
+  same parsers the tray uses. It checks that the normalized readings can be
+  reproduced from the recorded evidence. State-changing requests are rejected,
+  and an exchange that does not match its response fails replay.
 
-The exact syntax and output may change before these commands ship.
+Replay is local-only and does not write another capture. A replay success means
+Volty can reproduce the recorded decoding result, not that the device behaves
+that way in every firmware or connection mode.
+
+Recording a bounded session with `--duration` is planned and is not available in
+the current release. Do not rely on it until it appears in the CLI help output.
 
 ## Review before sharing
 
@@ -135,17 +139,21 @@ Captures are untrusted input. Maintainers validate the schema and bounds before
 using a record, reject malformed or unknown records rather than guessing, and
 never treat strings from a capture as commands or paths to open.
 
-A capture supports two kinds of follow-up:
+A capture supports two kinds of follow-up through `volty capture replay`:
 
 - **Frame replay:** run allowlisted HID++ exchanges through the same framing and
   decoding code used by the tray, and compare the semantic result (feature,
   status, level, charging state, or error).
-- **Layout replay:** run recorded generic HID descriptor capabilities and
-  extracted values through the generic battery layout and scaling code.
+- **Layout replay:** run recorded generic HID descriptor capabilities,
+  extracted values, and state bits through the generic battery layout and
+  scaling code.
 
 Replay checks the decoder, not the device. A successful replay means Volty
 reproduces the recorded outcome; it does not prove that every device with the
-same IDs behaves the same way.
+same IDs behaves the same way. The repository's synthetic fixtures in
+`tests/hardware` exercise both paths. Add a reviewed hardware capture there only
+when it contains no private data and its behavior should become a regression
+expectation.
 
 Captures in the test corpus can be marked with one of these states:
 
@@ -173,7 +181,7 @@ capture. Records appear in this order when present:
 | `hidpp_features` | HID++ feature table. |
 | `hid_layout` | Generic HID battery descriptor capabilities. |
 | `hidpp_exchange` | One allowlisted read-only HID++ request/response exchange. |
-| `hid_sample` | One extracted generic HID battery sample. |
+| `hid_sample` | One extracted generic HID battery sample, including state bits. |
 | `reading` | One normalized device reading. |
 | `event` | Capture lifecycle, discovery, or read error. |
 | `marker` | Annotation or phase marker. |
@@ -193,7 +201,8 @@ and it does not override the limited hardware validation described in the
 README. Firmware updates, receiver slots, USB versus Bluetooth connections, and
 Windows HID parsing can all change what a device exposes.
 
-The in-memory flight recorder and the full replay corpus are future work. The
-capture CLI and replay tooling are planned, not part of the current slice. Until
-those exist, captures are reviewed locally and replayed by maintainers with
-development tooling.
+Capture and replay currently work on snapshots only. A bounded `--duration`
+session recorder and a larger replay corpus are future work. Snapshot capture
+uses the HID++ slots Volty has already seen when discovery state is available,
+which keeps the common case fast; delete Volty's local state or wait for a tray
+scan if a device moved to a different receiver slot.

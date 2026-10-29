@@ -11,18 +11,21 @@ use volty_capture::{
     to_hex, BatterySnapshot, CaptureEvent, CaptureFile, CaptureHeader, CaptureHidLayout,
     CaptureHidSample, CaptureHidppExchange, CaptureHidppFeatures, CaptureInterface, CaptureMatch,
     CaptureMode, CaptureReading, CaptureRecord, CaptureWriter, EventLevel, HidButtonCapability,
-    HidFieldRef, HidRatioRef, HidReportKind, HidSelectedLayout, HidValueCapability, HidValueSample,
-    HidppFeature, MatchOutcome, PrivacyProfile, Redactor, SCHEMA,
+    HidButtonSample, HidFieldRef, HidRatioRef, HidReportKind, HidSelectedLayout,
+    HidValueCapability, HidValueSample, HidppFeature, MatchOutcome, PrivacyProfile, Redactor,
+    SCHEMA,
 };
 use volty_hid::{
     enumerate_features, enumerate_hid_interfaces, query_battery_with_transport, resolve_hid_device,
-    BatteryLevel, BatteryProtocol, BatteryState, BatteryStatus, GenericBatteryButton,
-    GenericBatteryLayout, GenericBatteryValue, GenericBatteryValueReading, GenericHidBattery,
-    GenericReportKind, HidInterfaceInfo, HidppSession, RecordingTransport, SoftwareIdAllocator,
-    GENERIC_HID_BATTERY, LOGITECH_HIDPP_20,
+    stable_interface_keys, BatteryLevel, BatteryProtocol, BatteryState, BatteryStatus,
+    GenericBatteryButton, GenericBatteryButtonReading, GenericBatteryLayout, GenericBatteryValue,
+    GenericBatteryValueReading, GenericHidBattery, GenericReportKind, HidInterfaceInfo,
+    HidppSession, RecordingTransport, SoftwareIdAllocator, GENERIC_HID_BATTERY, LOGITECH_HIDPP_20,
 };
 
-const CAPTURE_USAGE: &str = "Usage:\n  volty capture [--output <path>] [--strict]\n\nWrites a read-only snapshot of the visible HID interfaces. Nothing is uploaded automatically.";
+use crate::state::DeviceState;
+
+const CAPTURE_USAGE: &str = "Usage:\n  volty capture [--output <path>] [--strict]\n  volty capture inspect <capture.volty.jsonl>\n  volty capture replay <capture.volty.jsonl>\n\nWrites a read-only snapshot of the visible HID interfaces, or validates and\nreplays a previously written capture without opening a device. Nothing is\nuploaded automatically.";
 const DIRECT_DEVICE_INDEX: u8 = 0xff;
 const FEATURE_TIMEOUT: Duration = Duration::from_secs(2);
 const DEVICE_PATH_MARKERS: [&str; 2] = ["\\\\?\\", "\\\\.\\"];
@@ -65,6 +68,18 @@ pub fn write_snapshot(
 
 /// Runs `volty capture` after the command name has been removed from the arguments.
 pub fn run_cli(args: &[String]) -> Result<(), Box<dyn Error>> {
+    match args.first().map(String::as_str) {
+        Some("inspect") => {
+            let path = subcommand_path("inspect", &args[1..])?;
+            return crate::replay::inspect_cli(&path);
+        }
+        Some("replay") => {
+            let path = subcommand_path("replay", &args[1..])?;
+            return crate::replay::replay_cli(&path);
+        }
+        _ => {}
+    }
+
     let mut output = None;
     let mut privacy = PrivacyProfile::Standard;
     let mut index = 0;
@@ -136,6 +151,8 @@ fn write_capture(
     writer.write(&CaptureRecord::Header(header))?;
 
     let interfaces = enumerate_hid_interfaces()?;
+    let keys = stable_interface_keys(&interfaces);
+    let known_state = DeviceState::open_local().ok();
     for (index, interface) in interfaces.iter().enumerate() {
         let id = format!("iface-{}", index + 1);
         writer.write(&CaptureRecord::Interface(capture_interface(
@@ -152,7 +169,25 @@ fn write_capture(
                     detail: None,
                 }))?;
                 if backend == LOGITECH_HIDPP_20.name() {
-                    capture_hidpp(&mut writer, started, &id, interface, &redactor)?;
+                    let candidates = known_state
+                        .as_ref()
+                        .zip(keys.get(index))
+                        .and_then(|(state, key)| {
+                            state
+                                .known_device_indices(key, LOGITECH_HIDPP_20.device_indices())
+                                .ok()
+                        })
+                        .filter(|indices| !indices.is_empty());
+                    capture_hidpp(
+                        &mut writer,
+                        started,
+                        &id,
+                        interface,
+                        &redactor,
+                        candidates
+                            .as_deref()
+                            .unwrap_or_else(|| LOGITECH_HIDPP_20.device_indices()),
+                    )?;
                 } else if backend == GENERIC_HID_BATTERY.name() {
                     capture_generic(&mut writer, started, &id, interface, &redactor)?;
                 } else {
@@ -200,6 +235,7 @@ fn capture_hidpp(
     id: &str,
     interface: &HidInterfaceInfo,
     redactor: &Redactor,
+    device_indices: &[u8],
 ) -> Result<(), Box<dyn Error>> {
     let session = match HidppSession::open_for_interface(interface) {
         Ok(session) => session,
@@ -219,7 +255,7 @@ fn capture_hidpp(
     };
     let mut recorder = RecordingTransport::new(session);
     let label = redactor.product(interface.product_string.as_deref());
-    for &device_index in LOGITECH_HIDPP_20.device_indices() {
+    for &device_index in device_indices {
         let reading = query_battery_with_transport(&mut recorder, device_index);
         let exchanges = recorder.take_exchanges();
         write_exchanges(writer, started, id, device_index, &exchanges)?;
@@ -342,6 +378,12 @@ fn capture_generic(
                     .iter()
                     .copied()
                     .map(hid_value_sample)
+                    .collect(),
+                buttons: sample
+                    .buttons
+                    .iter()
+                    .copied()
+                    .map(hid_button_sample)
                     .collect(),
                 battery: battery_snapshot(&sample.battery),
             }))?;
@@ -514,6 +556,16 @@ fn hid_value_sample(value: GenericBatteryValueReading) -> HidValueSample {
     }
 }
 
+fn hid_button_sample(button: GenericBatteryButtonReading) -> HidButtonSample {
+    HidButtonSample {
+        page: button.page,
+        usage: button.usage,
+        report_id: button.report_id,
+        kind: hid_report_kind(button.kind),
+        pressed: button.pressed,
+    }
+}
+
 const fn hid_report_kind(kind: GenericReportKind) -> HidReportKind {
     match kind {
         GenericReportKind::Feature => HidReportKind::Feature,
@@ -521,7 +573,7 @@ const fn hid_report_kind(kind: GenericReportKind) -> HidReportKind {
     }
 }
 
-fn battery_snapshot(battery: &BatteryStatus) -> BatterySnapshot {
+pub(crate) fn battery_snapshot(battery: &BatteryStatus) -> BatterySnapshot {
     BatterySnapshot {
         percent: battery.level_percent,
         level: level_name(battery.level).to_owned(),
@@ -643,6 +695,16 @@ fn civil_from_days(days: i64) -> (i64, i64, i64) {
         year += 1;
     }
     (year, month, day)
+}
+
+fn subcommand_path(command: &str, args: &[String]) -> Result<PathBuf, Box<dyn Error>> {
+    match args {
+        [path] => Ok(PathBuf::from(path)),
+        [] => Err(usage_error(&format!("{command} requires a capture path"))),
+        _ => Err(usage_error(&format!(
+            "{command} accepts exactly one capture path"
+        ))),
+    }
 }
 
 fn usage_error(message: &str) -> Box<dyn Error> {

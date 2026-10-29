@@ -241,6 +241,9 @@ pub struct CaptureHidSample {
     pub device_index: Option<u8>,
     pub t_ms: u64,
     pub values: Vec<HidValueSample>,
+    /// State bits are optional for captures written before they were recorded.
+    #[serde(default)]
+    pub buttons: Vec<HidButtonSample>,
     pub battery: BatterySnapshot,
 }
 
@@ -252,6 +255,16 @@ pub struct HidValueSample {
     pub report_id: u8,
     pub kind: HidReportKind,
     pub raw_value: u32,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HidButtonSample {
+    pub page: u16,
+    pub usage: u16,
+    pub report_id: u8,
+    pub kind: HidReportKind,
+    pub pressed: bool,
 }
 
 /// Normalized battery reading emitted by a backend.

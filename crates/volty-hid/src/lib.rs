@@ -25,9 +25,10 @@ pub use battery_query::{query_battery_with_transport, query_device_with_transpor
 pub use command::*;
 pub use device::*;
 pub use generic_battery::{
-    GenericBatteryButton, GenericBatteryLayout, GenericBatteryProbe, GenericBatterySample,
-    GenericBatteryValue, GenericBatteryValueReading, GenericHidBattery, GenericHidBatteryDevice,
-    GenericReportKind, GENERIC_HID_BATTERY, GENERIC_HID_BATTERY_DEVICE, SOURCE_HID_BATTERY,
+    decode_generic_battery, GenericBatteryButton, GenericBatteryButtonReading,
+    GenericBatteryLayout, GenericBatteryProbe, GenericBatterySample, GenericBatteryValue,
+    GenericBatteryValueReading, GenericHidBattery, GenericHidBatteryDevice, GenericReportKind,
+    GENERIC_HID_BATTERY, GENERIC_HID_BATTERY_DEVICE, SOURCE_HID_BATTERY,
 };
 #[cfg(feature = "hidapi")]
 pub use hid::{

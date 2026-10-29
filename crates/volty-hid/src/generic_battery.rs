@@ -80,11 +80,22 @@ pub struct GenericBatteryValueReading {
     pub raw_value: u32,
 }
 
+/// One state bit extracted from a battery-related report.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct GenericBatteryButtonReading {
+    pub page: u16,
+    pub usage: u16,
+    pub report_id: u8,
+    pub kind: GenericReportKind,
+    pub pressed: bool,
+}
+
 /// A normalized battery reading together with the raw values it was derived from.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct GenericBatterySample {
     pub layout: GenericBatteryLayout,
     pub values: Vec<GenericBatteryValueReading>,
+    pub buttons: Vec<GenericBatteryButtonReading>,
     pub battery: BatteryStatus,
 }
 
@@ -104,8 +115,30 @@ impl From<ReportKind> for GenericReportKind {
     }
 }
 
+impl From<GenericReportKind> for ReportKind {
+    fn from(kind: GenericReportKind) -> Self {
+        match kind {
+            GenericReportKind::Feature => Self::Feature,
+            GenericReportKind::Input => Self::Input,
+        }
+    }
+}
+
 impl From<ValueField> for GenericBatteryValue {
     fn from(field: ValueField) -> Self {
+        Self {
+            page: field.page,
+            usage: field.usage,
+            report_id: field.report_id,
+            kind: field.kind.into(),
+            logical_min: field.logical_min,
+            logical_max: field.logical_max,
+        }
+    }
+}
+
+impl From<GenericBatteryValue> for ValueField {
+    fn from(field: GenericBatteryValue) -> Self {
         Self {
             page: field.page,
             usage: field.usage,
@@ -128,6 +161,17 @@ impl From<ButtonField> for GenericBatteryButton {
     }
 }
 
+impl From<GenericBatteryButton> for ButtonField {
+    fn from(field: GenericBatteryButton) -> Self {
+        Self {
+            page: field.page,
+            usage: field.usage,
+            report_id: field.report_id,
+            kind: field.kind.into(),
+        }
+    }
+}
+
 impl ValueField {
     fn reading(self, raw_value: u32) -> GenericBatteryValueReading {
         GenericBatteryValueReading {
@@ -137,6 +181,32 @@ impl ValueField {
             kind: self.kind.into(),
             raw_value,
         }
+    }
+
+    fn matches(self, value: &GenericBatteryValueReading) -> bool {
+        self.page == value.page
+            && self.usage == value.usage
+            && self.report_id == value.report_id
+            && GenericReportKind::from(self.kind) == value.kind
+    }
+}
+
+impl ButtonField {
+    fn reading(self, pressed: bool) -> GenericBatteryButtonReading {
+        GenericBatteryButtonReading {
+            page: self.page,
+            usage: self.usage,
+            report_id: self.report_id,
+            kind: self.kind.into(),
+            pressed,
+        }
+    }
+
+    fn matches(self, button: &GenericBatteryButtonReading) -> bool {
+        self.page == button.page
+            && self.usage == button.usage
+            && self.report_id == button.report_id
+            && GenericReportKind::from(self.kind) == button.kind
     }
 }
 
@@ -309,6 +379,70 @@ pub(crate) fn battery_status(
     }
 }
 
+/// Rebuilds a normalized battery reading from recorded descriptor capabilities
+/// and extracted values, without touching hardware.
+///
+/// # Errors
+/// Returns an error when the layout has no single level source, a selected
+/// field is missing from the sample, or the extracted level is outside the
+/// declared range.
+pub fn decode_generic_battery(
+    layout: &GenericBatteryLayout,
+    values: &[GenericBatteryValueReading],
+    buttons: &[GenericBatteryButtonReading],
+) -> Result<BatteryStatus, ProtocolError> {
+    let level = match (layout.percent, layout.ratio) {
+        (Some(percent), None) => LevelSource::Percent(percent.into()),
+        (None, Some((remaining, full))) => LevelSource::Ratio {
+            remaining: remaining.into(),
+            full: full.into(),
+        },
+        _ => {
+            return Err(ProtocolError::from(
+                "the layout must select exactly one battery level source",
+            ))
+        }
+    };
+    let internal = BatteryLayout {
+        level,
+        charging: layout.charging.map(Into::into),
+        discharging: layout.discharging.map(Into::into),
+    };
+    decode_captured(&internal, values, buttons).ok_or_else(|| {
+        ProtocolError::from("a selected battery field is missing or outside its declared range")
+    })
+}
+
+fn decode_captured(
+    layout: &BatteryLayout,
+    values: &[GenericBatteryValueReading],
+    buttons: &[GenericBatteryButtonReading],
+) -> Option<BatteryStatus> {
+    let value = |field: &ValueField| {
+        values
+            .iter()
+            .find(|value| field.matches(value))
+            .map(|value| value.raw_value)
+    };
+    let percent = match layout.level {
+        LevelSource::Percent(field) => {
+            scale_percent(value(&field)?, field.logical_min, field.logical_max)?
+        }
+        LevelSource::Ratio { remaining, full } => ratio_percent(value(&remaining)?, value(&full)?)?,
+    };
+    let pressed = |field: &ButtonField| {
+        buttons
+            .iter()
+            .find(|button| field.matches(button))
+            .map(|button| button.pressed)
+    };
+    Some(battery_status(
+        percent,
+        layout.charging.and_then(|field| pressed(&field)),
+        layout.discharging.and_then(|field| pressed(&field)),
+    ))
+}
+
 /// Whether the interface's top-level collection is worth probing for a battery.
 fn is_probe_candidate(interface: &HidInterfaceInfo) -> bool {
     interface
@@ -330,14 +464,14 @@ impl GenericHidBattery {
         {
             let probed = native::cached_probed_layout(&interface.path)?;
             let layout = probed.snapshot();
-            let sample =
-                native::read_snapshot(&interface.path, &probed.layout).map(|(battery, values)| {
-                    GenericBatterySample {
-                        layout: layout.clone(),
-                        values,
-                        battery,
-                    }
-                });
+            let sample = native::read_snapshot(&interface.path, &probed.layout).map(
+                |(battery, values, buttons)| GenericBatterySample {
+                    layout: layout.clone(),
+                    values,
+                    buttons,
+                    battery,
+                },
+            );
             Some(GenericBatteryProbe { layout, sample })
         }
         #[cfg(not(all(windows, feature = "hidapi")))]
@@ -359,10 +493,12 @@ impl GenericHidBattery {
             let probed = native::known_probed_layout(&interface.path).ok_or_else(|| {
                 ProtocolError::from("the interface no longer reports a battery level")
             })?;
-            let (battery, values) = native::read_snapshot(&interface.path, &probed.layout)?;
+            let (battery, values, buttons) =
+                native::read_snapshot(&interface.path, &probed.layout)?;
             Ok(GenericBatterySample {
                 layout: probed.snapshot(),
                 values,
+                buttons,
                 battery,
             })
         }
@@ -576,6 +712,91 @@ mod tests {
         assert_eq!(battery_status(5, None, None).level, BatteryLevel::Critical);
         assert_eq!(battery_status(25, None, None).level, BatteryLevel::Low);
         assert_eq!(battery_status(100, None, None).level, BatteryLevel::Full);
+    }
+
+    #[test]
+    fn recorded_layout_and_values_replay_to_the_same_reading() {
+        let level = value(
+            PAGE_BATTERY_SYSTEM,
+            USAGE_RELATIVE_STATE_OF_CHARGE,
+            ReportKind::Feature,
+            0,
+            100,
+        );
+        let charging = button(USAGE_CHARGING);
+        let discharging = button(USAGE_DISCHARGING);
+        let internal = select_layout(&[level], &[charging, discharging]).unwrap();
+        let layout = ProbedLayout {
+            values: vec![level],
+            buttons: vec![charging, discharging],
+            layout: internal,
+        }
+        .snapshot();
+
+        let battery = decode_generic_battery(
+            &layout,
+            &[level.reading(64)],
+            &[charging.reading(true), discharging.reading(false)],
+        )
+        .unwrap();
+        assert_eq!(battery.level_percent, Some(64));
+        assert_eq!(battery.level, BatteryLevel::Good);
+        assert_eq!(battery.state, BatteryState::Charging);
+        assert_eq!(battery.raw_level, 64);
+        assert_eq!(battery.source, SOURCE_HID_BATTERY);
+    }
+
+    #[test]
+    fn replay_rejects_a_missing_selected_value() {
+        let level = value(
+            PAGE_GENERIC_DEVICE,
+            USAGE_BATTERY_STRENGTH,
+            ReportKind::Input,
+            0,
+            255,
+        );
+        let internal = select_layout(&[level], &[]).unwrap();
+        let layout = ProbedLayout {
+            values: vec![level],
+            buttons: Vec::new(),
+            layout: internal,
+        }
+        .snapshot();
+
+        let error = decode_generic_battery(&layout, &[], &[]).unwrap_err();
+        assert!(error.to_string().contains("missing"));
+    }
+
+    #[test]
+    fn recorded_ratio_layout_replays_capacity_as_a_percentage() {
+        let remaining = value(
+            PAGE_BATTERY_SYSTEM,
+            USAGE_REMAINING_CAPACITY,
+            ReportKind::Feature,
+            0,
+            5000,
+        );
+        let full = value(
+            PAGE_BATTERY_SYSTEM,
+            USAGE_FULL_CHARGE_CAPACITY,
+            ReportKind::Feature,
+            0,
+            5000,
+        );
+        let internal = select_layout(&[remaining, full], &[]).unwrap();
+        let layout = ProbedLayout {
+            values: vec![remaining, full],
+            buttons: Vec::new(),
+            layout: internal,
+        }
+        .snapshot();
+
+        let battery =
+            decode_generic_battery(&layout, &[remaining.reading(1250), full.reading(5000)], &[])
+                .unwrap();
+        assert_eq!(battery.level_percent, Some(25));
+        assert_eq!(battery.level, BatteryLevel::Low);
+        assert_eq!(battery.state, BatteryState::Unknown);
     }
 
     #[test]
