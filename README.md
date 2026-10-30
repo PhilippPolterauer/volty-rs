@@ -94,7 +94,7 @@ RGB; device support remains best-effort and hardware validation is limited.
 * **One-Click Diagnostics:** A native Diagnose window shows recent app logs, backend status, and HID details, with buttons to copy the log or open a GitHub issue draft, and saves a machine-readable `.volty.jsonl` hardware capture (including Bluetooth property and GATT evidence when built with the `bluetooth` feature) in addition to the text report for local review.
 * **Retry After Read Errors:** Polling resumes after errors using the configurable retry interval.
 * **Per-Device Control:** Choose which discovered devices are monitored from the tray's **Monitored Devices** submenu; the choice is persisted locally.
-* **Self-Maintaining Logs:** The local log file rotates at 5 MiB and keeps one `.1` backup.
+* **Self-Maintaining Logs:** Writes one log file per local day, caps each at 5 MiB with one `.1` backup, and keeps the last seven days.
 * **Standalone Executable:** Releases provide a single `.exe` with no installer. Optional Start on Boot uses the current user's Windows Run setting.
 
 ---
@@ -366,10 +366,14 @@ The default tray color map matches the green/yellow/red ranges above; uncomment
 retain their defaults. The red and yellow cutoffs can be set from 0–99 and
 1–100 percent respectively, and must be ordered so red is lower than yellow.
 Colors must be six-digit hexadecimal RGB values such as `"#d23030"`.
-Logs append to `%APPDATA%\Volty\volty.log`; choose **Open Log File** in the tray
-menu to view them. The default `info` level records lifecycle and errors,
-`debug` adds successful battery readings, and `trace` adds low-level event
-details (trace strings are only built at this level). Changes to `log_level` take effect when the config is reloaded.
+Logs append to a daily file such as `%APPDATA%\Volty\volty-2026-10-30.log`;
+choose **Open Log File** in the tray menu to view the current one. Each file
+rotates at 5 MiB and keeps one `.1` backup, and daily files older than seven
+days are removed. An existing `volty.log` is moved into the current day's file
+on first start. The default `info` level records lifecycle and errors, `debug`
+adds successful battery readings, and `trace` adds low-level event details
+(trace strings are only built at this level). Changes to `log_level` take effect
+when the config is reloaded.
 
 Choose **Diagnose / Report an Issue** in the tray menu to open a native Windows
 window with recent application events, the active configuration, Bluetooth

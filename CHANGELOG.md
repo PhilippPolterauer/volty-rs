@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Logs now use one file per local day (`volty-YYYY-MM-DD.log`) and remove daily files older than seven days. Each daily file still rotates at 5 MiB with one `.1` backup, and an existing `volty.log` is moved into the current day's file.
+
 ## [0.3.1] - 2026-10-29
 
 ### Changed
