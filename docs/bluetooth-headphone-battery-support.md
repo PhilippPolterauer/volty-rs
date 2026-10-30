@@ -13,9 +13,8 @@ supplies the `System.Devices.BatteryLife` property. It checks both the
 connected-device properties and present Bluetooth PnP device nodes, since
 Windows can expose that property through either surface. For connected
 Hands-Free Profile (HFP) devices, it also checks the RFCOMM service metadata
-for the same property without opening an RFCOMM connection. It reads
-Windows-paired Bluetooth Low Energy (BLE) devices, including paired devices
-that Windows does not report as connected, through the standardized GATT
+for the same property without opening an RFCOMM connection. It reads connected
+Windows-paired Bluetooth Low Energy (BLE) devices through the standardized GATT
 Battery Service and Battery Level characteristic:
 
 - Battery Service: `0x180F`
@@ -26,16 +25,16 @@ data. Only values from 0 through 100 are accepted; the Windows property's
 unknown sentinel (101) is treated as unavailable. Charging state remains
 unknown because neither source reports it.
 
-Volty does not initiate pairing or perform broad Bluetooth scans. GATT reads
-are attempted for paired devices even when Windows does not report an active
-BLE connection; Windows must still be able to reach the device. Each
-asynchronous Windows Runtime operation has a five-second timeout, and the
-paired-device pass has a conservative 30-second overall budget. If that
-budget is exhausted, already collected readings are retained, remaining
-paired devices are skipped, and an explicit warning is recorded. A device
-without an available Windows battery property or GATT service is skipped;
-failures are logged without suppressing valid readings from other devices or
-the HID backend. If Windows reports multiple
+Volty does not initiate pairing, connect paired devices, or perform broad
+Bluetooth scans. A paired device whose Windows connection status is not
+`Connected` is skipped, even if Windows still exposes a stale battery
+property for its PnP device node. Each asynchronous Windows Runtime operation
+has a five-second timeout, and the paired-device pass has a conservative
+30-second overall budget. If that budget is exhausted, already collected
+readings are retained, remaining paired devices are skipped, and an explicit
+warning is recorded. A device without an available Windows battery property
+or GATT service is skipped; failures are logged without suppressing valid
+readings from other devices or the HID backend. If Windows reports multiple
 Battery Services or Battery Level characteristics for one device, Volty
 reports an ambiguity rather than inventing left/right/case labels or combining
 the values.
@@ -111,7 +110,8 @@ validation of the BLE GATT path and a second headset model.
 
 - Volty checks connected Bluetooth devices and present Bluetooth PnP nodes for
   the Windows battery-life property, and enumerates Windows-paired Bluetooth
-  LE devices. It does not pair devices or perform a broad Bluetooth discovery
+  LE devices. PnP nodes are ignored unless Windows reports the device as
+  connected. It does not pair devices or perform a broad Bluetooth discovery
   scan.
 - A device must expose GATT Battery Service `0x180F` and Battery Level
   characteristic `0x2A19`; classic HFP and vendor-specific battery reports are
@@ -127,7 +127,8 @@ validation of the BLE GATT path and a second headset model.
 
 ### GATT reads
 
-- `volty-bluetooth` uses Windows Runtime Bluetooth/GATT APIs. Every asynchronous
+- `volty-bluetooth` uses Windows Runtime Bluetooth/GATT APIs and reads GATT
+  only while Windows reports the device as connected. Every asynchronous
   operation has a five-second timeout and is cancelled if it expires. The
   paired-device pass also stops at its 30-second overall budget, retaining
   partial readings and warning when remaining devices are skipped.

@@ -4,12 +4,12 @@ use windows::{
         Devices::{
             DeviceAndDriverInstallation::{
                 SetupDiDestroyDeviceInfoList, SetupDiEnumDeviceInfo, SetupDiGetClassDevsW,
-                SetupDiGetDeviceInstanceIdW, SetupDiGetDevicePropertyW, DIGCF_ALLCLASSES,
-                DIGCF_PRESENT, HDEVINFO, SP_DEVINFO_DATA,
+                SetupDiGetDeviceInstanceIdW, SetupDiGetDevicePropertyW, SetupDiOpenDeviceInfoW,
+                DIGCF_ALLCLASSES, DIGCF_PRESENT, HDEVINFO, SP_DEVINFO_DATA,
             },
             Properties::{
                 DEVPKEY_Device_FriendlyName, DEVPKEY_Device_Parent, DEVPROPTYPE, DEVPROP_TYPE_BYTE,
-                DEVPROP_TYPE_STRING,
+                DEVPROP_TYPE_STRING, DEVPROP_TYPE_UINT32,
             },
         },
         Foundation::{DEVPROPKEY, ERROR_INSUFFICIENT_BUFFER, ERROR_NOT_FOUND, ERROR_NO_MORE_ITEMS},
@@ -34,6 +34,15 @@ const BATTERY_LIFE_PROPERTY_KEY: DEVPROPKEY = DEVPROPKEY {
     fmtid: GUID::from_u128(0x104ea319_6ee2_4701_bd47_8ddbf425bbe5),
     pid: 2,
 };
+// DEVPKEY_Bluetooth_DeviceFlags, the BDIF_* state flags of a Bluetooth device.
+// {2BD67D8B-8BEB-48D5-87E0-6CDA3428040A}, 3
+const BLUETOOTH_DEVICE_FLAGS_KEY: DEVPROPKEY = DEVPROPKEY {
+    fmtid: GUID::from_u128(0x2bd67d8b_8beb_48d5_87e0_6cda3428040a),
+    pid: 3,
+};
+const BDIF_CONNECTED: u32 = 0x0000_0020;
+const BDIF_LE_CONNECTED: u32 = 0x0100_0000;
+const MAX_BLUETOOTH_PARENT_DEPTH: usize = 8;
 pub(super) fn scan_setupapi_battery_property(
     budget: &ScanBudget,
 ) -> Result<BluetoothScan, BluetoothError> {
@@ -54,12 +63,14 @@ pub(super) fn scan_setupapi_battery_property(
         let outcome = inspect_device(device_info_set.0, &info, &mut scan);
         counts.bluetooth_nodes_examined += usize::from(outcome.bluetooth_node);
         counts.battery_properties_found += usize::from(outcome.battery_property_found);
+        counts.disconnected_nodes_skipped += usize::from(outcome.disconnected_node);
     }
 
     if counts.bluetooth_nodes_examined > 0 {
         scan.discovery_events.push(format!(
-            "SetupAPI examined {} Bluetooth device node(s) and found {} {WINDOWS_BATTERY_LIFE_PROPERTY} property value(s)",
+            "SetupAPI examined {} Bluetooth device node(s), skipped {} not connected, and found {} {WINDOWS_BATTERY_LIFE_PROPERTY} property value(s)",
             counts.bluetooth_nodes_examined,
+            counts.disconnected_nodes_skipped,
             counts.battery_properties_found
         ));
     }
@@ -70,12 +81,14 @@ pub(super) fn scan_setupapi_battery_property(
 struct SetupApiScanCounts {
     bluetooth_nodes_examined: usize,
     battery_properties_found: usize,
+    disconnected_nodes_skipped: usize,
 }
 
 #[derive(Default)]
 struct DeviceScanOutcome {
     bluetooth_node: bool,
     battery_property_found: bool,
+    disconnected_node: bool,
 }
 
 fn next_device_info(
@@ -156,19 +169,20 @@ fn inspect_bluetooth_device(
             scan.warnings.push(error.to_string());
             return DeviceScanOutcome {
                 bluetooth_node: true,
-                battery_property_found: false,
+                ..DeviceScanOutcome::default()
             };
         }
     };
     let Some((property_type, bytes)) = battery_property else {
         return DeviceScanOutcome {
             bluetooth_node: true,
-            battery_property_found: false,
+            ..DeviceScanOutcome::default()
         };
     };
     let outcome = DeviceScanOutcome {
         bluetooth_node: true,
         battery_property_found: true,
+        ..DeviceScanOutcome::default()
     };
     if property_type != DEVPROP_TYPE_BYTE || bytes.len() != 1 {
         scan.warnings.push(format!(
@@ -177,6 +191,22 @@ fn inspect_bluetooth_device(
             bytes.len()
         ));
         return outcome;
+    }
+    match bluetooth_connection_state(device_info_set, info) {
+        Ok(true) => {}
+        Ok(false) => {
+            return DeviceScanOutcome {
+                disconnected_node: true,
+                ..outcome
+            };
+        }
+        Err(error) => {
+            scan.warnings.push(error.to_string());
+            return DeviceScanOutcome {
+                disconnected_node: true,
+                ..outcome
+            };
+        }
     }
     let name = read_device_name(device_info_set, info, scan);
     scan.evidence.push(BluetoothEvidence {
@@ -229,6 +259,63 @@ fn read_device_name(
             FALLBACK_DEVICE_NAME.to_owned()
         }
     }
+}
+
+/// Walks the device and its Bluetooth ancestors until it finds the connection
+/// flags Windows publishes for Bluetooth device nodes.
+fn bluetooth_connection_state(
+    device_info_set: HDEVINFO,
+    info: &SP_DEVINFO_DATA,
+) -> Result<bool, BluetoothError> {
+    let mut current = *info;
+    for _ in 0..MAX_BLUETOOTH_PARENT_DEPTH {
+        if let Some((property_type, bytes)) = read_device_property(
+            device_info_set,
+            &current,
+            &BLUETOOTH_DEVICE_FLAGS_KEY,
+            "could not read Bluetooth device flags",
+        )? {
+            return decode_bluetooth_device_flags(property_type, &bytes);
+        }
+        let Some(parent_id) = read_device_parent(device_info_set, &current)? else {
+            return Ok(false);
+        };
+        if !has_bluetooth_enumerator(&parent_id) {
+            return Ok(false);
+        }
+        let parent_id = windows::core::HSTRING::from(parent_id);
+        let mut parent = SP_DEVINFO_DATA {
+            cbSize: u32::try_from(std::mem::size_of::<SP_DEVINFO_DATA>())
+                .expect("SP_DEVINFO_DATA size fits DWORD"),
+            ..SP_DEVINFO_DATA::default()
+        };
+        // SAFETY: the set is live, parent_id is a valid NUL-terminated HSTRING, and parent is an initialized SP_DEVINFO_DATA.
+        unsafe {
+            SetupDiOpenDeviceInfoW(device_info_set, &parent_id, None, 0, Some(&raw mut parent))
+        }
+        .map_err(|error| windows_error("could not open Bluetooth parent device", error))?;
+        current = parent;
+    }
+    Ok(false)
+}
+
+fn decode_bluetooth_device_flags(
+    property_type: DEVPROPTYPE,
+    bytes: &[u8],
+) -> Result<bool, BluetoothError> {
+    if property_type != DEVPROP_TYPE_UINT32 || bytes.len() != 4 {
+        return Err(error(format!(
+            "Bluetooth device flags have an unexpected type or size (type={}, bytes={})",
+            property_type.0,
+            bytes.len()
+        )));
+    }
+    let flags = u32::from_le_bytes(bytes.try_into().expect("checked four flag bytes"));
+    Ok(bluetooth_flags_are_connected(flags))
+}
+
+fn bluetooth_flags_are_connected(flags: u32) -> bool {
+    flags & (BDIF_CONNECTED | BDIF_LE_CONNECTED) != 0
 }
 
 struct DeviceInfoSet(HDEVINFO);
@@ -295,17 +382,23 @@ fn is_bluetooth_device_node(
     if !is_software_device_id(instance_id) {
         return Ok(false);
     }
+    Ok(read_device_parent(device_info_set, info)?
+        .is_some_and(|parent| has_bluetooth_enumerator(&parent)))
+}
+
+fn read_device_parent(
+    device_info_set: HDEVINFO,
+    info: &SP_DEVINFO_DATA,
+) -> Result<Option<String>, BluetoothError> {
     match read_device_property(
         device_info_set,
         info,
         &DEVPKEY_Device_Parent,
         "could not read PnP device parent",
     )? {
-        Some((property_type, bytes)) if property_type == DEVPROP_TYPE_STRING => Ok(
-            has_bluetooth_enumerator(&decode_device_property_string(&bytes)),
-        ),
+        Some((DEVPROP_TYPE_STRING, bytes)) => Ok(Some(decode_device_property_string(&bytes))),
         Some(_) => Err(error("PnP device parent property had an unexpected type")),
-        None => Ok(false),
+        None => Ok(None),
     }
 }
 
@@ -403,9 +496,11 @@ fn is_software_device_id(instance_id: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        checked_written_size, decode_device_property_string, has_bluetooth_enumerator,
-        is_software_device_id,
+        bluetooth_flags_are_connected, checked_written_size, decode_bluetooth_device_flags,
+        decode_device_property_string, has_bluetooth_enumerator, is_software_device_id,
+        BDIF_CONNECTED, BDIF_LE_CONNECTED,
     };
+    use windows::Win32::Devices::Properties::{DEVPROP_TYPE_STRING, DEVPROP_TYPE_UINT32};
 
     #[test]
     fn rejects_api_lengths_larger_than_the_provided_buffer() {
@@ -430,5 +525,26 @@ mod tests {
         assert!(!has_bluetooth_enumerator("USB\\device"));
         assert!(is_software_device_id("swd\\RADIO\\device"));
         assert!(!is_software_device_id("USB\\device"));
+    }
+
+    #[test]
+    fn accepts_only_connected_bluetooth_device_flags() {
+        assert!(bluetooth_flags_are_connected(BDIF_CONNECTED));
+        assert!(bluetooth_flags_are_connected(BDIF_LE_CONNECTED));
+        assert!(bluetooth_flags_are_connected(
+            BDIF_CONNECTED | BDIF_LE_CONNECTED
+        ));
+        // A paired but disconnected device keeps the other BDIF_* flags.
+        assert!(!bluetooth_flags_are_connected(0x0400_439f));
+        assert!(!bluetooth_flags_are_connected(0));
+    }
+
+    #[test]
+    fn decodes_bluetooth_device_flags_from_a_uint32_property() {
+        let bytes = BDIF_CONNECTED.to_le_bytes();
+        assert!(decode_bluetooth_device_flags(DEVPROP_TYPE_UINT32, &bytes).unwrap());
+        assert!(!decode_bluetooth_device_flags(DEVPROP_TYPE_UINT32, &0u32.to_le_bytes()).unwrap());
+        assert!(decode_bluetooth_device_flags(DEVPROP_TYPE_STRING, &bytes).is_err());
+        assert!(decode_bluetooth_device_flags(DEVPROP_TYPE_UINT32, &bytes[..2]).is_err());
     }
 }

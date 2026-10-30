@@ -84,6 +84,23 @@ pub(super) fn scan_windows_battery_property(
                 continue;
             }
         };
+        match bluetooth_device_is_connected(&device_id, budget) {
+            Ok(true) => {}
+            Ok(false) => {
+                scan.discovery_events.push(format!(
+                    "{name:?}: skipped because Windows reports the Bluetooth device as not connected"
+                ));
+                continue;
+            }
+            Err(error) => {
+                scan.warnings.push(format!("{name}: {error}"));
+                if budget.is_exhausted() {
+                    push_scan_budget_warning(&mut scan, "Bluetooth connection-state lookup");
+                    break;
+                }
+                continue;
+            }
+        }
         let battery_level = match read_windows_battery_life(&info) {
             Ok(Some(level)) => {
                 scan.discovery_events.push(format!(
@@ -133,6 +150,22 @@ pub(super) fn scan_windows_battery_property(
         }
     }
     Ok(scan)
+}
+
+fn bluetooth_device_is_connected(
+    device_id: &HSTRING,
+    budget: &ScanBudget,
+) -> Result<bool, BluetoothError> {
+    let device = await_operation(
+        BluetoothDevice::FromIdAsync(device_id)
+            .map_err(|error| windows_error("could not open the Bluetooth device", error))?,
+        "Bluetooth connection-state lookup",
+        budget,
+    )?;
+    let status = device
+        .ConnectionStatus()
+        .map_err(|error| windows_error("could not read Bluetooth connection status", error))?;
+    Ok(status == BluetoothConnectionStatus::Connected)
 }
 
 fn scan_hfp_service_battery_property(

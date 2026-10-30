@@ -2,7 +2,7 @@ use windows::{
     core::HSTRING,
     Devices::{
         Bluetooth::{
-            BluetoothCacheMode, BluetoothLEDevice,
+            BluetoothCacheMode, BluetoothConnectionStatus, BluetoothLEDevice,
             GenericAttributeProfile::{
                 GattCharacteristic, GattCharacteristicUuids, GattCommunicationStatus,
                 GattDeviceService, GattServiceUuids,
@@ -83,7 +83,7 @@ pub(super) fn scan_paired_ble_devices(
             break;
         }
         match read_battery(&device_id, budget) {
-            Ok(Some(gatt)) => {
+            Ok(BatteryProbe::Reading(gatt)) => {
                 scan.discovery_events.push(format!(
                     "{name:?}: matched the standard GATT Battery Service (0x180F) and Battery Level characteristic (0x2A19)"
                 ));
@@ -105,8 +105,11 @@ pub(super) fn scan_paired_ble_devices(
                     battery: battery_status(gatt.level, SOURCE_GATT),
                 });
             }
-            Ok(None) => scan.discovery_events.push(format!(
+            Ok(BatteryProbe::NoBatteryService) => scan.discovery_events.push(format!(
                 "{name:?}: no standard GATT Battery Service (0x180F) was found"
+            )),
+            Ok(BatteryProbe::Disconnected) => scan.discovery_events.push(format!(
+                "{name:?}: skipped because Windows reports the Bluetooth LE device as not connected"
             )),
             Err(error) => scan.warnings.push(format!("{name}: {error}")),
         }
@@ -123,17 +126,30 @@ struct GattBatteryReading {
     level: u8,
 }
 
-fn read_battery(
-    device_id: &HSTRING,
-    budget: &ScanBudget,
-) -> Result<Option<GattBatteryReading>, BluetoothError> {
+enum BatteryProbe {
+    Reading(GattBatteryReading),
+    NoBatteryService,
+    Disconnected,
+}
+
+fn read_battery(device_id: &HSTRING, budget: &ScanBudget) -> Result<BatteryProbe, BluetoothError> {
     let device = await_operation(
         BluetoothLEDevice::FromIdAsync(device_id)
             .map_err(|error| windows_error("could not open Bluetooth LE device", error))?,
         "Bluetooth LE connection",
         budget,
     )?;
-    read_battery_level(&device, budget)
+    if device
+        .ConnectionStatus()
+        .map_err(|error| windows_error("could not read Bluetooth LE connection status", error))?
+        != BluetoothConnectionStatus::Connected
+    {
+        return Ok(BatteryProbe::Disconnected);
+    }
+    match read_battery_level(&device, budget)? {
+        Some(reading) => Ok(BatteryProbe::Reading(reading)),
+        None => Ok(BatteryProbe::NoBatteryService),
+    }
 }
 
 fn read_battery_level(

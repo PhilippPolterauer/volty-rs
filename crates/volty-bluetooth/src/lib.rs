@@ -157,10 +157,9 @@ pub fn decode_windows_battery_life(value: u8) -> Result<Option<u8>, BluetoothErr
 #[cfg(all(windows, feature = "windows-backend"))]
 mod windows_backend;
 
-/// Reads battery levels from connected Bluetooth devices when Windows exposes
-/// its battery property, including through present Bluetooth PnP nodes, and
-/// from Windows-paired BLE devices. Paired BLE devices may be read even when
-/// Windows does not report an active BLE connection.
+/// Reads battery levels from Bluetooth devices that Windows currently reports
+/// as connected, using either its battery property or the standard GATT
+/// Battery Service. Paired but disconnected devices are ignored.
 ///
 /// # Errors
 /// Returns an error if Windows Runtime initialization fails or the Windows
