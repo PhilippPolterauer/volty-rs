@@ -36,9 +36,24 @@ Logitech's software. v0.4.0 is out.
 - Bluetooth BLE GATT is implemented but not hardware-validated.
 - Windows 10/11 only. No installer, no Mac, no Linux.
 
-This is a hobby project, partly built with AI agents and reviewed by me. Anything
-I couldn't validate on real hardware is labeled experimental in the README and
-changelog rather than presented as working.
+**How I built it**
+
+- Rust workspace split into five crates: protocol-neutral battery types, HID++,
+  Bluetooth, capture/replay, and the Windows tray app. The tray uses Win32,
+  `hidapi`, and SQLite.
+- AI coding agents did most of the implementation, one git worktree per feature.
+  I reviewed each branch and merged it manually instead of letting agents touch
+  `main` directly.
+- I wrote expected behavior and tests before delegating protocol work. The HID++
+  paths use synthetic frames and recorded fixtures, so I could test decoding
+  without owning every device.
+- CI runs fmt, Clippy with `-D warnings`, all-feature tests, and an MSRV check.
+  The useful design constraint was keeping device identity independent of the
+  Windows interface path, which changes on USB re-enumeration.
+
+The lesson I keep relearning: agents are good at producing plausible protocol
+code and bad at knowing which hardware assumptions are safe. Anything I couldn't
+validate is labeled experimental in the README and changelog.
 
 **Feedback wanted**
 
