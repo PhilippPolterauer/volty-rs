@@ -202,6 +202,7 @@ volty-rs/
 │       ├── src/
 │       │   ├── main.rs        # CLI dispatch and single-instance guard
 │       │   ├── hid_cli.rs     # On-demand HID++ interface/feature diagnostics
+│       │   ├── history.rs     # Local SQLite battery history and the `volty history` CLI
 │       │   ├── app.rs         # Event loop and application state
 │       │   ├── app/           # Device session, polling worker, battery ETA, notifications, labels
 │       │   ├── capture.rs     # Hardware capture assembly for diagnostics
@@ -462,6 +463,39 @@ particular system. CLI output is local and is not uploaded. Review any
 diagnostic output before sharing it. To save a local transcript in PowerShell,
 pipe a command to `Tee-Object .\volty-hid.log`; inspect the file before sharing
 it because diagnostic interface paths can identify local devices.
+
+## Battery history
+
+`volty history` reads the local battery history database at
+`%LOCALAPPDATA%\Volty\battery-history.sqlite3`. It works while the tray is
+running, never opens a device, and never uploads anything.
+
+```powershell
+volty history
+volty history --days 30
+volty history --device receiver
+volty history --csv > battery-history.csv
+```
+
+The default view covers the last 7 days and lists one row per device with its
+name, sample count, first and last timestamps (RFC 3339, UTC), latest, minimum,
+and maximum percentage, and an estimated discharge rate in percentage points per
+day when at least an hour of decreasing readings is available. `--device`
+filters by a case-insensitive substring of the device identity or name, and
+`--database <path>` reads a different database file.
+
+Readings are only appended when they change or when the previous sample for that
+device is at least five minutes old, so a two-minute poll interval does not fill
+the database with duplicates. Samples older than 30 days are pruned
+automatically. The database is local-only.
+
+`--csv` writes
+`timestamp_utc,identity,name,percent,charging,voltage_mv` rows ordered by
+timestamp and identity. Percent and voltage are empty when the device did not
+report them.
+
+The tray-side sampling that fills this database is wired in a separate change;
+the store and CLI are usable on their own without it.
 
 ## Building and testing
 

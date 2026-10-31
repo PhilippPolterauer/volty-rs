@@ -831,7 +831,7 @@ fn unix_now() -> Result<(u64, u32), Box<dyn Error>> {
     Ok((duration.as_secs(), duration.subsec_nanos()))
 }
 
-fn unix_to_rfc3339(seconds: u64) -> String {
+pub(crate) fn unix_to_rfc3339(seconds: u64) -> String {
     let days = i64::try_from(seconds / 86_400).unwrap_or(i64::MAX);
     let seconds_of_day = seconds % 86_400;
     let (year, month, day) = civil_from_days(days);
