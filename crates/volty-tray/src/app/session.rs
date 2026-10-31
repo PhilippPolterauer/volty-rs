@@ -38,7 +38,7 @@ pub(super) struct DeviceSession {
 
 impl DeviceSession {
     pub(super) fn start(
-        config: AppConfig,
+        config: &AppConfig,
         diagnostic_log: &mut VecDeque<String>,
         file_logger: &mut FileLogger,
         started: Instant,
@@ -122,7 +122,7 @@ impl DeviceSession {
     /// Replace this session with a fresh one. Call [`Self::shutdown`] first.
     pub(super) fn restart(
         &mut self,
-        config: AppConfig,
+        config: &AppConfig,
         diagnostic_log: &mut VecDeque<String>,
         file_logger: &mut FileLogger,
         started: Instant,

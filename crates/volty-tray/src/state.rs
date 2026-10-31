@@ -7,8 +7,8 @@ use std::{
 
 use rusqlite::{params, Connection, TransactionBehavior};
 
-/// Version 2 keys HID state by a path-independent interface key.
-const SCHEMA_VERSION: i64 = 2;
+/// Version 3 stores per-threshold notification state keyed by device identity.
+const SCHEMA_VERSION: i64 = 3;
 
 /// Battery percentage points lost while Volty was alive and watching a device
 /// discharge, and how long that watching took. Time Volty was not running is
@@ -50,7 +50,7 @@ impl DeviceState {
             "PRAGMA journal_mode = WAL;
             PRAGMA synchronous = NORMAL;",
         )?;
-        if version < SCHEMA_VERSION {
+        if version < 2 {
             // Interface-path keys from older versions can never match a stable key again.
             connection.execute_batch("DROP TABLE IF EXISTS recent_devices;")?;
         }
@@ -66,8 +66,11 @@ impl DeviceState {
                 identity TEXT PRIMARY KEY,
                 monitored INTEGER NOT NULL CHECK (monitored IN (0, 1))
             ) WITHOUT ROWID;
-            CREATE TABLE IF NOT EXISTS notified_discharge_cycles (
-                identity TEXT PRIMARY KEY
+            CREATE TABLE IF NOT EXISTS notified_thresholds (
+                identity TEXT NOT NULL,
+                threshold INTEGER NOT NULL
+                    CHECK (threshold BETWEEN 1 AND 100),
+                PRIMARY KEY (identity, threshold)
             ) WITHOUT ROWID;
             CREATE TABLE IF NOT EXISTS discharge_rates (
                 identity TEXT PRIMARY KEY,
@@ -75,12 +78,19 @@ impl DeviceState {
                 alive_seconds REAL NOT NULL CHECK (alive_seconds >= 0)
             ) WITHOUT ROWID;",
         )?;
-        if version < SCHEMA_VERSION {
-            connection.execute_batch(&format!(
+        if version < 2 {
+            connection.execute_batch(
                 "DELETE FROM monitored_devices WHERE identity LIKE 'hid:%';
-                DELETE FROM notified_discharge_cycles WHERE identity LIKE 'hid:%';
-                PRAGMA user_version = {SCHEMA_VERSION};"
-            ))?;
+                DELETE FROM notified_thresholds WHERE identity LIKE 'hid:%';",
+            )?;
+        }
+        if version < 3 {
+            // The previous schema only stored one boolean per device; the
+            // exact thresholds that already fired are unknown.
+            connection.execute_batch("DROP TABLE IF EXISTS notified_discharge_cycles;")?;
+        }
+        if version < SCHEMA_VERSION {
+            connection.execute_batch(&format!("PRAGMA user_version = {SCHEMA_VERSION};"))?;
         }
         Ok(Self { connection })
     }
@@ -186,18 +196,27 @@ impl DeviceState {
         Ok(())
     }
 
-    pub fn notified_discharge_cycles(&self) -> Result<HashSet<String>, Box<dyn std::error::Error>> {
+    pub fn notified_thresholds(
+        &self,
+    ) -> Result<HashMap<String, HashSet<u8>>, Box<dyn std::error::Error>> {
         let mut statement = self
             .connection
-            .prepare("SELECT identity FROM notified_discharge_cycles")?;
-        let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
-        Ok(rows.collect::<Result<HashSet<_>, _>>()?)
+            .prepare("SELECT identity, threshold FROM notified_thresholds")?;
+        let rows = statement.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, u8>(1)?))
+        })?;
+        let mut devices: HashMap<String, HashSet<u8>> = HashMap::new();
+        for row in rows {
+            let (identity, threshold) = row?;
+            devices.entry(identity).or_default().insert(threshold);
+        }
+        Ok(devices)
     }
 
-    pub fn set_discharge_notification_sent(
+    pub fn mark_threshold_notified(
         &mut self,
         identity: &str,
-        sent: bool,
+        threshold: u8,
     ) -> Result<(), Box<dyn std::error::Error>> {
         if identity.is_empty() {
             return Err(io::Error::new(
@@ -206,17 +225,36 @@ impl DeviceState {
             )
             .into());
         }
-        if sent {
-            self.connection.execute(
-                "INSERT OR IGNORE INTO notified_discharge_cycles (identity) VALUES (?1)",
-                [identity],
-            )?;
-        } else {
-            self.connection.execute(
-                "DELETE FROM notified_discharge_cycles WHERE identity = ?1",
-                [identity],
-            )?;
+        if !(1..=100).contains(&threshold) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "notified battery threshold must be between 1 and 100 percent",
+            )
+            .into());
         }
+        self.connection.execute(
+            "INSERT OR IGNORE INTO notified_thresholds (identity, threshold)
+             VALUES (?1, ?2)",
+            params![identity, threshold],
+        )?;
+        Ok(())
+    }
+
+    pub fn clear_notified_thresholds(
+        &mut self,
+        identity: &str,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        if identity.is_empty() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "device identity must not be empty",
+            )
+            .into());
+        }
+        self.connection.execute(
+            "DELETE FROM notified_thresholds WHERE identity = ?1",
+            [identity],
+        )?;
         Ok(())
     }
 
@@ -407,7 +445,7 @@ mod tests {
                 state.monitored_devices().unwrap(),
                 BTreeMap::from([("bluetooth:keep".to_owned(), false)])
             );
-            assert!(state.notified_discharge_cycles().unwrap().is_empty());
+            assert!(state.notified_thresholds().unwrap().is_empty());
             state.record("046d:c547:2:ff00:0002:-", 1).unwrap();
             state.set_device_monitored("hid:new#1", false).unwrap();
         }
@@ -450,9 +488,20 @@ mod tests {
             );
             assert_eq!(
                 state
-                    .set_discharge_notification_sent("", true)
+                    .mark_threshold_notified("", 20)
                     .unwrap_err()
                     .to_string(),
+                "device identity must not be empty"
+            );
+            assert_eq!(
+                state
+                    .mark_threshold_notified("device-a", 0)
+                    .unwrap_err()
+                    .to_string(),
+                "notified battery threshold must be between 1 and 100 percent"
+            );
+            assert_eq!(
+                state.clear_notified_thresholds("").unwrap_err().to_string(),
                 "device identity must not be empty"
             );
             state.import_legacy_monitored_devices(&legacy).unwrap();
@@ -474,7 +523,7 @@ mod tests {
     }
 
     #[test]
-    fn discharge_notification_latches_are_persisted_until_the_cycle_resets() {
+    fn notified_thresholds_are_persisted_per_device_until_the_cycle_resets() {
         let path = std::env::temp_dir().join(format!(
             "volty-notification-state-{}-{}.sqlite3",
             std::process::id(),
@@ -484,24 +533,89 @@ mod tests {
                 .as_nanos()
         ));
         let identity = "bluetooth:device-a";
+        let other_identity = "bluetooth:device-b";
 
         {
             let mut state = DeviceState::open(&path).unwrap();
-            assert!(state.notified_discharge_cycles().unwrap().is_empty());
-            state
-                .set_discharge_notification_sent(identity, true)
-                .unwrap();
+            assert!(state.notified_thresholds().unwrap().is_empty());
+            state.mark_threshold_notified(identity, 20).unwrap();
+            state.mark_threshold_notified(identity, 10).unwrap();
+            state.mark_threshold_notified(identity, 10).unwrap();
+            state.mark_threshold_notified(other_identity, 5).unwrap();
         }
 
         let mut state = DeviceState::open(&path).unwrap();
         assert_eq!(
-            state.notified_discharge_cycles().unwrap(),
-            HashSet::from([identity.to_owned()])
+            state.notified_thresholds().unwrap(),
+            HashMap::from([
+                (identity.to_owned(), HashSet::from([10, 20])),
+                (other_identity.to_owned(), HashSet::from([5])),
+            ])
         );
-        state
-            .set_discharge_notification_sent(identity, false)
-            .unwrap();
-        assert!(state.notified_discharge_cycles().unwrap().is_empty());
+        state.clear_notified_thresholds(identity).unwrap();
+        assert_eq!(
+            state.notified_thresholds().unwrap(),
+            HashMap::from([(other_identity.to_owned(), HashSet::from([5]))])
+        );
+        drop(state);
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn opening_a_schema_two_database_keeps_discovery_and_monitoring_state() {
+        let path = std::env::temp_dir().join(format!(
+            "volty-migrate-notification-state-{}-{}.sqlite3",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        {
+            let connection = Connection::open(&path).unwrap();
+            connection
+                .execute_batch(
+                    "CREATE TABLE recent_devices (
+                        interface_key TEXT NOT NULL,
+                        device_index INTEGER NOT NULL,
+                        seen_order INTEGER NOT NULL,
+                        PRIMARY KEY (interface_key, device_index)
+                    ) WITHOUT ROWID;
+                    INSERT INTO recent_devices VALUES ('stable-key', 2, 1);
+                    CREATE TABLE monitored_devices (
+                        identity TEXT PRIMARY KEY,
+                        monitored INTEGER NOT NULL
+                    ) WITHOUT ROWID;
+                    INSERT INTO monitored_devices VALUES ('hid:keep#1', 0);
+                    CREATE TABLE notified_discharge_cycles (identity TEXT PRIMARY KEY)
+                        WITHOUT ROWID;
+                    INSERT INTO notified_discharge_cycles VALUES ('hid:keep#1');
+                    PRAGMA user_version = 2;",
+                )
+                .unwrap();
+        }
+
+        {
+            let mut state = DeviceState::open(&path).unwrap();
+            assert_eq!(
+                state
+                    .known_device_indices("stable-key", &[0, 1, 2])
+                    .unwrap(),
+                [2]
+            );
+            assert_eq!(
+                state.monitored_devices().unwrap(),
+                BTreeMap::from([("hid:keep#1".to_owned(), false)])
+            );
+            assert!(state.notified_thresholds().unwrap().is_empty());
+            state.mark_threshold_notified("hid:keep#1", 10).unwrap();
+        }
+
+        let state = DeviceState::open(&path).unwrap();
+        assert_eq!(
+            state.notified_thresholds().unwrap(),
+            HashMap::from([("hid:keep#1".to_owned(), HashSet::from([10]))])
+        );
         drop(state);
         fs::remove_file(path).unwrap();
     }

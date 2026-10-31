@@ -113,16 +113,18 @@ impl App {
             tray.update_status("", &format!("Configuration error: {message}"), None)?;
         }
 
-        let mut notifications = DeviceNotifications::from_config(startup.active_config)?;
+        let mut notifications = DeviceNotifications::from_config(startup.active_config.clone())?;
         if let Some(state) = startup.monitor_state.as_ref() {
-            match state.notified_discharge_cycles() {
+            match state.notified_thresholds() {
                 Ok(alerts) => notifications.restore_persisted_alerts(alerts),
                 Err(error) => record_event(
                     &mut diagnostic_log,
                     &mut file_logger,
                     started,
                     LogLevel::Warn,
-                    &format!("Could not load persisted low-battery notification cycles: {error}"),
+                    &format!(
+                        "Could not load persisted low-battery notification thresholds: {error}"
+                    ),
                 )?,
             }
         }
@@ -137,7 +139,7 @@ impl App {
             )?;
         }
         let mut session = DeviceSession::start(
-            startup.active_config,
+            &startup.active_config,
             &mut diagnostic_log,
             &mut file_logger,
             started,
@@ -274,7 +276,7 @@ impl App {
         Ok(())
     }
     fn show_diagnostic_report(&mut self) -> Result<(), Box<dyn Error>> {
-        match generate_diagnostic_report(self.active_config, &self.diagnostic_log) {
+        match generate_diagnostic_report(&self.active_config, &self.diagnostic_log) {
             Ok(export) => {
                 let path_text = export.report_path.display().to_string();
                 let capture_status = match (&export.capture_path, &export.capture_error) {
@@ -438,7 +440,7 @@ impl App {
             Err(error) => (AppConfig::default(), Some(error.to_string())),
         };
         self.file_logger.set_level(self.active_config.log_level);
-        self.notifications = DeviceNotifications::from_config(self.active_config)?;
+        self.notifications = DeviceNotifications::from_config(self.active_config.clone())?;
         if let Some(error) = self.notification_config_error.as_deref() {
             self.record_event(
                 LogLevel::Error,
@@ -457,7 +459,7 @@ impl App {
         self.tray.update_monitored_devices(&[])?;
 
         self.session.restart(
-            self.active_config,
+            &self.active_config,
             &mut self.diagnostic_log,
             &mut self.file_logger,
             self.started,
@@ -524,7 +526,7 @@ impl App {
             self.report_config_error(error.to_string())?;
             return Ok(false);
         }
-        if let Err(error) = self.notifications.set_config(config) {
+        if let Err(error) = self.notifications.set_config(&config) {
             self.report_config_error(error.to_string())?;
             return Ok(false);
         }
