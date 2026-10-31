@@ -581,7 +581,7 @@ User-facing changes are tracked in [CHANGELOG.md](./CHANGELOG.md).
 
 To cut a release, bump the version once in `[workspace.package]` in the root
 `Cargo.toml`, move the `[Unreleased]` changelog entries under the new version
-heading, commit, and push a matching tag such as `v0.3.0`. The Windows release
+heading, commit, and push a matching tag such as `v0.4.0`. The Windows release
 workflow verifies the tag against the `volty-tray` package version, runs
 format, Clippy, and test checks, and publishes a standalone
 `x86_64-pc-windows-msvc` executable with a SHA-256 checksum to the GitHub

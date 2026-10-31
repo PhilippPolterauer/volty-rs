@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-10-31
+
 ### Added
 
 - Battery Voltage (`0x1001`) fallback for HID++ devices without Unified Battery (`0x1004`) or legacy Battery Status (`0x1000`). The percentage is estimated from a documented single-cell LiPo curve, measured millivolts are retained in `BatteryStatus` and hardware captures, and `volty capture replay` decodes them offline. This path is synthetic-tested only and not hardware-validated.
