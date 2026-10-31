@@ -98,9 +98,11 @@ RGB; device support remains best-effort and hardware validation is limited.
 * **HID++ Battery Monitoring:** Polls supported Logitech interfaces and paired-device indexes, prioritizes recently successful receiver slots from a machine-local SQLite cache, caches each slot's battery feature so steady-state polls need one request, and uses each device's HID++ name when available. Devices with neither Unified Battery nor legacy Battery Status fall back to Battery Voltage, whose percentage is estimated from raw millivolts, retained in captures, and replayed offline; the path is not hardware-validated.
 * **Generic HID Battery:** Reads the standard HID battery usages for any device that declares them, shown as "HID Battery".
 * **Battery Runtime Estimate:** Estimates time remaining from the recent discharge rate, using a configurable history window (10 minutes by default).
+* **Local Battery History:** Records monitored readings to a local SQLite database with automatic 30-day pruning, and exposes them through the `volty history` command as a table or CSV.
 * **Experimental Bluetooth integration:** Opt-in via the `bluetooth` Cargo feature and disabled in default builds. Validated with one Bluetooth Classic headset through the Windows PnP battery property; only devices Windows reports as connected are read, so paired-but-offline devices keep no stale percentage. BLE GATT support is implemented but not yet hardware-validated.
 * **Configurable Color Coding:** The default tray map is green above 30%, yellow from 16–30%, and red at 15% or below. Thresholds and colors can be overridden in the TOML configuration.
 * **Tray Display Modes:** Choose the battery glyph or a numeric percentage drawn from a built-in 3×5 pixel font, and optionally pin the icon to one discovered device. Both choices persist in local SQLite state, not `config.toml`.
+* **Stale-Aware Readings:** Tooltip lines show a last-seen age and are marked `stale` after a configurable period without a fresh reading, so a sleeping or disconnected device is not shown as live.
 * **Threshold Alerts:** Native Windows toast notifications at configurable battery thresholds (20%, 10%, and 5% by default), each fired once per discharge cycle, with an optional repeat cooldown after the lowest threshold.
 * **One-Click Diagnostics:** A native Diagnose window shows recent app logs, backend status, and HID details, with buttons to copy the log or open a GitHub issue draft, and saves a machine-readable `.volty.jsonl` hardware capture (including Bluetooth property and GATT evidence when built with the `bluetooth` feature) in addition to the text report for local review.
 * **Retry After Read Errors:** Polling resumes after errors using the configurable retry interval.
@@ -201,7 +203,7 @@ Bluetooth readings can be decoded again without hardware.
 `%LOCALAPPDATA%\Volty\device-state.sqlite3`. It also disables **Start on Boot**
 and clears the first-run startup prompt preference, then reinitializes Volty in
 place with fresh defaults. The startup prompt appears again the next time
-Volty launches; logs are retained.
+Volty launches; logs and the battery history database are retained.
 
 ---
 
@@ -368,7 +370,8 @@ reported percentage unless you pin a device or switch to the numeric icon style
 (see [Tray display modes](#tray-display-modes)). Use **Monitored Devices** in
 the tray menu to uncheck
 devices you do not want tracked; unchecked devices are omitted from the tray
-status, icon percentage, and low-battery notifications. Per-device choices are
+status, icon percentage, low-battery notifications, and battery history.
+Per-device choices are
 saved in the local SQLite state database at
 `%LOCALAPPDATA%\Volty\device-state.sqlite3`; unlisted devices are monitored by
 default. Legacy `[monitored_devices]` entries in `config.toml` are migrated to
@@ -425,15 +428,18 @@ rate (percent lost per hour it was actually running and watching the device,
 never counting time it was closed or the device was away) in its local state.
 After a restart this rate provides the ETA immediately, once at least an hour
 and 2 percentage points of discharge have been observed; the recent-window
-estimate takes over when available. History is capped at about two weeks.
+estimate takes over when available. This in-memory ETA history is capped at
+about two weeks; the separate history database keeps 30 days as described in
+[Battery history](#battery-history).
 Tray lines show a relative last-seen age once a reading is more than a minute
 old, and mark it `stale, last seen …` after `stale_after_minutes` (15 minutes
 by default) pass without a fresh reading. Labels refresh about once a minute
 even when no poll completes, so a sleeping or disconnected device does not look
 like a live one. The default tray color map matches the green/yellow/red ranges
-above; uncomment `[battery_color_map]` to override its cutoffs or colors. Any omitted values
-retain their defaults. The red and yellow cutoffs can be set from 0–99 and
-1–100 percent respectively, and must be ordered so red is lower than yellow.
+above; uncomment `[battery_color_map]` to override its cutoffs or colors. Any
+omitted values retain their defaults. The red and yellow cutoffs can be set from
+0–99 and 1–100 percent respectively, and must be ordered so red is lower than
+yellow.
 Colors must be six-digit hexadecimal RGB values such as `"#d23030"`.
 Logs append to a daily file such as `%APPDATA%\Volty\volty-2026-10-30.log`;
 choose **Open Log File** in the tray menu to view the current one. Each file
