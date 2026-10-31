@@ -4,11 +4,12 @@
 //! HID++ session or a recorded/replayed transport with the same protocol logic.
 
 use crate::{
-    get_feature, parse_legacy_battery_status, parse_unified_battery,
+    get_feature, parse_battery_voltage, parse_legacy_battery_status, parse_unified_battery,
     parse_unified_battery_capabilities, query_device_name, BatteryStatus, HidppError, HidppFrame,
     HidppTransport, SoftwareIdAllocator, UnifiedBatteryCapabilities, FEATURE_BATTERY_STATUS,
-    FEATURE_UNIFIED_BATTERY, FUNCTION_GET_BATTERY_STATUS,
-    FUNCTION_GET_UNIFIED_BATTERY_CAPABILITIES, FUNCTION_GET_UNIFIED_BATTERY_INFO,
+    FEATURE_BATTERY_VOLTAGE, FEATURE_UNIFIED_BATTERY, FUNCTION_GET_BATTERY_STATUS,
+    FUNCTION_GET_BATTERY_VOLTAGE, FUNCTION_GET_UNIFIED_BATTERY_CAPABILITIES,
+    FUNCTION_GET_UNIFIED_BATTERY_INFO,
 };
 use std::time::Duration;
 
@@ -26,6 +27,9 @@ pub(crate) enum BatteryFeature {
         capabilities: UnifiedBatteryCapabilities,
     },
     Legacy {
+        index: u8,
+    },
+    Voltage {
         index: u8,
     },
 }
@@ -72,7 +76,8 @@ pub(crate) fn query_device_with_allocator<T: HidppTransport>(
     Ok((name, battery))
 }
 
-/// Resolve Unified Battery `0x1004` first, then fall back to legacy `0x1000`.
+/// Resolve Unified Battery `0x1004` first, then legacy `0x1000`, then the
+/// Battery Voltage `0x1001` fallback.
 pub(crate) fn discover_battery_feature<T: HidppTransport>(
     transport: &mut T,
     device_index: u8,
@@ -110,6 +115,17 @@ pub(crate) fn discover_battery_feature<T: HidppTransport>(
             index: feature.feature_index,
         });
     }
+    if let Some(feature) = get_feature(
+        transport,
+        device_index,
+        FEATURE_BATTERY_VOLTAGE,
+        software_ids.allocate(),
+        QUERY_TIMEOUT,
+    )? {
+        return Ok(BatteryFeature::Voltage {
+            index: feature.feature_index,
+        });
+    }
     Err(HidppError::UnsupportedBatteryFeature)
 }
 
@@ -136,6 +152,17 @@ pub(crate) fn read_battery<T: HidppTransport>(
         }
         BatteryFeature::Legacy { index } => {
             read_legacy_battery(transport, device_index, index, software_ids)
+        }
+        BatteryFeature::Voltage { index } => {
+            let response = transact_feature(
+                transport,
+                device_index,
+                index,
+                FUNCTION_GET_BATTERY_VOLTAGE,
+                software_ids,
+                QUERY_TIMEOUT,
+            )?;
+            parse_battery_voltage(&response)
         }
     }
 }
@@ -180,7 +207,7 @@ mod tests {
     use super::*;
     use crate::{
         FUNCTION_GET_DEVICE_NAME, FUNCTION_GET_DEVICE_NAME_FRAGMENT, FUNCTION_GET_FEATURE,
-        SOURCE_BATTERY_STATUS, SOURCE_UNIFIED_BATTERY,
+        SOURCE_BATTERY_STATUS, SOURCE_BATTERY_VOLTAGE, SOURCE_UNIFIED_BATTERY,
     };
 
     struct MockTransport<F> {
@@ -311,6 +338,65 @@ mod tests {
         assert_eq!(transport.requests[0].1, PROBE_TIMEOUT);
         assert_eq!(transport.requests[1].1, QUERY_TIMEOUT);
         assert_eq!(transport.requests[2].1, QUERY_TIMEOUT);
+    }
+
+    #[test]
+    fn battery_voltage_is_used_when_unified_and_legacy_are_absent() {
+        let mut transport = MockTransport::new(|request: &HidppFrame| {
+            match (request.feature_index, request.function_id) {
+                (0, FUNCTION_GET_FEATURE) => {
+                    let logical = u16::from_be_bytes([request.params[0], request.params[1]]);
+                    let index = match logical {
+                        FEATURE_UNIFIED_BATTERY | FEATURE_BATTERY_STATUS => 0,
+                        FEATURE_BATTERY_VOLTAGE => 5,
+                        _ => 0,
+                    };
+                    Ok(root_reply(request, index))
+                }
+                (5, FUNCTION_GET_BATTERY_VOLTAGE) => {
+                    let mut params = [0; 16];
+                    params[..2].copy_from_slice(&3700u16.to_be_bytes());
+                    Ok(reply(request, params))
+                }
+                _ => Err(HidppError::UnexpectedResponse("unexpected request")),
+            }
+        });
+
+        let battery = query_battery_with_transport(&mut transport, 1).unwrap();
+        assert_eq!(battery.level_percent, Some(60));
+        assert_eq!(battery.level, crate::BatteryLevel::Good);
+        assert_eq!(battery.raw_level, 0);
+        assert_eq!(battery.state, crate::BatteryState::Unknown);
+        assert_eq!(battery.raw_status, None);
+        assert_eq!(battery.voltage_mv, Some(3700));
+        assert_eq!(battery.source, SOURCE_BATTERY_VOLTAGE);
+
+        let requests: Vec<_> = transport
+            .requests
+            .iter()
+            .map(|(request, timeout)| {
+                (
+                    request.feature_index,
+                    request.function_id,
+                    request.params[..2].to_vec(),
+                    *timeout,
+                )
+            })
+            .collect();
+        assert_eq!(
+            requests,
+            [
+                (0, FUNCTION_GET_FEATURE, vec![0x10, 0x04], PROBE_TIMEOUT),
+                (0, FUNCTION_GET_FEATURE, vec![0x10, 0x00], QUERY_TIMEOUT),
+                (0, FUNCTION_GET_FEATURE, vec![0x10, 0x01], QUERY_TIMEOUT),
+                (
+                    5,
+                    FUNCTION_GET_BATTERY_VOLTAGE,
+                    vec![0x00, 0x00],
+                    QUERY_TIMEOUT
+                ),
+            ]
+        );
     }
 
     #[test]

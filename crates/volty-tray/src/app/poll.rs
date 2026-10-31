@@ -201,6 +201,7 @@ mod tests {
                 raw_level: 2,
                 state: BatteryState::Discharging,
                 raw_status: Some(0),
+                voltage_mv: None,
                 source: "test",
             },
         }

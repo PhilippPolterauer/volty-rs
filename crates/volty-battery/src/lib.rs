@@ -44,6 +44,8 @@ pub struct BatteryStatus {
     pub state: BatteryState,
     /// Raw state byte, when the source reports one.
     pub raw_status: Option<u8>,
+    /// Measured battery voltage in millivolts, when the source reports it.
+    pub voltage_mv: Option<u16>,
     /// Human-readable description of where the reading came from, chosen by the
     /// backend that produced it (for example "HID++ Unified Battery").
     pub source: &'static str,

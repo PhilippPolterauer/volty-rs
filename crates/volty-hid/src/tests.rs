@@ -435,7 +435,117 @@ fn legacy_battery_status_is_normalized() {
     assert_eq!(battery.level_percent, None);
     assert_eq!(battery.raw_level, 42);
     assert_eq!(battery.state, BatteryState::Charged);
+    assert_eq!(battery.voltage_mv, None);
     assert_eq!(battery.source, SOURCE_BATTERY_STATUS);
+}
+
+#[test]
+fn battery_voltage_response_is_big_endian_and_estimated() {
+    let response = HidppFrame::short(1, 0x05, FUNCTION_GET_BATTERY_VOLTAGE, 0x01, [0x0e, 0x74, 0]);
+    let battery = parse_battery_voltage(&response).unwrap();
+    assert_eq!(battery.voltage_mv, Some(3700));
+    assert_eq!(battery.level_percent, Some(60));
+    assert_eq!(battery.level, BatteryLevel::Good);
+    assert_eq!(battery.raw_level, 0);
+    assert_eq!(battery.state, BatteryState::Unknown);
+    assert_eq!(battery.raw_status, None);
+    assert_eq!(battery.source, SOURCE_BATTERY_VOLTAGE);
+}
+
+#[test]
+fn battery_voltage_rejects_malformed_responses() {
+    assert!(matches!(
+        parse_battery_voltage(&HidppFrame::short(1, 0x05, 0x01, 0x01, [0x0e, 0x74, 0])),
+        Err(HidppError::UnexpectedResponse(_))
+    ));
+    assert!(matches!(
+        parse_battery_voltage(&HidppFrame::short(
+            1,
+            0,
+            FUNCTION_GET_BATTERY_VOLTAGE,
+            0x01,
+            [0x0e, 0x74, 0]
+        )),
+        Err(HidppError::UnexpectedResponse(_))
+    ));
+    let mut short_payload =
+        HidppFrame::short(1, 0x05, FUNCTION_GET_BATTERY_VOLTAGE, 0x01, [0x0e, 0x74, 0]);
+    short_payload.params = vec![0x0e];
+    assert!(matches!(
+        parse_battery_voltage(&short_payload),
+        Err(HidppError::UnexpectedResponse(
+            "missing battery voltage payload"
+        ))
+    ));
+    let zero = HidppFrame::short(1, 0x05, FUNCTION_GET_BATTERY_VOLTAGE, 0x01, [0, 0, 0]);
+    assert!(matches!(
+        parse_battery_voltage(&zero),
+        Err(HidppError::UnexpectedResponse(_))
+    ));
+}
+
+#[test]
+fn battery_voltage_curve_covers_documented_points_and_clamps() {
+    let expected = [
+        (4200, 100),
+        (4100, 95),
+        (4000, 90),
+        (3900, 80),
+        (3800, 70),
+        (3700, 60),
+        (3600, 50),
+        (3500, 40),
+        (3400, 30),
+        (3300, 20),
+        (3200, 10),
+        (3000, 0),
+    ];
+    for (millivolts, percent) in expected {
+        assert_eq!(
+            crate::battery::estimate_percent_from_voltage(millivolts),
+            percent,
+            "{millivolts} mV"
+        );
+    }
+    assert_eq!(crate::battery::estimate_percent_from_voltage(5000), 100);
+    assert_eq!(crate::battery::estimate_percent_from_voltage(2999), 0);
+    assert_eq!(crate::battery::estimate_percent_from_voltage(1), 0);
+    assert_eq!(crate::battery::estimate_percent_from_voltage(4150), 98);
+    assert_eq!(crate::battery::estimate_percent_from_voltage(3250), 15);
+}
+
+#[test]
+fn battery_voltage_curve_is_monotonic() {
+    let mut previous = 0;
+    for millivolts in 2500..=4600 {
+        let percent = crate::battery::estimate_percent_from_voltage(millivolts);
+        assert!(
+            percent >= previous,
+            "estimate dropped from {previous} to {percent} at {millivolts} mV"
+        );
+        previous = percent;
+    }
+}
+
+#[test]
+fn battery_voltage_buckets_follow_the_estimated_percentage() {
+    let parse = |millivolts: u16| {
+        let mut params = [0u8; 3];
+        params[..2].copy_from_slice(&millivolts.to_be_bytes());
+        parse_battery_voltage(&HidppFrame::short(
+            1,
+            0x05,
+            FUNCTION_GET_BATTERY_VOLTAGE,
+            0x01,
+            params,
+        ))
+        .unwrap()
+    };
+    assert_eq!(parse(3000).level, BatteryLevel::Critical);
+    assert_eq!(parse(3200).level, BatteryLevel::Critical);
+    assert_eq!(parse(3300).level, BatteryLevel::Low);
+    assert_eq!(parse(3400).level, BatteryLevel::Good);
+    assert_eq!(parse(4200).level, BatteryLevel::Full);
 }
 
 #[test]

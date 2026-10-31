@@ -38,6 +38,7 @@ and its capture replay are confirmed.
 | Device | Connection | Battery backend | Tested functionality | Status |
 | --- | --- | --- | --- | --- |
 | Logitech G502 X Superlight RGB | USB cable or Lightspeed receiver | Logitech HID++ 2.0 Unified Battery (`0x1004`) | Battery percentage, charging/discharging state, HID++ capture and offline replay | Verified |
+| Logitech HID++ devices exposing only Battery Voltage (`0x1001`) | Any HID++ 2.0 transport | HID++ 2.0 Battery Voltage fallback | Estimated percentage from raw millivolts; raw voltage retained in `BatteryStatus` | Experimental; implemented, not hardware-validated |
 | Baseus Bass BS2 Lite | Bluetooth Classic (HFP/A2DP) | Windows PnP battery property (`DEVPKEY_Device_BatteryLevel`) | Battery percentage, Bluetooth property capture and offline replay; charging state is not reported | Verified, opt-in Bluetooth build |
 | Keychron K8 Pro | USB cable or Bluetooth | None exposed to Windows | No standard HID battery, BLE GATT Battery Service, or usable vendor battery command | Not supported |
 | Generic HID battery devices | Any HID transport | Standard HID battery usages | Battery percentage, charging state when the descriptor reports it, layout capture and offline replay | Experimental; no named hardware verified |
@@ -70,6 +71,13 @@ vendor-specific Bluetooth protocols are not currently supported. Generic HID
 support covers devices whose report descriptor declares a battery level (Generic
 Device Controls *Battery Strength* or the Battery System page); a device that
 only exposes its battery through a vendor-defined report is not detected.
+For Logitech HID++ devices, Volty falls back to Battery Voltage (`0x1001`) when
+neither Unified Battery (`0x1004`) nor legacy Battery Status (`0x1000`) is
+available. That fallback is implemented and unit-tested with synthetic frames,
+but it is not hardware-validated because no such device was available. Its
+percentage is estimated from a documented single-cell LiPo curve and can differ
+from the vendor's own estimate; the measured millivolts remain available in
+`BatteryStatus::voltage_mv`.
 Hardware captures made by a `bluetooth` build also record raw Bluetooth
 property or GATT evidence, and `volty capture replay` validates that evidence
 even in default builds.
@@ -85,7 +93,7 @@ RGB; device support remains best-effort and hardware validation is limited.
 
 ## Features
 
-* **HID++ Battery Monitoring:** Polls supported Logitech interfaces and paired-device indexes, prioritizes recently successful receiver slots from a machine-local SQLite cache, caches each slot's battery feature so steady-state polls need one request, and uses each device's HID++ name when available.
+* **HID++ Battery Monitoring:** Polls supported Logitech interfaces and paired-device indexes, prioritizes recently successful receiver slots from a machine-local SQLite cache, caches each slot's battery feature so steady-state polls need one request, and uses each device's HID++ name when available. Devices with neither Unified Battery nor legacy Battery Status fall back to Battery Voltage, whose percentage is estimated from raw millivolts and is not hardware-validated.
 * **Generic HID Battery:** Reads the standard HID battery usages for any device that declares them, shown as "HID Battery".
 * **Battery Runtime Estimate:** Estimates time remaining from the recent discharge rate, using a configurable history window (10 minutes by default).
 * **Experimental Bluetooth integration:** Opt-in via the `bluetooth` Cargo feature and disabled in default builds. Validated with one Bluetooth Classic headset through the Windows PnP battery property; only devices Windows reports as connected are read, so paired-but-offline devices keep no stale percentage. BLE GATT support is implemented but not yet hardware-validated.
@@ -182,7 +190,7 @@ volty-rs/
 │   │   │   ├── recording.rs   # HID++ transport wrapper that records raw exchanges
 │   │   │   ├── logitech_hidpp.rs # HID++ 2.0 transport and battery backend
 │   │   │   ├── generic_battery.rs # Standard HID battery usages (Windows HID parser in `generic_battery/native.rs`)
-│   │   │   └── battery.rs     # HID++ battery decoding
+│   │   │   └── battery.rs     # HID++ battery decoding (0x1004, 0x1000, 0x1001)
 │   │   └── Cargo.toml
 │   │
 │   └── volty-tray/            # Windows binary application
@@ -294,7 +302,9 @@ existing protocol can extend that backend. Its `supports_interface`
 identifies candidate interfaces, `device_indices` returns addresses to try,
 and `query_battery` performs discovery/transport/decoding and returns a
 normalized `BatteryStatus`. Set `level_percent` only when the device really
-reports a percentage. Add or update a `HidBatteryDevice` and register it in
+reports a percentage, or when a documented estimate is explicitly labeled in
+`source` (the HID++ Battery Voltage fallback does this). Add or update a
+`HidBatteryDevice` and register it in
 `SUPPORTED_HID_DEVICES` when the interface needs a new or more specific match. The
 existing tray code consumes `BatteryStatus`, so a new backend does not need a
 tray/UI trait or a protocol-specific icon.

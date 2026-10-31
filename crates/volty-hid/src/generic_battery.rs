@@ -375,6 +375,7 @@ pub(crate) fn battery_status(
         raw_level: percent,
         state,
         raw_status: None,
+        voltage_mv: None,
         source: SOURCE_HID_BATTERY,
     }
 }

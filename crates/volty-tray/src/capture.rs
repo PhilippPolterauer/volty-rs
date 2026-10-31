@@ -894,6 +894,7 @@ mod tests {
             raw_level: 73,
             state: BatteryState::ChargingNearlyFull,
             raw_status: Some(4),
+            voltage_mv: None,
             source: "HID++ Unified Battery",
         };
         let snapshot = battery_snapshot(&battery);

@@ -12,8 +12,10 @@ reports. The generic path covers any HID interface whose report descriptor
 declares a usable battery level (Generic Device Controls *Battery Strength*,
 Battery System relative/absolute state of charge, or remaining and full-charge
 capacity) and reads it through the Windows HID parser, showing the reading as
-"HID Battery". A device that exposes its battery only through a vendor-defined
-report still needs its own protocol adapter.
+"HID Battery". The Logitech HID++ path reads Unified Battery (`0x1004`), then
+legacy Battery Status (`0x1000`), then Battery Voltage (`0x1001`). A device
+that exposes its battery only through a vendor-defined report still needs its
+own protocol adapter.
 
 **Current use case:** The project owner's current primary use case is the
 Logitech G502 X Superlight RGB; device support remains best-effort and hardware
@@ -58,7 +60,7 @@ The workspace has two user-facing paths today:
 
 | Path | What it does | Current scope |
 | --- | --- | --- |
-| Tray polling | Queries a battery through the built-in API, then updates the icon and notifications. | Logitech HID++ Unified Battery (`0x1004`) and legacy Battery Status (`0x1000`), plus standard HID battery usages (Generic Device Controls *Battery Strength* and Battery System state of charge or capacity). |
+| Tray polling | Queries a battery through the built-in API, then updates the icon and notifications. | Logitech HID++ Unified Battery (`0x1004`), legacy Battery Status (`0x1000`), and Battery Voltage (`0x1001`) fallback, plus standard HID battery usages (Generic Device Controls *Battery Strength* and Battery System state of charge or capacity). |
 | HID diagnostics CLI | Inspects interfaces and HID++ feature mappings for on-demand diagnostics. | HID++ 2.0 diagnostics; separate from tray polling. Standard HID battery descriptors are exercised through the tray path instead. |
 
 On-demand diagnostics do not select a tray backend or add device support.
@@ -148,7 +150,10 @@ To get a device into tray polling:
 7. Only `level_percent` should drive the numeric tray icon and percentage
    notifications. Leave it `None` when the device reports only a raw level or
    unknown value; the normalized battery state is still available for status
-   text.
+   text. The one documented exception is a percentage estimated from a metric
+   the device does report: the HID++ Battery Voltage (`0x1001`) fallback sets
+   `level_percent` from a published voltage curve and labels its `source` as
+   estimated.
 
 No additional tray/UI trait is required: once `query_battery` returns a valid
 `BatteryStatus`, the existing app updates the status text, icon when a true
@@ -158,6 +163,48 @@ percentage is available, and charging/full notification state.
 generic backend reads one directly addressed interface (`0xff`) through the
 Windows HID parser and does not enumerate paired-device slots. The tray consumes
 the protocol and device traits rather than selecting a vendor directly.
+
+### Battery Voltage fallback (`0x1001`)
+
+When a device exposes neither Unified Battery (`0x1004`) nor legacy Battery
+Status (`0x1000`), the HID++ backend probes Battery Voltage (`0x1001`) and
+sends its `getBatteryVoltage` function (`0x00`). The response carries a 16-bit
+big-endian millivolt value in `params[0..2]`; zero millivolts is rejected as an
+invalid response.
+
+This feature reports voltage only: there is no percentage and no charging
+state. Volty estimates a percentage by linearly interpolating a documented
+single-cell LiPo discharge curve and clamps the result to `0..=100`:
+
+| Millivolts | Estimated percent |
+| --- | --- |
+| 4200 | 100 |
+| 4100 | 95 |
+| 4000 | 90 |
+| 3900 | 80 |
+| 3800 | 70 |
+| 3700 | 60 |
+| 3600 | 50 |
+| 3500 | 40 |
+| 3400 | 30 |
+| 3300 | 20 |
+| 3200 | 10 |
+| 3000 | 0 |
+
+Values above 4200 mV clamp to 100 and values below 3000 mV clamp to 0. The
+derived level bucket uses the estimated percentage: critical at 10 or below,
+low at 20 or below, good below 100, and full at 100. The reading sets
+`raw_level` to 0, `raw_status` to `None`, `state` to `Unknown`, `source` to
+`"HID++ Battery Voltage (estimated)"`, and keeps the measured value in
+`BatteryStatus::voltage_mv`.
+
+**This path is implemented but NOT hardware-validated.** No device exposing
+only `0x1001` was available, so it is exercised only by unit tests and synthetic
+HID++ frames. The percentage is an estimate from voltage and may differ from
+the vendor's own curve, especially under load, at temperature extremes, or on
+non-LiPo cells. Treat it as a best-effort indicator; the raw millivolts in
+`BatteryStatus` are the unmodified device reading. Capture replay does not yet
+decode `0x1001` exchanges.
 
 ## How HID diagnostics fit
 
@@ -208,9 +255,12 @@ Frame construction, response correlation, and battery decoders can be tested
 without hardware. Generic layout selection, logical-range scaling, capacity
 ratios, and charging/discharging mapping are unit-tested in `generic_battery.rs`;
 descriptor probing and report reads require Windows HID APIs and hardware.
-On-demand diagnostics can verify a HID++ interface or feature mapping, but tray
-support must be tested through its own polling path; a successful standalone
-diagnostic query does not prove that the tray consumes that reading. The
-current primary use case is the Logitech G502 X Superlight RGB, and hardware
-validation remains limited; do not infer support for every model from one
-working device.
+HID++ Unified Battery, legacy Battery Status, and the Battery Voltage fallback
+are unit-tested with synthetic frames, including the voltage curve, clamping,
+and monotonicity. Battery Voltage support has not been validated on hardware
+because no device exposing only `0x1001` was available. On-demand diagnostics
+can verify a HID++ interface or feature mapping, but tray support must be tested
+through its own polling path; a successful standalone diagnostic query does not
+prove that the tray consumes that reading. The current primary use case is the
+Logitech G502 X Superlight RGB, and hardware validation remains limited; do not
+infer support for every model from one working device.

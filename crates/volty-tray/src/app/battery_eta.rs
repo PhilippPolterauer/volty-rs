@@ -258,6 +258,7 @@ mod tests {
             raw_level: level_percent,
             state,
             raw_status: None,
+            voltage_mv: None,
             source: "test",
         }
     }

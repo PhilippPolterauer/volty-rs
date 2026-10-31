@@ -133,6 +133,7 @@ pub fn battery_status(level_percent: u8, source: &'static str) -> BatteryStatus 
         raw_level: level_percent,
         state: BatteryState::Unknown,
         raw_status: None,
+        voltage_mv: None,
         source,
     }
 }
