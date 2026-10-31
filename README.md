@@ -445,7 +445,7 @@ it because diagnostic interface paths can identify local devices.
 ## Building and testing
 
 Prerequisites: Windows 10/11 and the `x86_64-pc-windows-msvc` Rust toolchain
-(Rust 1.90 or newer; the stable channel is recommended). The release binary is
+(Rust 1.99 or newer; the stable channel is recommended). The release binary is
 written to `target\release\volty.exe`.
 
 ```powershell
@@ -455,7 +455,7 @@ cargo test --workspace --all-features --locked
 
 CI runs the same checks on every push and pull request, plus a build with the
 `bluetooth` feature, a workspace check on the minimum supported Rust version
-(1.90.0), and a dependency audit on Ubuntu:
+(1.99.0), and a dependency audit on Ubuntu:
 
 ```powershell
 cargo fmt --all -- --check
@@ -466,7 +466,7 @@ cargo check --workspace --all-features --locked
 cargo audit --deny warnings
 ```
 
-The `cargo check` command runs in the MSRV job with Rust 1.90.0; the `cargo
+The `cargo check` command runs in the MSRV job with Rust 1.99.0; the `cargo
 audit` command runs in the audit job against the committed `Cargo.lock`.
 
 See the [sustained-run performance assessment](./docs/performance-assessment.md)
