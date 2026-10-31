@@ -130,7 +130,9 @@ devices while running. Bluetooth is disabled in the default build and remains
 opt-in because hardware validation is limited. Its tray icon shows the lowest
 reported battery level unless you pin a specific device or switch to the
 numeric icon style; hover over it for one compact line per device with its
-name, battery percentage, and an estimated time remaining when available.
+name, battery percentage, an estimated time remaining when available, and a
+last-seen age once the reading is more than a minute old. After
+`stale_after_minutes` without a fresh reading, the line is marked `stale`.
 
 ![Volty tray icon showing a monitored device's battery and charging status](./docs/tray.png)
 
@@ -391,6 +393,7 @@ low_battery_cooldown_minutes = 120 # repeat interval after the lowest threshold;
 poll_interval_seconds = 120 # 10-3600 seconds after a successful reading
 retry_interval_seconds = 15 # 5-300 seconds after an error
 battery_eta_window_minutes = 10 # 1-180 minutes of discharge history
+stale_after_minutes = 15 # 1-1440 minutes without a fresh reading before it is marked stale
 notifications_enabled = true
 log_level = "info" # error, warn, info, debug, or trace
 
@@ -423,8 +426,12 @@ never counting time it was closed or the device was away) in its local state.
 After a restart this rate provides the ETA immediately, once at least an hour
 and 2 percentage points of discharge have been observed; the recent-window
 estimate takes over when available. History is capped at about two weeks.
-The default tray color map matches the green/yellow/red ranges above; uncomment
-`[battery_color_map]` to override its cutoffs or colors. Any omitted values
+Tray lines show a relative last-seen age once a reading is more than a minute
+old, and mark it `stale, last seen …` after `stale_after_minutes` (15 minutes
+by default) pass without a fresh reading. Labels refresh about once a minute
+even when no poll completes, so a sleeping or disconnected device does not look
+like a live one. The default tray color map matches the green/yellow/red ranges
+above; uncomment `[battery_color_map]` to override its cutoffs or colors. Any omitted values
 retain their defaults. The red and yellow cutoffs can be set from 0–99 and
 1–100 percent respectively, and must be ordered so red is lower than yellow.
 Colors must be six-digit hexadecimal RGB values such as `"#d23030"`.
@@ -520,18 +527,17 @@ day when at least an hour of decreasing readings is available. `--device`
 filters by a case-insensitive substring of the device identity or name, and
 `--database <path>` reads a different database file.
 
-Readings are only appended when they change or when the previous sample for that
-device is at least five minutes old, so a two-minute poll interval does not fill
-the database with duplicates. Samples older than 30 days are pruned
-automatically. The database is local-only.
+The tray records samples automatically while it runs, for monitored devices
+only. Readings are appended when they change or when the previous sample for
+that device is at least five minutes old, so a two-minute poll interval does not
+fill the database with duplicates. Samples older than 30 days are pruned
+automatically. Recording failures are logged and never interrupt polling. The
+database is local-only.
 
 `--csv` writes
 `timestamp_utc,identity,name,percent,charging,voltage_mv` rows ordered by
 timestamp and identity. Percent and voltage are empty when the device did not
 report them.
-
-The tray-side sampling that fills this database is wired in a separate change;
-the store and CLI are usable on their own without it.
 
 ## Building and testing
 

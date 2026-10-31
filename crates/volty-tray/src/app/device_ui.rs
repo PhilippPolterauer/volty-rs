@@ -7,8 +7,11 @@ use crate::tray::{DeviceMonitorEntry, TrayController};
 use std::{
     collections::{BTreeMap, HashMap, VecDeque},
     io,
-    time::Instant,
+    time::{Duration, Instant},
 };
+
+const LAST_SEEN_HIDE_AGE: Duration = Duration::from_secs(60);
+
 #[allow(clippy::too_many_arguments)]
 pub(super) fn apply_poll_result(
     tray: &mut TrayController,
@@ -16,6 +19,7 @@ pub(super) fn apply_poll_result(
     pinned_device: Option<&str>,
     result: PollResult,
     notification_config_error: Option<&str>,
+    stale_after: Duration,
     diagnostic_log: &mut VecDeque<String>,
     file_logger: &mut FileLogger,
     started: Instant,
@@ -56,6 +60,7 @@ pub(super) fn apply_poll_result(
         readings,
         pinned_device,
         notification_config_error,
+        stale_after,
         diagnostic_log,
         file_logger,
         started,
@@ -103,15 +108,18 @@ pub(super) fn tray_icon_driver<'a>(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(super) fn update_tray_devices(
     tray: &mut TrayController,
     readings: &[DeviceReading],
     pinned_device: Option<&str>,
     notification_config_error: Option<&str>,
+    stale_after: Duration,
     diagnostic_log: &mut VecDeque<String>,
     file_logger: &mut FileLogger,
     started: Instant,
 ) -> io::Result<()> {
+    let now = Instant::now();
     let driver = tray_icon_driver(readings, pinned_device);
     let icon_percentage = driver
         .reading
@@ -135,12 +143,17 @@ pub(super) fn update_tray_devices(
             status.push_str("; notification error: ");
             status.push_str(error);
         }
+        let last_seen = last_seen_label(reading.observed_at, now, stale_after);
+        if let Some(last_seen) = &last_seen {
+            status.push_str("; ");
+            status.push_str(last_seen);
+        }
         let percentage_label = percentage.map_or_else(
             || "percentage unavailable".to_owned(),
             |value| format!("{value}%"),
         );
         device_statuses.push(format!("{device_name}: {percentage_label} ({status})"));
-        tooltip_statuses.push(compact_device_status(reading));
+        tooltip_statuses.push(compact_device_status(reading, last_seen.as_deref()));
     }
     let device_count = device_statuses.len();
     if let Some(error) = notification_config_error {
@@ -200,14 +213,59 @@ fn prioritized_tooltip_statuses(
     statuses
 }
 
-fn compact_device_status(reading: &DeviceReading) -> String {
+fn compact_device_status(reading: &DeviceReading, last_seen: Option<&str>) -> String {
     let name = reading.label.display();
-    let Some(percentage) = reading.battery.level_percent else {
-        return format!("{name}: battery unknown");
+    let mut status = match reading.battery.level_percent {
+        Some(percentage) => match battery_eta_label(reading) {
+            Some(eta) => format!("{name}: {percentage}% · {eta}"),
+            None => format!("{name}: {percentage}%"),
+        },
+        None => format!("{name}: battery unknown"),
     };
-    match battery_eta_label(reading) {
-        Some(eta) => format!("{name}: {percentage}% · {eta}"),
-        None => format!("{name}: {percentage}%"),
+    if let Some(last_seen) = last_seen {
+        status.push_str(" · ");
+        status.push_str(last_seen);
+    }
+    status
+}
+
+/// Relative age of the newest reading, hidden for the first minute so fresh
+/// polls do not add noise. At or past `stale_after` a stale marker leads.
+pub(super) fn last_seen_label(
+    observed_at: Instant,
+    now: Instant,
+    stale_after: Duration,
+) -> Option<String> {
+    let age = now.saturating_duration_since(observed_at);
+    if age < LAST_SEEN_HIDE_AGE {
+        return None;
+    }
+    let age_label = compact_age_label(age);
+    if age >= stale_after {
+        Some(format!("stale, last seen {age_label} ago"))
+    } else {
+        Some(format!("last seen {age_label} ago"))
+    }
+}
+
+fn compact_age_label(age: Duration) -> String {
+    let minutes = age.as_secs() / 60;
+    if minutes < 60 {
+        return format!("{minutes}m");
+    }
+    if minutes < 24 * 60 {
+        let (hours, remainder) = (minutes / 60, minutes % 60);
+        return if remainder == 0 {
+            format!("{hours}h")
+        } else {
+            format!("{hours}h {remainder}m")
+        };
+    }
+    let (days, hours) = (minutes / (24 * 60), (minutes % (24 * 60)) / 60);
+    if hours == 0 {
+        format!("{days}d")
+    } else {
+        format!("{days}d {hours}h")
     }
 }
 
@@ -245,6 +303,7 @@ pub(super) fn update_visible_devices(
     monitored_devices: &BTreeMap<String, bool>,
     pinned_device: Option<&str>,
     notification_config_error: Option<&str>,
+    stale_after: Duration,
     diagnostic_log: &mut VecDeque<String>,
     file_logger: &mut FileLogger,
     started: Instant,
@@ -255,6 +314,7 @@ pub(super) fn update_visible_devices(
         &readings,
         pinned_device,
         notification_config_error,
+        stale_after,
         diagnostic_log,
         file_logger,
         started,
@@ -307,6 +367,7 @@ mod tests {
             },
             estimated_time_remaining: None,
             notification_error: None,
+            observed_at: Instant::now(),
         }
     }
     #[test]
@@ -347,7 +408,7 @@ mod tests {
         reading.estimated_time_remaining = Some(Duration::from_secs(90 * 60));
 
         assert_eq!(
-            compact_device_status(&reading),
+            compact_device_status(&reading, None),
             "Test device (slot 1): 20% · ETA 1h 30m"
         );
     }
@@ -359,7 +420,10 @@ mod tests {
         reading.battery.level = BatteryLevel::Good;
         reading.battery.state = BatteryState::Charging;
 
-        assert_eq!(compact_device_status(&reading), "Test device (slot 1): 87%");
+        assert_eq!(
+            compact_device_status(&reading, None),
+            "Test device (slot 1): 87%"
+        );
     }
 
     #[test]
@@ -369,7 +433,7 @@ mod tests {
         reading.battery.state = BatteryState::Charged;
 
         assert_eq!(
-            compact_device_status(&reading),
+            compact_device_status(&reading, None),
             "Test device (slot 1): battery unknown"
         );
     }
@@ -382,8 +446,77 @@ mod tests {
         reading.battery.state = BatteryState::Unknown;
 
         assert_eq!(
-            compact_device_status(&reading),
+            compact_device_status(&reading, None),
             "Test device (slot 1): 100%"
+        );
+    }
+
+    #[test]
+    fn compact_device_status_appends_last_seen_text() {
+        let mut reading = test_reading();
+        reading.estimated_time_remaining = Some(Duration::from_secs(90 * 60));
+
+        assert_eq!(
+            compact_device_status(&reading, Some("stale, last seen 18m ago")),
+            "Test device (slot 1): 20% · ETA 1h 30m · stale, last seen 18m ago"
+        );
+    }
+
+    #[test]
+    fn last_seen_label_is_hidden_for_the_first_minute() {
+        let now = Instant::now();
+        let stale_after = Duration::from_secs(15 * 60);
+
+        assert_eq!(last_seen_label(now, now, stale_after), None);
+        assert_eq!(
+            last_seen_label(now - Duration::from_secs(59), now, stale_after),
+            None
+        );
+    }
+
+    #[test]
+    fn last_seen_label_formats_minutes_hours_and_days() {
+        let now = Instant::now();
+        let stale_after = Duration::from_secs(30 * 24 * 60 * 60);
+
+        assert_eq!(
+            last_seen_label(now - Duration::from_secs(5 * 60), now, stale_after),
+            Some("last seen 5m ago".to_owned())
+        );
+        assert_eq!(
+            last_seen_label(now - Duration::from_secs(65 * 60), now, stale_after),
+            Some("last seen 1h 5m ago".to_owned())
+        );
+        assert_eq!(
+            last_seen_label(
+                now - Duration::from_secs((2 * 24 + 3) * 60 * 60),
+                now,
+                stale_after
+            ),
+            Some("last seen 2d 3h ago".to_owned())
+        );
+    }
+
+    #[test]
+    fn last_seen_label_marks_readings_stale_at_the_threshold() {
+        let now = Instant::now();
+        let stale_after = Duration::from_secs(15 * 60);
+
+        assert_eq!(
+            last_seen_label(
+                now - (stale_after - Duration::from_secs(1)),
+                now,
+                stale_after
+            ),
+            Some("last seen 14m ago".to_owned())
+        );
+        assert_eq!(
+            last_seen_label(now - stale_after, now, stale_after),
+            Some("stale, last seen 15m ago".to_owned())
+        );
+        assert_eq!(
+            last_seen_label(now - Duration::from_secs(18 * 60), now, stale_after),
+            Some("stale, last seen 18m ago".to_owned())
         );
     }
 

@@ -26,12 +26,15 @@ use std::{
     sync::mpsc::TryRecvError,
     time::{Duration, Instant},
 };
-use volty_battery::{BatteryStatus, DeviceId, DeviceLabel, ProviderEvent, SourceReading};
+use volty_battery::{
+    BatteryState, BatteryStatus, DeviceId, DeviceLabel, ProviderEvent, SourceReading,
+};
 
 use crate::{
     about::show_about_window,
     config::{config_path, AppConfig, LogLevel},
     diagnose::show_diagnose_window,
+    history::{unix_now, HistorySample, HistoryStore},
     logging::FileLogger,
     report::generate_diagnostic_report,
     state::{local_state_path, DeviceState, TrayIconStyle},
@@ -41,6 +44,7 @@ use crate::{
 };
 
 const CONFIG_RELOAD_DEBOUNCE: Duration = Duration::from_millis(200);
+const UI_REFRESH_INTERVAL: Duration = Duration::from_secs(60);
 const MAX_DIAGNOSTIC_LOG_ENTRIES: usize = 200;
 
 #[derive(Clone)]
@@ -50,6 +54,7 @@ struct DeviceReading {
     battery: BatteryStatus,
     estimated_time_remaining: Option<Duration>,
     notification_error: Option<String>,
+    observed_at: Instant,
 }
 
 struct App {
@@ -67,6 +72,9 @@ struct App {
     notifications: DeviceNotifications,
     session: DeviceSession,
     config_reload_due: Option<Instant>,
+    next_ui_refresh: Instant,
+    history: Option<HistoryStore>,
+    history_error: Option<String>,
 }
 
 pub fn run() -> Result<(), Box<dyn Error>> {
@@ -89,6 +97,21 @@ impl App {
             LogLevel::Info,
             "Volty started",
         )?;
+        let history = match HistoryStore::open_local() {
+            Ok(store) => Some(store),
+            Err(error) => {
+                record_event(
+                    &mut diagnostic_log,
+                    &mut file_logger,
+                    started,
+                    LogLevel::Warn,
+                    &format!(
+                        "Could not open battery history; samples will not be recorded this run: {error}"
+                    ),
+                )?;
+                None
+            }
+        };
         for warning in &startup.warnings {
             record_event(
                 &mut diagnostic_log,
@@ -176,6 +199,9 @@ impl App {
             notifications,
             session,
             config_reload_due: None,
+            next_ui_refresh: Instant::now() + UI_REFRESH_INTERVAL,
+            history,
+            history_error: None,
         })
     }
 
@@ -193,11 +219,26 @@ impl App {
             self.process_config_events()?;
             self.reload_config_if_due()?;
             self.process_poll_results()?;
-            let reload_wait = self
-                .config_reload_due
-                .map(|due| due.saturating_duration_since(Instant::now()));
-            wake::wait(reload_wait)?;
+            self.refresh_ui_if_due()?;
+            let ui_wait = self
+                .next_ui_refresh
+                .saturating_duration_since(Instant::now());
+            let wait = self.config_reload_due.map_or(ui_wait, |due| {
+                due.saturating_duration_since(Instant::now()).min(ui_wait)
+            });
+            wake::wait(Some(wait))?;
         }
+    }
+
+    /// Repaints the tray labels even when no device reports, so last-seen ages
+    /// and stale markers keep advancing.
+    fn refresh_ui_if_due(&mut self) -> io::Result<()> {
+        let now = Instant::now();
+        if now < self.next_ui_refresh {
+            return Ok(());
+        }
+        self.next_ui_refresh = now + UI_REFRESH_INTERVAL;
+        self.refresh_visible_devices()
     }
 
     fn process_tray_menu_events(&mut self) -> io::Result<()> {
@@ -660,7 +701,12 @@ impl App {
         Ok(())
     }
 
+    fn stale_after(&self) -> Duration {
+        Duration::from_secs(self.active_config.stale_after_minutes * 60)
+    }
+
     fn refresh_visible_devices(&mut self) -> io::Result<()> {
+        let stale_after = self.stale_after();
         self.session.retain_monitored(&self.monitored_devices);
         update_monitored_device_menu(
             &mut self.tray,
@@ -676,6 +722,7 @@ impl App {
             &self.monitored_devices,
             self.pinned_device.as_deref(),
             self.notification_config_error.as_deref(),
+            stale_after,
             &mut self.diagnostic_log,
             &mut self.file_logger,
             self.started,
@@ -721,12 +768,18 @@ impl App {
         let id = reading.id.clone();
         let monitored = is_device_monitored(&self.monitored_devices, id.as_str());
         let eta_window = Duration::from_secs(self.active_config.battery_eta_window_minutes * 60);
+        let stale_after = self.stale_after();
         if self.session.observe(reading, monitored, eta_window) {
+            let newest_reading = self.session.pending_readings.last().cloned();
+            if let Some(newest_reading) = newest_reading {
+                self.record_history_sample(&newest_reading)?;
+            }
             update_tray_devices(
                 &mut self.tray,
                 &self.session.pending_readings,
                 self.pinned_device.as_deref(),
                 self.notification_config_error.as_deref(),
+                stale_after,
                 &mut self.diagnostic_log,
                 &mut self.file_logger,
                 self.started,
@@ -751,6 +804,7 @@ impl App {
                     &self.session.pending_readings,
                     self.pinned_device.as_deref(),
                     self.notification_config_error.as_deref(),
+                    stale_after,
                     &mut self.diagnostic_log,
                     &mut self.file_logger,
                     self.started,
@@ -817,12 +871,14 @@ impl App {
                 self.started,
             )?;
         }
+        let stale_after = self.stale_after();
         apply_poll_result(
             &mut self.tray,
             &readings,
             self.pinned_device.as_deref(),
             result,
             self.notification_config_error.as_deref(),
+            stale_after,
             &mut self.diagnostic_log,
             &mut self.file_logger,
             self.started,
@@ -850,6 +906,59 @@ impl App {
                 &format!("Could not save discharge rates: {error}"),
             ),
         }
+    }
+
+    /// Records the freshest reading in the local battery history. A failure is
+    /// logged but never interrupts polling; identical errors are logged once.
+    fn record_history_sample(&mut self, reading: &DeviceReading) -> io::Result<()> {
+        if self.history.is_none() {
+            return Ok(());
+        }
+        let recorded_at = match unix_now() {
+            Ok(recorded_at) => recorded_at,
+            Err(error) => {
+                return self.report_history_error(format!(
+                    "Could not timestamp battery history for {}: {error}",
+                    reading.label.display()
+                ));
+            }
+        };
+        let sample = HistorySample {
+            identity: reading.id.as_str().to_owned(),
+            name: reading.label.display(),
+            recorded_at,
+            percent: reading.battery.level_percent,
+            charging: matches!(
+                reading.battery.state,
+                BatteryState::Charging
+                    | BatteryState::ChargingNearlyFull
+                    | BatteryState::ChargingSlow
+            ),
+            voltage_mv: reading.battery.voltage_mv,
+        };
+        let result = match self.history.as_mut() {
+            Some(history) => history.record(&sample),
+            None => return Ok(()),
+        };
+        match result {
+            Ok(_) => {
+                self.history_error = None;
+                Ok(())
+            }
+            Err(error) => self.report_history_error(format!(
+                "Could not record battery history for {}: {error}",
+                sample.name
+            )),
+        }
+    }
+
+    fn report_history_error(&mut self, message: String) -> io::Result<()> {
+        if self.history_error.as_deref() == Some(message.as_str()) {
+            return Ok(());
+        }
+        self.record_event(LogLevel::Warn, &message)?;
+        self.history_error = Some(message);
+        Ok(())
     }
 
     fn record_event(&mut self, level: LogLevel, message: &str) -> io::Result<()> {

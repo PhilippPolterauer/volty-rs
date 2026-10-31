@@ -269,6 +269,7 @@ mod tests {
             battery,
             estimated_time_remaining: None,
             notification_error: None,
+            observed_at: Instant::now(),
         }
     }
     #[test]
