@@ -169,7 +169,8 @@ volty-rs/
 ├── crates/
 │   ├── volty-battery/         # Dependency-free BatteryStatus, DeviceId and the BatteryProvider trait
 │   ├── volty-bluetooth/       # Windows Bluetooth provider (classic, SetupAPI, BLE phases under a shared scan budget)
-│   ├── volty-hid/             # Zero-UI, zero-Win32 protocol crate
+│   ├── volty-capture/         # Versioned, append-only JSONL hardware capture schema and reader/writer
+│   ├── volty-hid/             # Zero-UI HID protocol crate
 │   │   ├── src/
 │   │   │   ├── lib.rs         # Module root and public re-exports
 │   │   │   ├── interface.rs   # HID interface metadata, selectors and stable interface keys
@@ -178,6 +179,7 @@ volty-rs/
 │   │   │   ├── protocol.rs    # Protocol/device traits and support catalog
 │   │   │   ├── profile.rs     # Device profile parsing (`profile` feature)
 │   │   │   ├── command.rs     # HID++ feature commands (`profile` feature)
+│   │   │   ├── recording.rs   # HID++ transport wrapper that records raw exchanges
 │   │   │   ├── logitech_hidpp.rs # HID++ 2.0 transport and battery backend
 │   │   │   ├── generic_battery.rs # Standard HID battery usages (Windows HID parser in `generic_battery/native.rs`)
 │   │   │   └── battery.rs     # HID++ battery decoding
@@ -193,6 +195,8 @@ volty-rs/
 │       │   ├── hid_cli.rs     # On-demand HID++ interface/feature diagnostics
 │       │   ├── app.rs         # Event loop and application state
 │       │   ├── app/           # Device session, polling worker, battery ETA, notifications, labels
+│       │   ├── capture.rs     # Hardware capture assembly for diagnostics
+│       │   ├── replay.rs      # Offline capture validation and replay
 │       │   ├── provider.rs    # Battery providers the tray polls (HID, optional Bluetooth)
 │       │   ├── provider/      # HID provider (stable identity, slot probing) and device-name cache
 │       │   ├── config.rs      # Per-user TOML settings
@@ -441,7 +445,7 @@ it because diagnostic interface paths can identify local devices.
 ## Building and testing
 
 Prerequisites: Windows 10/11 and the `x86_64-pc-windows-msvc` Rust toolchain
-(Rust 1.89 or newer; the stable channel is recommended). The release binary is
+(Rust 1.90 or newer; the stable channel is recommended). The release binary is
 written to `target\release\volty.exe`.
 
 ```powershell
@@ -451,7 +455,7 @@ cargo test --workspace --all-features --locked
 
 CI runs the same checks on every push and pull request, plus a build with the
 `bluetooth` feature, a workspace check on the minimum supported Rust version
-(1.89.0), and a dependency audit on Ubuntu:
+(1.90.0), and a dependency audit on Ubuntu:
 
 ```powershell
 cargo fmt --all -- --check
@@ -462,10 +466,8 @@ cargo check --workspace --all-features --locked
 cargo audit --deny warnings
 ```
 
-The `cargo check` command runs in the MSRV job with Rust 1.89.0; the `cargo
+The `cargo check` command runs in the MSRV job with Rust 1.90.0; the `cargo
 audit` command runs in the audit job against the committed `Cargo.lock`.
-`.cargo/audit.toml` documents the two ignored advisories from Linux-only GTK
-dependencies of `tray-icon`, which are not compiled on Windows.
 
 See the [sustained-run performance assessment](./docs/performance-assessment.md)
 for one-minute resource measurements and polling-path limitations.
@@ -474,13 +476,13 @@ for one-minute resource measurements and polling-path limitations.
 
 User-facing changes are tracked in [CHANGELOG.md](./CHANGELOG.md).
 
-To cut a release, bump the workspace crates' version, move the
-`[Unreleased]` changelog entries under the new version heading, commit, and
-push a matching tag such as `v0.3.0`. The Windows release workflow verifies the
-tag against the `volty-tray` package version, runs format, Clippy, and test
-checks, and publishes a standalone `x86_64-pc-windows-msvc` executable with a
-SHA-256 checksum to the GitHub Release. No installer or sidecar runtime files
-are required.
+To cut a release, bump the version once in `[workspace.package]` in the root
+`Cargo.toml`, move the `[Unreleased]` changelog entries under the new version
+heading, commit, and push a matching tag such as `v0.3.0`. The Windows release
+workflow verifies the tag against the `volty-tray` package version, runs
+format, Clippy, and test checks, and publishes a standalone
+`x86_64-pc-windows-msvc` executable with a SHA-256 checksum to the GitHub
+Release. No installer or sidecar runtime files are required.
 
 Protocol-frame unit tests use mock byte buffers and do not require a connected
 mouse. Device communication and tray behavior should be verified on Windows

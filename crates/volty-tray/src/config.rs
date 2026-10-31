@@ -6,7 +6,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use toml_edit::Document;
+use toml_edit::DocumentMut;
 
 pub const DEFAULT_LOW_BATTERY_THRESHOLD: u8 = 20;
 pub const DEFAULT_POLL_INTERVAL_SECONDS: u64 = 120;
@@ -253,7 +253,7 @@ fn load_legacy_monitored_devices_from(
             path.display()
         ))
     })?;
-    let document = contents.parse::<toml::Value>().map_err(|error| {
+    let document = toml::from_str::<toml::Value>(&contents).map_err(|error| {
         ConfigError::new(format!("invalid configuration {}: {error}", path.display()))
     })?;
     let Some(value) = document
@@ -305,7 +305,7 @@ fn remove_legacy_monitored_devices_from(path: impl AsRef<Path>) -> Result<(), Co
             path.display()
         ))
     })?;
-    let mut document = contents.parse::<Document>().map_err(|error| {
+    let mut document = contents.parse::<DocumentMut>().map_err(|error| {
         ConfigError::new(format!("invalid configuration {}: {error}", path.display()))
     })?;
     if document.remove("monitored_devices").is_some() {
@@ -337,7 +337,7 @@ impl fmt::Display for ConfigError {
 impl Error for ConfigError {}
 
 fn parse_toml(contents: &str, path: &Path) -> Result<AppConfig, ConfigError> {
-    let value = contents.parse::<toml::Value>().map_err(|error| {
+    let value = toml::from_str::<toml::Value>(contents).map_err(|error| {
         ConfigError::new(format!("invalid configuration {}: {error}", path.display()))
     })?;
     let table = value.as_table().ok_or_else(|| {

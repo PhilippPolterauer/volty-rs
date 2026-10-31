@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - Logs now use one file per local day (`volty-YYYY-MM-DD.log`) and remove daily files older than seven days. Each daily file still rotates at 5 MiB with one `.1` backup, and an existing `volty.log` is moved into the current day's file.
+- Raised the minimum supported Rust version to 1.90.0 and refreshed the dependency set, including `tray-icon` 0.26, `toml` 1.1, `toml_edit` 0.25, `windows-sys` 0.61, `winreg` 0.56, and `rusqlite` 0.41.1. Linux-only GTK dependencies of `tray-icon` are no longer included in `Cargo.lock`.
 
 ### Fixed
 

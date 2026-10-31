@@ -1,7 +1,7 @@
 # Volty sustained-run performance assessment
 
 **Assessment date:** 2026-10-26  
-**Scope:** One observed Windows release process, sampled for 60.2 seconds, plus a source review of polling and Bluetooth discovery. The 10-second polling assessment below is a source-based estimate, not a controlled device-hardware benchmark.
+**Scope:** One observed Windows release process, sampled for 60.2 seconds, plus a source review of polling and Bluetooth discovery refreshed on 2026-10-31 for the event-driven tray loop. The 10-second polling assessment below is a source-based estimate, not a controlled device-hardware benchmark.
 
 ## Summary
 
@@ -28,9 +28,9 @@ The process had been running for about 2 minutes 18 seconds at the end of sampli
 
 ### Polling and idle behavior
 
-- The default successful-poll wait is 120 seconds, with a configurable range of 10-3600 seconds; the default retry wait is 15 seconds. The worker waits after each query completes, so query duration adds to the start-to-start interval. ([config.rs](../crates/volty-tray/src/config.rs#L12), [app/poll.rs](../crates/volty-tray/src/app/poll.rs#L88))
+- The default successful-poll wait is 120 seconds, with a configurable range of 10-3600 seconds; the default retry wait is 15 seconds. The worker waits after each query completes, so query duration adds to the start-to-start interval. ([config.rs](../crates/volty-tray/src/config.rs#L12), [app/poll.rs](../crates/volty-tray/src/app/poll.rs))
 - Device discovery runs on a dedicated worker thread. The tray loop is event-driven: it blocks in `MsgWaitForMultipleObjects` and is woken by window messages, the poll worker, and the config watcher, so it uses no CPU while idle and processes queued work immediately. ([app.rs](../crates/volty-tray/src/app.rs), [wake.rs](../crates/volty-tray/src/app/wake.rs))
-- The in-memory diagnostic log is capped at 200 entries. The file logger appends and flushes each accepted entry and rotates at 5 MiB, keeping one `.1` backup, so sustained trace logging is bounded to roughly 10 MiB of disk. ([app.rs](../crates/volty-tray/src/app.rs#L47), [logging.rs](../crates/volty-tray/src/logging.rs#L10))
+- The in-memory diagnostic log is capped at 200 entries. The file logger appends and flushes each accepted entry and rotates at 5 MiB, keeping one `.1` backup, so sustained trace logging is bounded to roughly 10 MiB of disk. ([app.rs](../crates/volty-tray/src/app.rs), [logging.rs](../crates/volty-tray/src/logging.rs))
 
 ### 10-second successful-poll scenario
 
@@ -50,6 +50,6 @@ When enabled, each device query performs classic Bluetooth property discovery, S
 
 ## Conclusion and follow-up
 
-No CPU hot loop or growing memory footprint was evident in this one-minute observation. The default polling design is sleep-based and should remain low-activity between reads. The main performance uncertainty is scan latency, especially with the experimental Bluetooth feature enabled; the observed process did not provide a controlled comparison of Bluetooth or hardware configurations.
+No CPU hot loop or growing memory footprint was evident in this one-minute observation. The default polling design is event-driven: the tray loop blocks in `MsgWaitForMultipleObjects` while idle, and the device worker waits between completed scans instead of spinning. The main performance uncertainty is scan latency, especially with the experimental Bluetooth feature enabled; the observed process did not provide a controlled comparison of Bluetooth or hardware configurations.
 
 A representative follow-up should record the effective configuration and feature set, then sample a clean run for at least 10 minutes with the relevant devices connected. Include per-scan duration, CPU time, working/private memory, and log-file size so the test covers multiple polls and any retry behavior.

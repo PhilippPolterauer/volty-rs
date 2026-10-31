@@ -220,7 +220,7 @@ impl HidCollection {
         }
         let mut preparsed: PHIDP_PREPARSED_DATA = 0;
         // SAFETY: handle is a valid open device and preparsed is writable.
-        if unsafe { HidD_GetPreparsedData(handle, &raw mut preparsed) } == 0 {
+        if unsafe { !HidD_GetPreparsedData(handle, &raw mut preparsed) } {
             let error = io::Error::last_os_error();
             // SAFETY: handle was opened above and is not used afterwards.
             unsafe { CloseHandle(handle) };
@@ -264,7 +264,7 @@ impl HidCollection {
             for cap in self.value_caps(kind, value_count) {
                 // SAFETY: IsRange selects which union member the parser filled in.
                 let (first, last) = unsafe {
-                    if cap.IsRange == 0 {
+                    if !cap.IsRange {
                         (cap.Anonymous.NotRange.Usage, cap.Anonymous.NotRange.Usage)
                     } else {
                         (cap.Anonymous.Range.UsageMin, cap.Anonymous.Range.UsageMax)
@@ -285,7 +285,7 @@ impl HidCollection {
             for cap in self.button_caps(kind, button_count) {
                 // SAFETY: IsRange selects which union member the parser filled in.
                 let (first, last) = unsafe {
-                    if cap.IsRange == 0 {
+                    if !cap.IsRange {
                         (cap.Anonymous.NotRange.Usage, cap.Anonymous.NotRange.Usage)
                     } else {
                         (cap.Anonymous.Range.UsageMin, cap.Anonymous.Range.UsageMax)
@@ -373,7 +373,7 @@ impl HidCollection {
                 }
             }
         };
-        if succeeded == 0 {
+        if !succeeded {
             return Err(io::Error::last_os_error());
         }
         Ok(report)
