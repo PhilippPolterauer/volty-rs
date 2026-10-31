@@ -170,6 +170,7 @@ impl DeviceSession {
             battery: reading.battery,
             estimated_time_remaining,
             notification_error: None,
+            observed_at: Instant::now(),
         });
         true
     }

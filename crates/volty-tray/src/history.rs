@@ -108,7 +108,6 @@ impl HistoryStore {
 
     /// Stores a reading unless the latest sample for the identity has the same
     /// values and is less than five minutes old.
-    #[allow(dead_code)] // Tray sampling is wired in a separate change.
     pub fn record(&mut self, sample: &HistorySample) -> Result<bool, Box<dyn Error>> {
         if sample.identity.is_empty() {
             return Err(io::Error::new(
@@ -292,7 +291,7 @@ fn window_start(days: u32) -> Result<i64, Box<dyn Error>> {
     Ok(unix_now()?.saturating_sub(i64::from(days).saturating_mul(86_400)))
 }
 
-fn unix_now() -> Result<i64, Box<dyn Error>> {
+pub(crate) fn unix_now() -> Result<i64, Box<dyn Error>> {
     let duration = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_err(|error| {

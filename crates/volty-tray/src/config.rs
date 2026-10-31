@@ -13,6 +13,7 @@ pub const DEFAULT_LOW_BATTERY_COOLDOWN_MINUTES: u64 = 120;
 pub const DEFAULT_POLL_INTERVAL_SECONDS: u64 = 120;
 pub const DEFAULT_RETRY_INTERVAL_SECONDS: u64 = 15;
 pub const DEFAULT_BATTERY_ETA_WINDOW_MINUTES: u64 = 10;
+pub const DEFAULT_STALE_AFTER_MINUTES: u64 = 15;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BatteryColorMap {
@@ -90,6 +91,7 @@ pub struct AppConfig {
     pub poll_interval_seconds: u64,
     pub retry_interval_seconds: u64,
     pub battery_eta_window_minutes: u64,
+    pub stale_after_minutes: u64,
     pub notifications_enabled: bool,
     pub log_level: LogLevel,
     pub battery_color_map: BatteryColorMap,
@@ -103,6 +105,7 @@ impl Default for AppConfig {
             poll_interval_seconds: DEFAULT_POLL_INTERVAL_SECONDS,
             retry_interval_seconds: DEFAULT_RETRY_INTERVAL_SECONDS,
             battery_eta_window_minutes: DEFAULT_BATTERY_ETA_WINDOW_MINUTES,
+            stale_after_minutes: DEFAULT_STALE_AFTER_MINUTES,
             notifications_enabled: true,
             log_level: LogLevel::Info,
             battery_color_map: BatteryColorMap::default(),
@@ -155,6 +158,8 @@ impl AppConfig {
              # retry_interval_seconds = {}\n\
              # Minutes of discharge history used to estimate battery runtime (1-180).\n\
              # battery_eta_window_minutes = {}\n\
+             # Minutes without a new reading before a device is marked stale (1-1440).\n\
+             # stale_after_minutes = {}\n\
              # Set to false to disable low-battery toast notifications.\n\
              # notifications_enabled = {}\n\
              # error, warn, info, debug, or trace.\n\
@@ -173,6 +178,7 @@ impl AppConfig {
             defaults.poll_interval_seconds,
             defaults.retry_interval_seconds,
             defaults.battery_eta_window_minutes,
+            defaults.stale_after_minutes,
             defaults.notifications_enabled,
             defaults.log_level.as_str().to_ascii_lowercase()
         );
@@ -442,6 +448,10 @@ fn parse_toml(contents: &str, path: &Path) -> Result<AppConfig, ConfigError> {
                 config.battery_eta_window_minutes =
                     parse_interval(value, "battery_eta_window_minutes", 1, 180, "minutes", path)?;
             }
+            "stale_after_minutes" => {
+                config.stale_after_minutes =
+                    parse_interval(value, "stale_after_minutes", 1, 1440, "minutes", path)?;
+            }
             "notifications_enabled" => {
                 config.notifications_enabled = value.as_bool().ok_or_else(|| {
                     ConfigError::new(format!(
@@ -614,6 +624,7 @@ mod tests {
     fn toml_config_accepts_defaults_and_threshold_values() {
         let path = Path::new("config.toml");
         assert_eq!(AppConfig::default().battery_eta_window_minutes, 10);
+        assert_eq!(AppConfig::default().stale_after_minutes, 15);
         assert_eq!(AppConfig::default().low_battery_thresholds, [20, 10, 5]);
         assert_eq!(AppConfig::default().low_battery_cooldown_minutes, 120);
         assert_eq!(
@@ -641,7 +652,7 @@ mod tests {
         );
         assert_eq!(
             parse_toml(
-                "low_battery_thresholds = [80]\nlow_battery_cooldown_minutes = 240\npoll_interval_seconds = 300\nretry_interval_seconds = 30\nbattery_eta_window_minutes = 20\nnotifications_enabled = false\nlog_level = \"debug\"\n",
+                "low_battery_thresholds = [80]\nlow_battery_cooldown_minutes = 240\npoll_interval_seconds = 300\nretry_interval_seconds = 30\nbattery_eta_window_minutes = 20\nstale_after_minutes = 30\nnotifications_enabled = false\nlog_level = \"debug\"\n",
                 path
             )
             .unwrap(),
@@ -651,6 +662,7 @@ mod tests {
                 poll_interval_seconds: 300,
                 retry_interval_seconds: 30,
                 battery_eta_window_minutes: 20,
+                stale_after_minutes: 30,
                 notifications_enabled: false,
                 log_level: LogLevel::Debug,
                 battery_color_map: BatteryColorMap::default(),
@@ -677,6 +689,33 @@ mod tests {
             assert_eq!(LogLevel::parse(level.as_str()), Some(level));
         }
         assert_eq!(LogLevel::parse("INFO"), Some(LogLevel::Info));
+    }
+
+    #[test]
+    fn toml_config_parses_stale_after_minutes() {
+        let path = Path::new("config.toml");
+        assert_eq!(
+            parse_toml("stale_after_minutes = 45\n", path)
+                .unwrap()
+                .stale_after_minutes,
+            45
+        );
+        assert_eq!(
+            parse_toml("stale_after_minutes = 1\n", path)
+                .unwrap()
+                .stale_after_minutes,
+            1
+        );
+        assert_eq!(
+            parse_toml("stale_after_minutes = 1440\n", path)
+                .unwrap()
+                .stale_after_minutes,
+            1440
+        );
+        for invalid in ["stale_after_minutes = 0", "stale_after_minutes = 1441"] {
+            assert!(parse_toml(invalid, path).is_err(), "{invalid}");
+        }
+        assert!(parse_toml("stale_after_minutes = \"15\"\n", path).is_err());
     }
 
     #[test]
@@ -727,6 +766,9 @@ mod tests {
             "battery_eta_window_minutes = 0",
             "battery_eta_window_minutes = 181",
             "battery_eta_window_minutes = \"10\"",
+            "stale_after_minutes = 0",
+            "stale_after_minutes = 1441",
+            "stale_after_minutes = \"15\"",
             "notifications_enabled = \"true\"",
             "log_level = 5",
             "log_level = \"verbose\"",
@@ -780,6 +822,7 @@ mod tests {
         assert!(contents.lines().all(|line| line.starts_with('#')));
         assert!(contents.contains("# low_battery_thresholds = [20, 10, 5]"));
         assert!(contents.contains("# low_battery_cooldown_minutes = 120"));
+        assert!(contents.contains("# stale_after_minutes = 15"));
 
         fs::remove_file(created_path).unwrap();
         assert_eq!(AppConfig::load_from(&path).unwrap(), AppConfig::default());
