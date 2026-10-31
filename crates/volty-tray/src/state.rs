@@ -7,8 +7,48 @@ use std::{
 
 use rusqlite::{params, Connection, TransactionBehavior};
 
-/// Version 3 stores per-threshold notification state keyed by device identity.
-const SCHEMA_VERSION: i64 = 3;
+/// Version 4 adds persisted tray display preferences next to the per-device
+/// monitoring and notification state from version 3.
+const SCHEMA_VERSION: i64 = 4;
+
+const TRAY_ICON_STYLE_KEY: &str = "tray_icon_style";
+const PINNED_DEVICE_KEY: &str = "pinned_device";
+
+/// How the tray draws its battery percentage.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum TrayIconStyle {
+    /// The battery glyph that fills according to the percentage.
+    #[default]
+    Battery,
+    /// The percentage as digits drawn from a built-in bitmap font.
+    Percentage,
+}
+
+impl TrayIconStyle {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Battery => "battery",
+            Self::Percentage => "percentage",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "battery" => Some(Self::Battery),
+            "percentage" => Some(Self::Percentage),
+            _ => None,
+        }
+    }
+}
+
+/// Tray display preferences stored in local SQLite state, not `config.toml`.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct TrayDisplaySettings {
+    pub icon_style: TrayIconStyle,
+    /// A device identity that drives the tray icon; `None` means the lowest
+    /// monitored percentage.
+    pub pinned_device: Option<String>,
+}
 
 /// Battery percentage points lost while Volty was alive and watching a device
 /// discharge, and how long that watching took. Time Volty was not running is
@@ -76,6 +116,10 @@ impl DeviceState {
                 identity TEXT PRIMARY KEY,
                 lost_percent REAL NOT NULL CHECK (lost_percent >= 0),
                 alive_seconds REAL NOT NULL CHECK (alive_seconds >= 0)
+            ) WITHOUT ROWID;
+            CREATE TABLE IF NOT EXISTS settings (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL
             ) WITHOUT ROWID;",
         )?;
         if version < 2 {
@@ -294,6 +338,69 @@ impl DeviceState {
             )?;
         }
         transaction.commit()?;
+        Ok(())
+    }
+
+    pub fn tray_display(&self) -> Result<TrayDisplaySettings, Box<dyn std::error::Error>> {
+        let mut statement = self.connection.prepare("SELECT key, value FROM settings")?;
+        let rows = statement.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?;
+        let mut settings = TrayDisplaySettings::default();
+        for row in rows {
+            let (key, value) = row?;
+            match key.as_str() {
+                TRAY_ICON_STYLE_KEY => {
+                    settings.icon_style = TrayIconStyle::parse(&value).ok_or_else(|| {
+                        io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            format!("unknown tray icon style {value:?}"),
+                        )
+                    })?;
+                }
+                PINNED_DEVICE_KEY if !value.is_empty() => {
+                    settings.pinned_device = Some(value);
+                }
+                _ => {}
+            }
+        }
+        Ok(settings)
+    }
+
+    pub fn set_tray_icon_style(
+        &mut self,
+        style: TrayIconStyle,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        self.connection.execute(
+            "INSERT INTO settings (key, value) VALUES (?1, ?2)
+             ON CONFLICT (key) DO UPDATE SET value = excluded.value",
+            params![TRAY_ICON_STYLE_KEY, style.as_str()],
+        )?;
+        Ok(())
+    }
+
+    pub fn set_pinned_device(&mut self, identity: &str) -> Result<(), Box<dyn std::error::Error>> {
+        if identity.is_empty() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "pinned device identity must not be empty",
+            )
+            .into());
+        }
+        self.connection.execute(
+            "INSERT INTO settings (key, value) VALUES (?1, ?2)
+             ON CONFLICT (key) DO UPDATE SET value = excluded.value",
+            params![PINNED_DEVICE_KEY, identity],
+        )?;
+        Ok(())
+    }
+
+    pub fn clear_pinned_device(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+        self.connection.execute(
+            "INSERT INTO settings (key, value) VALUES (?1, '')
+             ON CONFLICT (key) DO UPDATE SET value = excluded.value",
+            [PINNED_DEVICE_KEY],
+        )?;
         Ok(())
     }
 
@@ -655,6 +762,178 @@ mod tests {
                 ("hid:a#1".to_owned(), second),
                 ("bluetooth:b".to_owned(), first)
             ])
+        );
+        drop(state);
+        fs::remove_file(path).unwrap();
+    }
+
+    fn fresh_state_path(prefix: &str) -> PathBuf {
+        std::env::temp_dir().join(format!(
+            "{prefix}-{}-{}.sqlite3",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ))
+    }
+
+    #[test]
+    fn fresh_database_uses_default_tray_display_settings() {
+        let path = fresh_state_path("volty-fresh-tray-state");
+        let state = DeviceState::open(&path).unwrap();
+        assert_eq!(
+            state.tray_display().unwrap(),
+            TrayDisplaySettings {
+                icon_style: TrayIconStyle::Battery,
+                pinned_device: None,
+            }
+        );
+        let version: i64 = state
+            .connection
+            .pragma_query_value(None, "user_version", |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, 4);
+        drop(state);
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn tray_display_preferences_persist_and_validate_stored_styles() {
+        let path = fresh_state_path("volty-tray-display-state");
+
+        {
+            let mut state = DeviceState::open(&path).unwrap();
+            assert_eq!(
+                state.set_pinned_device("").unwrap_err().to_string(),
+                "pinned device identity must not be empty"
+            );
+            state
+                .set_tray_icon_style(TrayIconStyle::Percentage)
+                .unwrap();
+            state.set_pinned_device("bluetooth:headset").unwrap();
+        }
+
+        {
+            let state = DeviceState::open(&path).unwrap();
+            assert_eq!(
+                state.tray_display().unwrap(),
+                TrayDisplaySettings {
+                    icon_style: TrayIconStyle::Percentage,
+                    pinned_device: Some("bluetooth:headset".to_owned()),
+                }
+            );
+        }
+
+        {
+            let mut state = DeviceState::open(&path).unwrap();
+            state.clear_pinned_device().unwrap();
+            assert_eq!(state.tray_display().unwrap().pinned_device, None);
+            state
+                .connection
+                .execute(
+                    "INSERT INTO settings (key, value) VALUES ('tray_icon_style', 'neon')
+                     ON CONFLICT (key) DO UPDATE SET value = excluded.value",
+                    [],
+                )
+                .unwrap();
+            assert_eq!(
+                state.tray_display().unwrap_err().to_string(),
+                "unknown tray icon style \"neon\""
+            );
+        }
+
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn opening_a_schema_three_database_preserves_data_and_adds_tray_defaults() {
+        let path = fresh_state_path("volty-migrate-tray-state");
+        {
+            let connection = Connection::open(&path).unwrap();
+            connection
+                .execute_batch(
+                    "CREATE TABLE recent_devices (
+                        interface_key TEXT NOT NULL,
+                        device_index INTEGER NOT NULL,
+                        seen_order INTEGER NOT NULL,
+                        PRIMARY KEY (interface_key, device_index)
+                    ) WITHOUT ROWID;
+                    INSERT INTO recent_devices VALUES ('stable-key', 2, 1);
+                    CREATE TABLE monitored_devices (
+                        identity TEXT PRIMARY KEY,
+                        monitored INTEGER NOT NULL CHECK (monitored IN (0, 1))
+                    ) WITHOUT ROWID;
+                    INSERT INTO monitored_devices VALUES ('hid:keep#1', 0);
+                    CREATE TABLE notified_thresholds (
+                        identity TEXT NOT NULL,
+                        threshold INTEGER NOT NULL CHECK (threshold BETWEEN 1 AND 100),
+                        PRIMARY KEY (identity, threshold)
+                    ) WITHOUT ROWID;
+                    INSERT INTO notified_thresholds VALUES ('hid:keep#1', 10);
+                    CREATE TABLE discharge_rates (
+                        identity TEXT PRIMARY KEY,
+                        lost_percent REAL NOT NULL CHECK (lost_percent >= 0),
+                        alive_seconds REAL NOT NULL CHECK (alive_seconds >= 0)
+                    ) WITHOUT ROWID;
+                    INSERT INTO discharge_rates VALUES ('hid:keep#1', 1.5, 3600.0);
+                    PRAGMA user_version = 3;",
+                )
+                .unwrap();
+        }
+
+        {
+            let mut state = DeviceState::open(&path).unwrap();
+            assert_eq!(
+                state
+                    .known_device_indices("stable-key", &[0, 1, 2])
+                    .unwrap(),
+                [2]
+            );
+            assert_eq!(
+                state.monitored_devices().unwrap(),
+                BTreeMap::from([("hid:keep#1".to_owned(), false)])
+            );
+            assert_eq!(
+                state.notified_thresholds().unwrap(),
+                HashMap::from([("hid:keep#1".to_owned(), HashSet::from([10]))])
+            );
+            assert_eq!(
+                state.discharge_rates().unwrap(),
+                HashMap::from([(
+                    "hid:keep#1".to_owned(),
+                    DischargeRate {
+                        lost_percent: 1.5,
+                        alive_seconds: 3600.0,
+                    }
+                )])
+            );
+            assert_eq!(
+                state.tray_display().unwrap(),
+                TrayDisplaySettings::default()
+            );
+            let version: i64 = state
+                .connection
+                .pragma_query_value(None, "user_version", |row| row.get(0))
+                .unwrap();
+            assert_eq!(version, 4);
+            state
+                .set_tray_icon_style(TrayIconStyle::Percentage)
+                .unwrap();
+            state.set_pinned_device("hid:keep#1").unwrap();
+        }
+
+        let state = DeviceState::open(&path).unwrap();
+        assert_eq!(
+            state.monitored_devices().unwrap(),
+            BTreeMap::from([("hid:keep#1".to_owned(), false)])
+        );
+        assert_eq!(
+            state.tray_display().unwrap(),
+            TrayDisplaySettings {
+                icon_style: TrayIconStyle::Percentage,
+                pinned_device: Some("hid:keep#1".to_owned()),
+            }
         );
         drop(state);
         fs::remove_file(path).unwrap();

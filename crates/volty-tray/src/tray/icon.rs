@@ -65,6 +65,78 @@ fn render_battery(percentage: u8, size: u32, battery_color_map: BatteryColorMap)
     downsample_icon(image, size)
 }
 
+/// 3×5 bitmap glyphs for the digits 0-9. Bit 2 is the leftmost column.
+const DIGIT_GLYPHS: [[u8; 5]; 10] = [
+    [0b111, 0b101, 0b101, 0b101, 0b111],
+    [0b010, 0b110, 0b010, 0b010, 0b111],
+    [0b111, 0b001, 0b111, 0b100, 0b111],
+    [0b111, 0b001, 0b111, 0b001, 0b111],
+    [0b101, 0b101, 0b111, 0b001, 0b001],
+    [0b111, 0b100, 0b111, 0b001, 0b111],
+    [0b111, 0b100, 0b111, 0b101, 0b111],
+    [0b111, 0b001, 0b010, 0b010, 0b010],
+    [0b111, 0b101, 0b111, 0b101, 0b111],
+    [0b111, 0b101, 0b111, 0b001, 0b111],
+];
+
+pub(super) fn percentage_icon_at_size_with_color_map(
+    percentage: u8,
+    size: u32,
+    battery_color_map: BatteryColorMap,
+) -> Result<Icon, TrayError> {
+    validate_icon_size(size)?;
+    let rgba = render_percentage(percentage, size, battery_color_map).into_raw();
+    Icon::from_rgba(rgba, size, size)
+        .map_err(|error| TrayError::new(format!("could not create percentage icon: {error}")))
+}
+
+/// Renders the percentage as number-only digits with no percent sign: at 16 px
+/// a mark would crowd out the third digit of `100`. Glyph pixels are one screen
+/// pixel at 16×16 and two screen pixels at 32×32, with a transparent background.
+fn render_percentage(percentage: u8, size: u32, battery_color_map: BatteryColorMap) -> RgbaImage {
+    let percentage = percentage.min(100);
+    let mut image = RgbaImage::from_pixel(size, size, Rgba([0, 0, 0, 0]));
+    let fill_color = battery_color_map.color_for(percentage);
+    let color = Rgba([fill_color[0], fill_color[1], fill_color[2], 255]);
+
+    let text = percentage.to_string();
+    let scale = size / ICON_SIZE;
+    let glyph_width = 3 * scale;
+    let gap = scale;
+    let digit_count = text.len() as u32;
+    let text_width = digit_count * glyph_width + (digit_count - 1) * gap;
+    let text_height = 5 * scale;
+    let origin_x = (size - text_width) / 2;
+    let origin_y = (size - text_height) / 2;
+
+    for (index, digit) in text.bytes().enumerate() {
+        let glyph = DIGIT_GLYPHS[usize::from(digit - b'0')];
+        let digit_x = origin_x + index as u32 * (glyph_width + gap);
+        for (row, bits) in glyph.iter().enumerate() {
+            for column in 0..3 {
+                if bits & (0b100 >> column) == 0 {
+                    continue;
+                }
+                let pixel_x = digit_x + column * scale;
+                let pixel_y = origin_y + row as u32 * scale;
+                for offset_y in 0..scale {
+                    for offset_x in 0..scale {
+                        image.put_pixel(pixel_x + offset_x, pixel_y + offset_y, color);
+                    }
+                }
+            }
+        }
+    }
+
+    image
+}
+
+#[cfg(test)]
+fn percentage_rgba(percentage: u8, size: u32) -> Result<Vec<u8>, TrayError> {
+    validate_icon_size(size)?;
+    Ok(render_percentage(percentage, size, BatteryColorMap::default()).into_raw())
+}
+
 /// Renders the neutral unknown/error icon as an RGBA buffer (16×16 or 32×32).
 pub(super) fn unknown_battery_rgba(size: u32) -> Result<Vec<u8>, TrayError> {
     validate_icon_size(size)?;
@@ -397,5 +469,86 @@ mod tests {
         assert_eq!(pixel(11), [4, 5, 6]);
         assert_eq!(pixel(40), [4, 5, 6]);
         assert_eq!(pixel(41), [7, 8, 9]);
+    }
+
+    fn opaque_pixels(rgba: &[u8]) -> Vec<[u8; 4]> {
+        rgba.as_chunks::<4>()
+            .0
+            .iter()
+            .filter(|pixel| pixel[3] > 0)
+            .map(|pixel| [pixel[0], pixel[1], pixel[2], pixel[3]])
+            .collect()
+    }
+
+    #[test]
+    fn digit_glyphs_are_complete_and_distinct() {
+        for (digit, glyph) in DIGIT_GLYPHS.iter().enumerate() {
+            assert!(glyph.iter().any(|row| *row != 0), "digit {digit} is blank");
+            assert!(
+                glyph.iter().all(|row| row & !0b111 == 0),
+                "digit {digit} exceeds three columns"
+            );
+            assert!(
+                glyph.iter().map(|row| row.count_ones()).sum::<u32>() >= 7,
+                "digit {digit} is too sparse"
+            );
+        }
+        for (left, glyph) in DIGIT_GLYPHS.iter().enumerate() {
+            for other in DIGIT_GLYPHS.iter().skip(left + 1) {
+                assert_ne!(glyph, other);
+            }
+        }
+    }
+
+    #[test]
+    fn percentage_rgba_supports_both_dpi_sizes() {
+        for size in [16, 32] {
+            for percentage in [0, 1, 9, 10, 42, 99, 100] {
+                let rgba = percentage_rgba(percentage, size).unwrap();
+                assert_eq!(rgba.len(), (size * size * 4) as usize);
+                assert!(
+                    !opaque_pixels(&rgba).is_empty(),
+                    "{percentage}% at {size}px produced no visible pixels"
+                );
+            }
+        }
+        assert!(percentage_rgba(85, 24).is_err());
+    }
+
+    #[test]
+    fn percentage_icon_uses_the_active_color_band() {
+        let map = BatteryColorMap::default();
+        for (percentage, expected) in [(10, map.red), (20, map.yellow), (60, map.green)] {
+            let rgba = render_percentage(percentage, 32, map).into_raw();
+            let opaque = opaque_pixels(&rgba);
+            assert!(!opaque.is_empty());
+            for pixel in opaque {
+                assert_eq!(pixel[3], 255);
+                assert_eq!(
+                    &pixel[..3],
+                    &expected,
+                    "{percentage}% used the wrong color band"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn percentage_renderer_handles_zero_and_one_hundred() {
+        for size in [16, 32] {
+            let zero = percentage_rgba(0, size).unwrap();
+            let hundred = percentage_rgba(100, size).unwrap();
+            assert!(!opaque_pixels(&zero).is_empty());
+            assert!(!opaque_pixels(&hundred).is_empty());
+            assert_ne!(zero, hundred);
+        }
+    }
+
+    #[test]
+    fn percentage_icons_differ_between_dpi_sizes() {
+        let small = percentage_rgba(85, 16).unwrap();
+        let large = percentage_rgba(85, 32).unwrap();
+        assert_ne!(small, large);
+        assert!(large.len() > small.len());
     }
 }

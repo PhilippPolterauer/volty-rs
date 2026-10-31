@@ -34,7 +34,7 @@ use crate::{
     diagnose::show_diagnose_window,
     logging::FileLogger,
     report::generate_diagnostic_report,
-    state::{local_state_path, DeviceState},
+    state::{local_state_path, DeviceState, TrayIconStyle},
     tray::{
         confirm_reset, reset_startup_preferences, start_on_boot_enabled, TrayAction, TrayController,
     },
@@ -60,6 +60,8 @@ struct App {
     config_watch: ConfigWatch,
     monitor_state: Option<DeviceState>,
     monitored_devices: BTreeMap<String, bool>,
+    tray_icon_style: TrayIconStyle,
+    pinned_device: Option<String>,
     active_config: AppConfig,
     notification_config_error: Option<String>,
     notifications: DeviceNotifications,
@@ -99,6 +101,8 @@ impl App {
 
         let mut tray = TrayController::new()?;
         tray.set_battery_color_map(startup.active_config.battery_color_map)?;
+        tray.set_tray_icon_style(startup.tray_display.icon_style);
+        tray.set_pinned_device_checked(startup.tray_display.pinned_device.as_deref());
         tray.update_status("", "Searching for supported devices", None)?;
         let config_watch = watch_config_file()?;
 
@@ -165,6 +169,8 @@ impl App {
             config_watch,
             monitor_state: startup.monitor_state,
             monitored_devices: startup.monitored_devices,
+            tray_icon_style: startup.tray_display.icon_style,
+            pinned_device: startup.tray_display.pinned_device,
             active_config: startup.active_config,
             notification_config_error: startup.notification_config_error,
             notifications,
@@ -229,6 +235,10 @@ impl App {
                 identity,
                 monitored,
             } => self.set_device_monitored(&identity, monitored)?,
+            TrayAction::SetTrayIconStyle { style } => self.set_tray_icon_style(style)?,
+            TrayAction::SetPinnedDevice { identity } => {
+                self.set_pinned_device(identity.as_deref())?
+            }
             TrayAction::About => {
                 if let Err(error) = show_about_window() {
                     self.report_error("About window error", &error.to_string())?;
@@ -387,6 +397,84 @@ impl App {
         Ok(())
     }
 
+    fn set_tray_icon_style(&mut self, style: TrayIconStyle) -> Result<(), Box<dyn Error>> {
+        if style == self.tray_icon_style {
+            self.tray.set_tray_icon_style(style);
+            return Ok(());
+        }
+
+        let save_result = match self.monitor_state.as_mut() {
+            Some(state) => state.set_tray_icon_style(style),
+            None => Err(io::Error::new(
+                io::ErrorKind::NotConnected,
+                "local SQLite display state is unavailable",
+            )
+            .into()),
+        };
+        match save_result {
+            Ok(()) => {
+                self.tray_icon_style = style;
+                self.tray.set_tray_icon_style(style);
+                self.record_event(
+                    LogLevel::Info,
+                    &format!("Tray icon style set to {}", style.as_str()),
+                )?;
+                self.refresh_visible_devices()?;
+            }
+            Err(error) => {
+                self.tray.set_tray_icon_style(self.tray_icon_style);
+                self.report_error("Tray display state error", &error.to_string())?;
+            }
+        }
+        Ok(())
+    }
+
+    fn set_pinned_device(&mut self, identity: Option<&str>) -> Result<(), Box<dyn Error>> {
+        if identity == self.pinned_device.as_deref() {
+            self.tray
+                .set_pinned_device_checked(self.pinned_device.as_deref());
+            return Ok(());
+        }
+
+        let save_result = match self.monitor_state.as_mut() {
+            Some(state) => match identity {
+                Some(identity) => state.set_pinned_device(identity),
+                None => state.clear_pinned_device(),
+            },
+            None => Err(io::Error::new(
+                io::ErrorKind::NotConnected,
+                "local SQLite display state is unavailable",
+            )
+            .into()),
+        };
+        match save_result {
+            Ok(()) => {
+                self.pinned_device = identity.map(str::to_owned);
+                self.tray
+                    .set_pinned_device_checked(self.pinned_device.as_deref());
+                let message = match identity {
+                    Some(identity) => {
+                        let name = self
+                            .session
+                            .device_name(identity)
+                            .unwrap_or(identity)
+                            .to_owned();
+                        format!("Tray icon pinned to {name}")
+                    }
+                    None => "Tray icon shows the lowest battery".to_owned(),
+                };
+                self.record_event(LogLevel::Info, &message)?;
+                self.refresh_visible_devices()?;
+            }
+            Err(error) => {
+                self.tray
+                    .set_pinned_device_checked(self.pinned_device.as_deref());
+                self.report_error("Tray display state error", &error.to_string())?;
+            }
+        }
+        Ok(())
+    }
+
     fn reset_volty(&mut self) -> Result<(), Box<dyn Error>> {
         let configuration_file = config_path()
             .ok_or_else(|| io::Error::other("could not determine the user configuration folder"))?;
@@ -435,6 +523,8 @@ impl App {
             },
             None => BTreeMap::new(),
         };
+        self.tray_icon_style = TrayIconStyle::Battery;
+        self.pinned_device = None;
         (self.active_config, self.notification_config_error) = match AppConfig::load() {
             Ok(config) => (config, None),
             Err(error) => (AppConfig::default(), Some(error.to_string())),
@@ -451,6 +541,8 @@ impl App {
         self.config_reload_due = None;
         self.tray
             .set_battery_color_map(self.active_config.battery_color_map)?;
+        self.tray.set_tray_icon_style(TrayIconStyle::Battery);
+        self.tray.set_pinned_device_checked(None);
         let reset_status = self.notification_config_error.as_ref().map_or_else(
             || "Searching for supported devices".to_owned(),
             |error| format!("Configuration error: {error}"),
@@ -582,6 +674,7 @@ impl App {
             &mut self.tray,
             &self.session.latest_readings,
             &self.monitored_devices,
+            self.pinned_device.as_deref(),
             self.notification_config_error.as_deref(),
             &mut self.diagnostic_log,
             &mut self.file_logger,
@@ -632,6 +725,7 @@ impl App {
             update_tray_devices(
                 &mut self.tray,
                 &self.session.pending_readings,
+                self.pinned_device.as_deref(),
                 self.notification_config_error.as_deref(),
                 &mut self.diagnostic_log,
                 &mut self.file_logger,
@@ -655,6 +749,7 @@ impl App {
                 update_tray_devices(
                     &mut self.tray,
                     &self.session.pending_readings,
+                    self.pinned_device.as_deref(),
                     self.notification_config_error.as_deref(),
                     &mut self.diagnostic_log,
                     &mut self.file_logger,
@@ -725,6 +820,7 @@ impl App {
         apply_poll_result(
             &mut self.tray,
             &readings,
+            self.pinned_device.as_deref(),
             result,
             self.notification_config_error.as_deref(),
             &mut self.diagnostic_log,

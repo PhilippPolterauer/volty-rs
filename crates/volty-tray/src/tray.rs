@@ -8,8 +8,8 @@ mod icon;
 mod startup;
 
 use icon::{
-    battery_icon_at_size_with_color_map, unknown_battery_icon_at_size, validate_icon_size,
-    ICON_SIZE,
+    battery_icon_at_size_with_color_map, percentage_icon_at_size_with_color_map,
+    unknown_battery_icon_at_size, validate_icon_size, ICON_SIZE,
 };
 #[cfg(windows)]
 pub use startup::reset_startup_preferences;
@@ -23,10 +23,10 @@ use std::{
 
 use tray_icon::{
     menu::{CheckMenuItem, Menu, MenuEvent, MenuItem, PredefinedMenuItem, Submenu},
-    TrayIcon, TrayIconBuilder,
+    Icon, TrayIcon, TrayIconBuilder,
 };
 
-use crate::config::BatteryColorMap;
+use crate::{config::BatteryColorMap, state::TrayIconStyle};
 
 const MAX_STATUS_CHARS: usize = 80;
 const MAX_TOOLTIP_UTF16_UNITS: usize = 127;
@@ -42,6 +42,11 @@ enum MenuItemId {
     ResetVolty,
     MonitoredDevices,
     MonitoredDevice(u64),
+    TrayDisplay,
+    TrayIconStyleBattery,
+    TrayIconStylePercentage,
+    PinnedDeviceLowest,
+    PinnedDevice(u64),
     About,
     Quit,
 }
@@ -60,6 +65,11 @@ impl MenuItemId {
             Self::MonitoredDevice(sequence) => {
                 format!("volty.monitored-device.{sequence}")
             }
+            Self::TrayDisplay => "volty.tray-display".to_owned(),
+            Self::TrayIconStyleBattery => "volty.tray-icon-style.battery".to_owned(),
+            Self::TrayIconStylePercentage => "volty.tray-icon-style.percentage".to_owned(),
+            Self::PinnedDeviceLowest => "volty.pinned-device.lowest".to_owned(),
+            Self::PinnedDevice(sequence) => format!("volty.pinned-device.{sequence}"),
             Self::About => "volty.about".to_owned(),
             Self::Quit => "volty.quit".to_owned(),
         }
@@ -75,12 +85,21 @@ impl MenuItemId {
             "volty.start-on-boot" => Some(Self::StartOnBoot),
             "volty.reset" => Some(Self::ResetVolty),
             "volty.monitored-devices" => Some(Self::MonitoredDevices),
+            "volty.tray-display" => Some(Self::TrayDisplay),
+            "volty.tray-icon-style.battery" => Some(Self::TrayIconStyleBattery),
+            "volty.tray-icon-style.percentage" => Some(Self::TrayIconStylePercentage),
+            "volty.pinned-device.lowest" => Some(Self::PinnedDeviceLowest),
             "volty.about" => Some(Self::About),
             "volty.quit" => Some(Self::Quit),
             _ => id
                 .strip_prefix("volty.monitored-device.")
                 .and_then(|sequence| sequence.parse().ok())
-                .map(Self::MonitoredDevice),
+                .map(Self::MonitoredDevice)
+                .or_else(|| {
+                    id.strip_prefix("volty.pinned-device.")
+                        .and_then(|sequence| sequence.parse().ok())
+                        .map(Self::PinnedDevice)
+                }),
         }
     }
 }
@@ -98,6 +117,12 @@ struct MonitoredDeviceMenuItem {
     item: CheckMenuItem,
 }
 
+struct PinnedDeviceMenuItem {
+    menu_id: MenuItemId,
+    identity: String,
+    item: CheckMenuItem,
+}
+
 /// Actions that the application should handle after polling the controller.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TrayAction {
@@ -108,6 +133,8 @@ pub enum TrayAction {
     ToggleStartOnBoot,
     ResetVolty,
     SetDeviceMonitored { identity: String, monitored: bool },
+    SetTrayIconStyle { style: TrayIconStyle },
+    SetPinnedDevice { identity: Option<String> },
     About,
     Quit,
 }
@@ -141,6 +168,14 @@ pub struct TrayController {
     monitored_device_items: Vec<MonitoredDeviceMenuItem>,
     known_monitored_devices: Vec<DeviceMonitorEntry>,
     next_monitored_device_menu_id: u64,
+    tray_display_menu: Submenu,
+    battery_style_item: CheckMenuItem,
+    percentage_style_item: CheckMenuItem,
+    pinned_lowest_item: CheckMenuItem,
+    pinned_device_items: Vec<PinnedDeviceMenuItem>,
+    next_pinned_device_menu_id: u64,
+    pinned_device: Option<String>,
+    tray_icon_style: TrayIconStyle,
     start_on_boot_item: CheckMenuItem,
     actions_tx: Sender<TrayAction>,
     actions_rx: Receiver<TrayAction>,
@@ -149,7 +184,7 @@ pub struct TrayController {
     displayed_status: Option<String>,
     displayed_tooltip: Option<String>,
     displayed_device_statuses: Vec<String>,
-    displayed_icon: Option<(Option<u8>, u32, BatteryColorMap)>,
+    displayed_icon: Option<(Option<u8>, u32, BatteryColorMap, TrayIconStyle)>,
 }
 
 struct TrayMenu {
@@ -157,6 +192,10 @@ struct TrayMenu {
     status_item: MenuItem,
     monitored_devices_menu: Submenu,
     monitored_devices_empty_item: MenuItem,
+    tray_display_menu: Submenu,
+    battery_style_item: CheckMenuItem,
+    percentage_style_item: CheckMenuItem,
+    pinned_lowest_item: CheckMenuItem,
     start_on_boot_item: CheckMenuItem,
 }
 
@@ -169,6 +208,10 @@ struct TrayMenuItems {
     start_on_boot_item: CheckMenuItem,
     monitored_devices_menu: Submenu,
     monitored_devices_empty_item: MenuItem,
+    tray_display_menu: Submenu,
+    battery_style_item: CheckMenuItem,
+    percentage_style_item: CheckMenuItem,
+    pinned_lowest_item: CheckMenuItem,
     about_item: MenuItem,
     reset_item: MenuItem,
     quit_item: MenuItem,
@@ -221,6 +264,37 @@ fn create_tray_menu(start_on_boot: bool) -> Result<TrayMenu, TrayError> {
                 "could not add empty monitored-devices status: {error}"
             ))
         })?;
+    let battery_style_item = CheckMenuItem::with_id(
+        MenuItemId::TrayIconStyleBattery.as_id(),
+        "Battery",
+        true,
+        true,
+        None,
+    );
+    let percentage_style_item = CheckMenuItem::with_id(
+        MenuItemId::TrayIconStylePercentage.as_id(),
+        "Percentage",
+        true,
+        false,
+        None,
+    );
+    let pinned_lowest_item = CheckMenuItem::with_id(
+        MenuItemId::PinnedDeviceLowest.as_id(),
+        "Lowest battery (default)",
+        true,
+        true,
+        None,
+    );
+    let tray_display_menu = Submenu::with_id(MenuItemId::TrayDisplay.as_id(), "Tray Display", true);
+    for (item, description) in [
+        (&battery_style_item, "battery icon style"),
+        (&percentage_style_item, "percentage icon style"),
+        (&pinned_lowest_item, "lowest-battery pin"),
+    ] {
+        tray_display_menu
+            .append(item)
+            .map_err(|error| TrayError::new(format!("could not add {description}: {error}")))?;
+    }
     let items = TrayMenuItems {
         status_item,
         discover_item,
@@ -230,6 +304,10 @@ fn create_tray_menu(start_on_boot: bool) -> Result<TrayMenu, TrayError> {
         start_on_boot_item,
         monitored_devices_menu,
         monitored_devices_empty_item,
+        tray_display_menu,
+        battery_style_item,
+        percentage_style_item,
+        pinned_lowest_item,
         about_item: MenuItem::with_id(MenuItemId::About.as_id(), "About Volty", true, None),
         reset_item: MenuItem::with_id(MenuItemId::ResetVolty.as_id(), "Reset Volty...", true, None),
         quit_item: MenuItem::with_id(MenuItemId::Quit.as_id(), "Quit", true, None),
@@ -241,6 +319,10 @@ fn create_tray_menu(start_on_boot: bool) -> Result<TrayMenu, TrayError> {
         status_item: items.status_item,
         monitored_devices_menu: items.monitored_devices_menu,
         monitored_devices_empty_item: items.monitored_devices_empty_item,
+        tray_display_menu: items.tray_display_menu,
+        battery_style_item: items.battery_style_item,
+        percentage_style_item: items.percentage_style_item,
+        pinned_lowest_item: items.pinned_lowest_item,
         start_on_boot_item: items.start_on_boot_item,
     })
 }
@@ -254,6 +336,8 @@ fn append_tray_menu_items(menu: &Menu, items: &TrayMenuItems) -> Result<(), Tray
         .map_err(|error| {
             TrayError::new(format!("could not add monitored-devices menu: {error}"))
         })?;
+    menu.append(&items.tray_display_menu)
+        .map_err(|error| TrayError::new(format!("could not add tray-display menu: {error}")))?;
     menu.append(&PredefinedMenuItem::separator())
         .map_err(|error| TrayError::new(format!("could not add tray separator: {error}")))?;
     menu.append(&items.discover_item).map_err(|error| {
@@ -308,6 +392,14 @@ impl TrayController {
             monitored_device_items: Vec::new(),
             known_monitored_devices: Vec::new(),
             next_monitored_device_menu_id: 0,
+            tray_display_menu: tray_menu.tray_display_menu,
+            battery_style_item: tray_menu.battery_style_item,
+            percentage_style_item: tray_menu.percentage_style_item,
+            pinned_lowest_item: tray_menu.pinned_lowest_item,
+            pinned_device_items: Vec::new(),
+            next_pinned_device_menu_id: 0,
+            pinned_device: None,
+            tray_icon_style: TrayIconStyle::Battery,
             start_on_boot_item: tray_menu.start_on_boot_item,
             actions_tx,
             actions_rx,
@@ -409,7 +501,42 @@ impl TrayController {
                 self.append_monitored_device(device)?;
             }
         }
+        self.clear_pinned_device_items()?;
+        for device in &devices {
+            self.append_pinned_device(device)?;
+        }
+        self.apply_pinned_device_checks();
         self.known_monitored_devices = devices;
+        Ok(())
+    }
+
+    fn clear_pinned_device_items(&mut self) -> Result<(), TrayError> {
+        for entry in self.pinned_device_items.drain(..) {
+            self.tray_display_menu
+                .remove(&entry.item)
+                .map_err(|error| {
+                    TrayError::new(format!("could not clear pinned devices: {error}"))
+                })?;
+        }
+        Ok(())
+    }
+
+    fn append_pinned_device(&mut self, device: &DeviceMonitorEntry) -> Result<(), TrayError> {
+        let sequence = self.next_pinned_device_menu_id;
+        self.next_pinned_device_menu_id = sequence
+            .checked_add(1)
+            .ok_or_else(|| TrayError::new("pinned-device menu ID space exhausted"))?;
+        let menu_id = MenuItemId::PinnedDevice(sequence);
+        let checked = self.pinned_device.as_deref() == Some(device.identity.as_str());
+        let item = CheckMenuItem::with_id(menu_id.as_id(), &device.name, true, checked, None);
+        self.tray_display_menu
+            .append(&item)
+            .map_err(|error| TrayError::new(format!("could not add pinned device: {error}")))?;
+        self.pinned_device_items.push(PinnedDeviceMenuItem {
+            menu_id,
+            identity: device.identity.clone(),
+            item,
+        });
         Ok(())
     }
 
@@ -483,16 +610,14 @@ impl TrayController {
             self.replace_device_status_items(device_statuses)?;
             self.displayed_device_statuses = device_statuses.to_vec();
         }
-        let icon_key = (percentage, icon_size, self.battery_color_map);
+        let icon_key = (
+            percentage,
+            icon_size,
+            self.battery_color_map,
+            self.tray_icon_style,
+        );
         if self.displayed_icon != Some(icon_key) {
-            let icon = match percentage {
-                Some(percentage) => battery_icon_at_size_with_color_map(
-                    percentage,
-                    icon_size,
-                    self.battery_color_map,
-                )?,
-                None => unknown_battery_icon_at_size(icon_size)?,
-            };
+            let icon = self.render_icon(percentage, icon_size, self.battery_color_map)?;
             self.icon
                 .set_icon(Some(icon))
                 .map_err(|error| TrayError::new(format!("could not update tray icon: {error}")))?;
@@ -570,10 +695,24 @@ impl TrayController {
                     identity: entry.identity.clone(),
                     monitored: entry.item.is_checked(),
                 }),
+            MenuItemId::TrayIconStyleBattery => Some(TrayAction::SetTrayIconStyle {
+                style: TrayIconStyle::Battery,
+            }),
+            MenuItemId::TrayIconStylePercentage => Some(TrayAction::SetTrayIconStyle {
+                style: TrayIconStyle::Percentage,
+            }),
+            MenuItemId::PinnedDeviceLowest => Some(TrayAction::SetPinnedDevice { identity: None }),
+            MenuItemId::PinnedDevice(menu_id) => self
+                .pinned_device_items
+                .iter()
+                .find(|entry| entry.menu_id == MenuItemId::PinnedDevice(menu_id))
+                .map(|entry| TrayAction::SetPinnedDevice {
+                    identity: Some(entry.identity.clone()),
+                }),
             MenuItemId::About => Some(TrayAction::About),
             MenuItemId::ResetVolty => Some(TrayAction::ResetVolty),
             MenuItemId::Quit => Some(TrayAction::Quit),
-            MenuItemId::Status | MenuItemId::MonitoredDevices => None,
+            MenuItemId::Status | MenuItemId::MonitoredDevices | MenuItemId::TrayDisplay => None,
         }
     }
     /// Gets the next app action, if one has been queued.
@@ -595,6 +734,32 @@ impl TrayController {
         }
     }
 
+    /// Applies a persisted tray icon style and clears the sibling check item:
+    /// the native menu has no radio groups.
+    pub fn set_tray_icon_style(&mut self, style: TrayIconStyle) {
+        self.tray_icon_style = style;
+        self.battery_style_item
+            .set_checked(style == TrayIconStyle::Battery);
+        self.percentage_style_item
+            .set_checked(style == TrayIconStyle::Percentage);
+    }
+
+    /// Applies a persisted pinned device and clears the sibling check items.
+    pub fn set_pinned_device_checked(&mut self, identity: Option<&str>) {
+        self.pinned_device = identity.map(str::to_owned);
+        self.apply_pinned_device_checks();
+    }
+
+    fn apply_pinned_device_checks(&self) {
+        self.pinned_lowest_item
+            .set_checked(self.pinned_device.is_none());
+        for entry in &self.pinned_device_items {
+            entry
+                .item
+                .set_checked(self.pinned_device.as_deref() == Some(entry.identity.as_str()));
+        }
+    }
+
     pub fn set_battery_color_map(
         &mut self,
         battery_color_map: BatteryColorMap,
@@ -603,15 +768,36 @@ impl TrayController {
             return Ok(());
         }
         if let Some(percentage) = self.percentage {
-            let icon =
-                battery_icon_at_size_with_color_map(percentage, ICON_SIZE, battery_color_map)?;
+            let icon = self.render_icon(Some(percentage), ICON_SIZE, battery_color_map)?;
             self.icon
                 .set_icon(Some(icon))
                 .map_err(|error| TrayError::new(format!("could not update tray icon: {error}")))?;
-            self.displayed_icon = Some((Some(percentage), ICON_SIZE, battery_color_map));
+            self.displayed_icon = Some((
+                Some(percentage),
+                ICON_SIZE,
+                battery_color_map,
+                self.tray_icon_style,
+            ));
         }
         self.battery_color_map = battery_color_map;
         Ok(())
+    }
+
+    fn render_icon(
+        &self,
+        percentage: Option<u8>,
+        icon_size: u32,
+        battery_color_map: BatteryColorMap,
+    ) -> Result<Icon, TrayError> {
+        match percentage {
+            Some(percentage) if self.tray_icon_style == TrayIconStyle::Percentage => {
+                percentage_icon_at_size_with_color_map(percentage, icon_size, battery_color_map)
+            }
+            Some(percentage) => {
+                battery_icon_at_size_with_color_map(percentage, icon_size, battery_color_map)
+            }
+            None => unknown_battery_icon_at_size(icon_size),
+        }
     }
     fn update_percentage(
         &mut self,
@@ -706,6 +892,11 @@ mod tests {
             MenuItemId::ResetVolty,
             MenuItemId::MonitoredDevices,
             MenuItemId::MonitoredDevice(42),
+            MenuItemId::TrayDisplay,
+            MenuItemId::TrayIconStyleBattery,
+            MenuItemId::TrayIconStylePercentage,
+            MenuItemId::PinnedDeviceLowest,
+            MenuItemId::PinnedDevice(7),
             MenuItemId::About,
             MenuItemId::Quit,
         ] {
@@ -716,6 +907,12 @@ mod tests {
             None
         );
         assert_eq!(MenuItemId::parse("volty.monitored-device."), None);
+        assert_eq!(MenuItemId::parse("volty.pinned-device.not-a-number"), None);
+        assert_eq!(MenuItemId::parse("volty.pinned-device."), None);
+        assert_eq!(
+            MenuItemId::parse("volty.pinned-device.lowest"),
+            Some(MenuItemId::PinnedDeviceLowest)
+        );
         assert_eq!(
             MenuItemId::parse(&format!("volty.monitored-device.{}", u64::MAX)),
             Some(MenuItemId::MonitoredDevice(u64::MAX))
