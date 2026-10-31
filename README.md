@@ -98,6 +98,7 @@ RGB; device support remains best-effort and hardware validation is limited.
 * **Battery Runtime Estimate:** Estimates time remaining from the recent discharge rate, using a configurable history window (10 minutes by default).
 * **Experimental Bluetooth integration:** Opt-in via the `bluetooth` Cargo feature and disabled in default builds. Validated with one Bluetooth Classic headset through the Windows PnP battery property; only devices Windows reports as connected are read, so paired-but-offline devices keep no stale percentage. BLE GATT support is implemented but not yet hardware-validated.
 * **Configurable Color Coding:** The default tray map is green above 30%, yellow from 16–30%, and red at 15% or below. Thresholds and colors can be overridden in the TOML configuration.
+* **Tray Display Modes:** Choose the battery glyph or a numeric percentage drawn from a built-in 3×5 pixel font, and optionally pin the icon to one discovered device. Both choices persist in local SQLite state, not `config.toml`.
 * **Threshold Alerts:** Native Windows toast notifications at configurable battery thresholds (20%, 10%, and 5% by default), each fired once per discharge cycle, with an optional repeat cooldown after the lowest threshold.
 * **One-Click Diagnostics:** A native Diagnose window shows recent app logs, backend status, and HID details, with buttons to copy the log or open a GitHub issue draft, and saves a machine-readable `.volty.jsonl` hardware capture (including Bluetooth property and GATT evidence when built with the `bluetooth` feature) in addition to the text report for local review.
 * **Retry After Read Errors:** Polling resumes after errors using the configurable retry interval.
@@ -125,7 +126,8 @@ Boot** in the tray menu. If enabled, Windows starts Volty from the executable's
 current location, so keep the file there. Volty monitors supported HID
 devices while running. Bluetooth is disabled in the default build and remains
 opt-in because hardware validation is limited. Its tray icon shows the lowest
-reported battery level; hover over it for one compact line per device with its
+reported battery level unless you pin a specific device or switch to the
+numeric icon style; hover over it for one compact line per device with its
 name, battery percentage, and an estimated time remaining when available.
 
 ![Volty tray icon showing a monitored device's battery and charging status](./docs/tray.png)
@@ -137,12 +139,42 @@ Volty's configuration file.
 ![Volty low-battery notification](./docs/notification.png)
 
 Right-click the tray icon to discover devices and refresh readings
-(**Discover Devices Now**), choose **Monitored Devices**, open configuration or
-logs, view diagnostics, enable **Start on Boot**, see **About Volty**, reset
-Volty, or quit the app. **Start on Boot** toggles startup for the current
-Windows user and does not require administrator privileges.
+(**Discover Devices Now**), choose **Monitored Devices**, switch the icon or pin
+a device under **Tray Display**, open configuration or logs, view diagnostics,
+enable **Start on Boot**, see **About Volty**, reset Volty, or quit the app.
+**Start on Boot** toggles startup for the current Windows user and does not
+require administrator privileges.
 
 ![Volty tray menu](./docs/context.png)
+
+### Tray display modes
+
+**Tray Display** in the tray menu controls what the icon shows:
+
+* **Battery** (default) draws the battery glyph that fills to the percentage.
+* **Percentage** draws the number itself. The digits come from a built-in 3×5
+  bitmap glyph table compiled into the application; no font file or extra
+  dependency is used. The icon shows the number only, without a percent sign,
+  because a mark would crowd the third digit. At 16 px, `100` uses 11 of the
+  16 horizontal pixels, so three-digit values are tight but centered; a 32 px
+  icon uses two-by-two glyph pixels. Digits use the active
+  `[battery_color_map]` color for the percentage, and an unknown level still
+  shows the neutral question-mark battery icon.
+
+The same submenu pins the icon to one device. **Lowest battery (default)**
+restores the original behavior of showing the lowest monitored percentage and
+is selected when no device is pinned. Choosing a discovered device makes its
+percentage drive the icon, the first tooltip line, and the tray status text;
+other monitored devices remain listed at the top of the menu. If the pinned
+device is not currently present, Volty falls back to the lowest monitored
+percentage and reports **Pinned device unavailable** in the status and tooltip.
+The pin is not cleared automatically, so it applies again when the device
+returns. Unchecking a device in **Monitored Devices** while it is pinned has
+the same fallback behavior.
+
+Both choices are stored in the local SQLite state database at
+`%LOCALAPPDATA%\Volty\device-state.sqlite3`, not in `config.toml`. **Reset
+Volty** deletes that database and restores the battery icon with no pin.
 
 Configuration and logs are stored in `%APPDATA%\Volty`. Choose
 **Open Configuration** or **Open Log File** in the tray menu to access them.
@@ -210,7 +242,7 @@ volty-rs/
 │       │   ├── provider.rs    # Battery providers the tray polls (HID, optional Bluetooth)
 │       │   ├── provider/      # HID provider (stable identity, slot probing) and device-name cache
 │       │   ├── config.rs      # Per-user TOML settings
-│       │   ├── state.rs       # Local SQLite device and notification runtime state
+│       │   ├── state.rs       # Local SQLite device, notification and tray display state
 │       │   ├── tray.rs        # Tray controller and context menu
 │       │   ├── tray/          # Icon rendering and start-on-boot registry handling
 │       │   ├── about.rs       # About window
@@ -328,7 +360,9 @@ cargo run --release --package volty-tray
 The first battery query is made at startup; subsequent polling occurs every two
 minutes by default. Volty runs a single tray-app instance. The tray lists all
 monitored devices with readable battery status; its icon reflects the lowest
-reported percentage. Use **Monitored Devices** in the tray menu to uncheck
+reported percentage unless you pin a device or switch to the numeric icon style
+(see [Tray display modes](#tray-display-modes)). Use **Monitored Devices** in
+the tray menu to uncheck
 devices you do not want tracked; unchecked devices are omitted from the tray
 status, icon percentage, and low-battery notifications. Per-device choices are
 saved in the local SQLite state database at

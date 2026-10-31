@@ -9,9 +9,11 @@ use std::{
     io,
     time::Instant,
 };
+#[allow(clippy::too_many_arguments)]
 pub(super) fn apply_poll_result(
     tray: &mut TrayController,
     readings: &[DeviceReading],
+    pinned_device: Option<&str>,
     result: PollResult,
     notification_config_error: Option<&str>,
     diagnostic_log: &mut VecDeque<String>,
@@ -52,31 +54,78 @@ pub(super) fn apply_poll_result(
     update_tray_devices(
         tray,
         readings,
+        pinned_device,
         notification_config_error,
         diagnostic_log,
         file_logger,
         started,
     )
 }
+
+/// The reading that drives the tray icon and whether a configured pin was
+/// missing from the latest readings.
+pub(super) struct TrayIconDriver<'a> {
+    pub(super) reading: Option<&'a DeviceReading>,
+    pub(super) pinned_device_unavailable: bool,
+}
+
+/// Chooses the reading behind the tray icon: the pinned device when it is
+/// present, otherwise the lowest monitored percentage. A pin is never cleared,
+/// so a temporarily absent device is reported instead of silently ignored.
+pub(super) fn tray_icon_driver<'a>(
+    readings: &'a [DeviceReading],
+    pinned_device: Option<&str>,
+) -> TrayIconDriver<'a> {
+    if let Some(reading) = pinned_device.and_then(|identity| {
+        readings
+            .iter()
+            .find(|reading| reading.id.as_str() == identity)
+    }) {
+        return TrayIconDriver {
+            reading: Some(reading),
+            pinned_device_unavailable: false,
+        };
+    }
+
+    let lowest = readings
+        .iter()
+        .filter_map(|reading| {
+            reading
+                .battery
+                .level_percent
+                .map(|percentage| (percentage, reading))
+        })
+        .min_by_key(|(percentage, _)| *percentage)
+        .map(|(_, reading)| reading);
+    TrayIconDriver {
+        reading: lowest,
+        pinned_device_unavailable: pinned_device.is_some(),
+    }
+}
+
 pub(super) fn update_tray_devices(
     tray: &mut TrayController,
     readings: &[DeviceReading],
+    pinned_device: Option<&str>,
     notification_config_error: Option<&str>,
     diagnostic_log: &mut VecDeque<String>,
     file_logger: &mut FileLogger,
     started: Instant,
 ) -> io::Result<()> {
+    let driver = tray_icon_driver(readings, pinned_device);
+    let icon_percentage = driver
+        .reading
+        .and_then(|reading| reading.battery.level_percent);
+    let pinned_index = pinned_device.and_then(|identity| {
+        readings
+            .iter()
+            .position(|reading| reading.id.as_str() == identity)
+    });
     let mut device_statuses = Vec::with_capacity(readings.len());
     let mut tooltip_statuses = Vec::with_capacity(readings.len());
-    let mut lowest_percentage: Option<u8> = None;
     for reading in readings {
         let device_name = reading.label.display();
         let percentage = reading.battery.level_percent;
-        lowest_percentage = match (lowest_percentage, percentage) {
-            (Some(current), Some(value)) => Some(current.min(value)),
-            (None, Some(value)) => Some(value),
-            (current, None) => current,
-        };
         let mut status = battery_status_label(&reading.battery);
         if let Some(eta_label) = battery_eta_label(reading) {
             status.push_str("; ");
@@ -97,17 +146,31 @@ pub(super) fn update_tray_devices(
     if let Some(error) = notification_config_error {
         device_statuses.push(format!("Notification configuration error: {error}"));
     }
-    let mut summary = format!(
-        "{device_count} device{} monitored",
-        if device_count == 1 { "" } else { "s" }
-    );
+    let mut summary = if let Some(index) = pinned_index {
+        format!("Pinned {}", device_statuses[index])
+    } else if driver.pinned_device_unavailable {
+        format!(
+            "Pinned device unavailable · {device_count} device{} monitored",
+            if device_count == 1 { "" } else { "s" }
+        )
+    } else {
+        format!(
+            "{device_count} device{} monitored",
+            if device_count == 1 { "" } else { "s" }
+        )
+    };
     append_config_error(&mut summary, notification_config_error);
+    let tooltip_statuses = prioritized_tooltip_statuses(
+        tooltip_statuses,
+        pinned_index,
+        driver.pinned_device_unavailable,
+    );
 
     if let Err(error) = tray.update_devices(
         &summary,
         &device_statuses,
         &tooltip_statuses,
-        lowest_percentage,
+        icon_percentage,
     ) {
         record_event(
             diagnostic_log,
@@ -118,6 +181,23 @@ pub(super) fn update_tray_devices(
         )?;
     }
     Ok(())
+}
+
+/// Puts the pinned device first in the tooltip and announces a missing pin.
+fn prioritized_tooltip_statuses(
+    mut statuses: Vec<String>,
+    pinned_index: Option<usize>,
+    pinned_device_unavailable: bool,
+) -> Vec<String> {
+    if pinned_device_unavailable {
+        statuses.insert(0, "Pinned device unavailable".to_owned());
+    } else if let Some(index) = pinned_index {
+        if let Some(status) = statuses.get(index).cloned() {
+            statuses.remove(index);
+            statuses.insert(0, status);
+        }
+    }
+    statuses
 }
 
 fn compact_device_status(reading: &DeviceReading) -> String {
@@ -158,10 +238,12 @@ pub(super) fn update_monitored_device_menu(
     }
     Ok(())
 }
+#[allow(clippy::too_many_arguments)]
 pub(super) fn update_visible_devices(
     tray: &mut TrayController,
     latest_readings: &HashMap<DeviceId, DeviceReading>,
     monitored_devices: &BTreeMap<String, bool>,
+    pinned_device: Option<&str>,
     notification_config_error: Option<&str>,
     diagnostic_log: &mut VecDeque<String>,
     file_logger: &mut FileLogger,
@@ -171,6 +253,7 @@ pub(super) fn update_visible_devices(
     update_tray_devices(
         tray,
         &readings,
+        pinned_device,
         notification_config_error,
         diagnostic_log,
         file_logger,
@@ -301,6 +384,123 @@ mod tests {
         assert_eq!(
             compact_device_status(&reading),
             "Test device (slot 1): 100%"
+        );
+    }
+
+    fn reading_with(id: &str, percentage: Option<u8>) -> DeviceReading {
+        let mut reading = test_reading();
+        reading.id = DeviceId::new(id);
+        reading.battery.level_percent = percentage;
+        reading
+    }
+
+    #[test]
+    fn pinned_present_device_drives_the_icon_even_when_another_battery_is_lower() {
+        let readings = vec![
+            reading_with("hid:a#1", Some(80)),
+            reading_with("hid:b#1", Some(20)),
+        ];
+
+        let driver = tray_icon_driver(&readings, Some("hid:a#1"));
+
+        assert_eq!(
+            driver.reading.map(|reading| reading.id.as_str()),
+            Some("hid:a#1")
+        );
+        assert!(!driver.pinned_device_unavailable);
+    }
+
+    #[test]
+    fn missing_pinned_device_falls_back_to_the_lowest_monitored_percentage() {
+        let readings = vec![
+            reading_with("hid:a#1", Some(80)),
+            reading_with("hid:b#1", Some(20)),
+        ];
+
+        let driver = tray_icon_driver(&readings, Some("hid:gone#1"));
+
+        assert_eq!(
+            driver.reading.map(|reading| reading.id.as_str()),
+            Some("hid:b#1")
+        );
+        assert!(driver.pinned_device_unavailable);
+    }
+
+    #[test]
+    fn no_pin_uses_the_lowest_of_multiple_devices() {
+        let readings = vec![
+            reading_with("hid:a#1", Some(55)),
+            reading_with("hid:b#1", Some(15)),
+            reading_with("hid:c#1", Some(40)),
+        ];
+
+        let driver = tray_icon_driver(&readings, None);
+
+        assert_eq!(
+            driver.reading.map(|reading| reading.id.as_str()),
+            Some("hid:b#1")
+        );
+        assert!(!driver.pinned_device_unavailable);
+    }
+
+    #[test]
+    fn unmonitored_pinned_device_is_reported_unavailable() {
+        let readings = vec![reading_with("hid:monitored#1", Some(70))];
+
+        let driver = tray_icon_driver(&readings, Some("hid:unmonitored#1"));
+
+        assert_eq!(
+            driver.reading.map(|reading| reading.id.as_str()),
+            Some("hid:monitored#1")
+        );
+        assert!(driver.pinned_device_unavailable);
+    }
+
+    #[test]
+    fn pinned_device_without_a_percentage_still_drives_the_icon() {
+        let readings = vec![
+            reading_with("hid:a#1", None),
+            reading_with("hid:b#1", Some(50)),
+        ];
+
+        let driver = tray_icon_driver(&readings, Some("hid:a#1"));
+
+        assert_eq!(
+            driver.reading.map(|reading| reading.id.as_str()),
+            Some("hid:a#1")
+        );
+        assert_eq!(
+            driver
+                .reading
+                .and_then(|reading| reading.battery.level_percent),
+            None
+        );
+    }
+
+    #[test]
+    fn tooltip_lists_the_pinned_device_first_and_announces_a_missing_pin() {
+        let statuses = vec![
+            "Mouse A: 80%".to_owned(),
+            "Mouse B: 20%".to_owned(),
+            "Mouse C: 40%".to_owned(),
+        ];
+
+        assert_eq!(
+            prioritized_tooltip_statuses(statuses.clone(), Some(1), false),
+            vec![
+                "Mouse B: 20%".to_owned(),
+                "Mouse A: 80%".to_owned(),
+                "Mouse C: 40%".to_owned(),
+            ]
+        );
+        assert_eq!(
+            prioritized_tooltip_statuses(statuses, None, true),
+            vec![
+                "Pinned device unavailable".to_owned(),
+                "Mouse A: 80%".to_owned(),
+                "Mouse B: 20%".to_owned(),
+                "Mouse C: 40%".to_owned(),
+            ]
         );
     }
 }

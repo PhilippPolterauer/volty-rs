@@ -2,7 +2,7 @@ use crate::{
     config::{
         config_path, load_legacy_monitored_devices, remove_legacy_monitored_devices, AppConfig,
     },
-    state::DeviceState,
+    state::{DeviceState, TrayDisplaySettings},
     tray::{set_start_on_boot_enabled, start_on_boot_enabled},
 };
 use notify::{Event, RecommendedWatcher, RecursiveMode, Watcher};
@@ -17,6 +17,7 @@ use std::{
 pub(super) struct StartupState {
     pub(super) monitor_state: Option<DeviceState>,
     pub(super) monitored_devices: BTreeMap<String, bool>,
+    pub(super) tray_display: TrayDisplaySettings,
     pub(super) active_config: AppConfig,
     pub(super) notification_config_error: Option<String>,
     pub(super) warnings: Vec<String>,
@@ -71,6 +72,18 @@ pub(super) fn load_startup_state() -> StartupState {
         },
         None => legacy_monitored_devices,
     };
+    let tray_display = match monitor_state.as_ref() {
+        Some(state) => match state.tray_display() {
+            Ok(settings) => settings,
+            Err(error) => {
+                warnings.push(format!(
+                    "Could not load tray display settings; using defaults: {error}"
+                ));
+                TrayDisplaySettings::default()
+            }
+        },
+        None => TrayDisplaySettings::default(),
+    };
     let (active_config, notification_config_error) = match AppConfig::load() {
         Ok(config) => (config, None),
         Err(error) => (AppConfig::default(), Some(error.to_string())),
@@ -79,6 +92,7 @@ pub(super) fn load_startup_state() -> StartupState {
     StartupState {
         monitor_state,
         monitored_devices,
+        tray_display,
         active_config,
         notification_config_error,
         warnings,
