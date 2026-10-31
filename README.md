@@ -98,7 +98,7 @@ RGB; device support remains best-effort and hardware validation is limited.
 * **Battery Runtime Estimate:** Estimates time remaining from the recent discharge rate, using a configurable history window (10 minutes by default).
 * **Experimental Bluetooth integration:** Opt-in via the `bluetooth` Cargo feature and disabled in default builds. Validated with one Bluetooth Classic headset through the Windows PnP battery property; only devices Windows reports as connected are read, so paired-but-offline devices keep no stale percentage. BLE GATT support is implemented but not yet hardware-validated.
 * **Configurable Color Coding:** The default tray map is green above 30%, yellow from 16–30%, and red at 15% or below. Thresholds and colors can be overridden in the TOML configuration.
-* **Threshold Alerts:** One-time native Windows toast notification per discharge cycle when battery hits warning thresholds.
+* **Threshold Alerts:** Native Windows toast notifications at configurable battery thresholds (20%, 10%, and 5% by default), each fired once per discharge cycle, with an optional repeat cooldown after the lowest threshold.
 * **One-Click Diagnostics:** A native Diagnose window shows recent app logs, backend status, and HID details, with buttons to copy the log or open a GitHub issue draft, and saves a machine-readable `.volty.jsonl` hardware capture (including Bluetooth property and GATT evidence when built with the `bluetooth` feature) in addition to the text report for local review.
 * **Retry After Read Errors:** Polling resumes after errors using the configurable retry interval.
 * **Per-Device Control:** Choose which discovered devices are monitored from the tray's **Monitored Devices** submenu; the choice is persisted locally.
@@ -131,7 +131,8 @@ name, battery percentage, and an estimated time remaining when available.
 ![Volty tray icon showing a monitored device's battery and charging status](./docs/tray.png)
 
 Low-battery alerts appear as Windows notifications. They are enabled by
-default and can be configured or disabled in Volty's configuration file.
+default, fire at 20%, 10%, and 5%, and can be configured or disabled in
+Volty's configuration file.
 
 ![Volty low-battery notification](./docs/notification.png)
 
@@ -336,17 +337,20 @@ SQLite on startup and removed after a successful migration. The menu also lets
 you discover devices, open configuration, enable startup, or quit. **About Volty** opens
 a small native window with the app version and a button to visit the project on
 GitHub.
-The database also remembers which devices have already received a low-battery
-alert in their current discharge cycle, preventing repeat alerts after a
-restart; a charging or full reading clears that runtime state.
+The database also remembers which low-battery thresholds have already fired
+for each device in its current discharge cycle, preventing repeat alerts after
+a restart; a charging or full reading clears that runtime state.
 
-Low-battery alerts default to 20% and fire once per discharge cycle. Select
-**Open Configuration** in the tray menu to create or open
+Low-battery alerts default to 20%, 10%, and 5%. Each threshold fires once per
+discharge cycle, and after the lowest threshold fires the alert may repeat once
+per cooldown while the battery stays at or below it. Select **Open
+Configuration** in the tray menu to create or open
 `%APPDATA%\Volty\config.toml` in your default editor (Notepad is used if no
 editor is associated with `.toml` files). Supported settings are:
 
 ```toml
-low_battery_threshold = 20 # 1-100 percent
+low_battery_thresholds = [20, 10, 5] # 1-100 percent each; order and duplicates are normalized
+low_battery_cooldown_minutes = 120 # repeat interval after the lowest threshold; 0 disables repeats
 poll_interval_seconds = 120 # 10-3600 seconds after a successful reading
 retry_interval_seconds = 15 # 5-300 seconds after an error
 battery_eta_window_minutes = 10 # 1-180 minutes of discharge history
@@ -363,6 +367,13 @@ log_level = "info" # error, warn, info, debug, or trace
 # yellow = "#ebbe23"
 # green = "#2daa4b"
 ```
+
+`low_battery_threshold` from older configs has been replaced by
+`low_battery_thresholds`. A config that still contains the old key is rejected
+with a clear error while the previous valid configuration stays active; replace
+the key with a list such as `[20, 10, 5]`. Thresholds are validated to 1-100,
+deduplicated, and sorted from highest to lowest. A cooldown of `0` disables
+repeats while still keeping one alert per threshold and discharge cycle.
 
 Settings are stored per-user and do not require administrator privileges.
 Volty watches the file for changes, and **Discover Devices Now** also reloads it.

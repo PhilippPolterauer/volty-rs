@@ -1,12 +1,17 @@
 //! Native low-battery notification policy.
 //!
 //! Feed each battery sample to [`NotificationEngine::update`] and surface
-//! returned errors in the application's log or UI. The threshold is read from
-//! a per-user TOML config file (or can be supplied directly by the app).
+//! returned errors in the application's log or UI. Thresholds are read from a
+//! per-user TOML config file (or can be supplied directly by the app).
 
-use std::{error::Error, fmt};
+use std::{
+    collections::BTreeSet,
+    error::Error,
+    fmt,
+    time::{Duration, Instant},
+};
 
-use crate::config::AppConfig;
+use crate::config::{normalize_low_battery_thresholds, AppConfig};
 
 /// Battery data needed by the low-battery notification policy.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -21,15 +26,15 @@ pub struct BatterySample {
 pub enum NotificationOutcome {
     /// Notifications are disabled in the active configuration.
     NotificationsDisabled,
-    /// The battery percentage is above the configured threshold.
+    /// The battery percentage is above every configured threshold.
     AboveThreshold,
-    /// A notification was already sent during this discharge cycle.
+    /// Every reached threshold was already notified and no repeat is due.
     AlreadyNotified,
     /// No notification was due for this sample.
     Unchanged,
     /// Charging or a full battery reset a previously consumed cycle.
     CycleReset,
-    /// The low-battery notification was delivered.
+    /// A low-battery notification was delivered.
     Notified,
 }
 
@@ -51,68 +56,104 @@ impl fmt::Display for NotificationError {
 
 impl Error for NotificationError {}
 
-/// Tracks one alert per discharge cycle, firing at or below the configured
-/// threshold. The default threshold is 20 percent.
+/// Tracks one alert per configured threshold in each discharge cycle and
+/// optionally repeats the lowest alert on a cooldown.
 #[derive(Debug)]
 pub struct NotificationEngine {
-    notified_this_discharge: bool,
-    threshold_percent: u8,
+    thresholds: Vec<u8>,
+    notified_thresholds: BTreeSet<u8>,
     notifications_enabled: bool,
+    cooldown: Duration,
+    last_repeat: Option<Instant>,
 }
 
 impl NotificationEngine {
     /// Creates an engine from loaded or otherwise app-provided settings.
-    pub fn from_config(config: AppConfig) -> Result<Self, NotificationError> {
-        validate_threshold(config.low_battery_threshold)?;
+    pub fn from_config(config: &AppConfig) -> Result<Self, NotificationError> {
         Ok(Self {
-            notified_this_discharge: false,
-            threshold_percent: config.low_battery_threshold,
+            thresholds: configured_thresholds(config)?,
+            notified_thresholds: BTreeSet::new(),
             notifications_enabled: config.notifications_enabled,
+            cooldown: Duration::from_secs(config.low_battery_cooldown_minutes.saturating_mul(60)),
+            last_repeat: None,
         })
     }
 
-    pub(crate) fn restore_discharge_notification(&mut self, notified: bool) {
-        self.notified_this_discharge = notified;
+    /// Restores the thresholds already alerted in the current discharge cycle.
+    /// A restored lowest threshold restarts the cooldown from now so a restart
+    /// cannot immediately repeat an alert.
+    pub(crate) fn restore_notified_thresholds(&mut self, notified: impl IntoIterator<Item = u8>) {
+        self.notified_thresholds = notified
+            .into_iter()
+            .filter(|threshold| self.thresholds.contains(threshold))
+            .collect();
+        self.last_repeat = self
+            .thresholds
+            .last()
+            .filter(|lowest| self.notified_thresholds.contains(lowest))
+            .map(|_| Instant::now());
     }
 
-    /// Returns the active alert threshold.
+    pub(crate) fn notified_thresholds(&self) -> BTreeSet<u8> {
+        self.notified_thresholds.clone()
+    }
+
+    /// Returns the active alert thresholds, highest first.
     #[cfg(test)]
-    pub fn threshold_percent(&self) -> u8 {
-        self.threshold_percent
+    pub fn thresholds(&self) -> &[u8] {
+        &self.thresholds
     }
 
-    /// Applies a validated configuration without resetting the current
-    /// discharge alert guard.
-    pub fn set_config(&mut self, config: AppConfig) -> Result<(), NotificationError> {
-        validate_threshold(config.low_battery_threshold)?;
-        self.threshold_percent = config.low_battery_threshold;
+    /// Applies a validated configuration without resetting thresholds that are
+    /// still configured and already alerted in this discharge cycle.
+    pub fn set_config(&mut self, config: &AppConfig) -> Result<(), NotificationError> {
+        let thresholds = configured_thresholds(config)?;
+        self.notified_thresholds
+            .retain(|threshold| thresholds.contains(threshold));
+        self.thresholds = thresholds;
         self.notifications_enabled = config.notifications_enabled;
+        self.cooldown = Duration::from_secs(config.low_battery_cooldown_minutes.saturating_mul(60));
+        if !self
+            .thresholds
+            .last()
+            .is_some_and(|lowest| self.notified_thresholds.contains(lowest))
+        {
+            self.last_repeat = None;
+        }
         Ok(())
     }
 
     /// Processes one battery sample and attempts a native toast when due.
     ///
-    /// A sample that is charging or full resets the one-shot guard. The guard
-    /// is set before dispatch, making failures visible to the caller without
-    /// repeatedly attempting the same toast on every polling iteration.
+    /// A sample that is charging or full resets every notified threshold. The
+    /// reached thresholds are marked before dispatch, making failures visible
+    /// to the caller without repeatedly attempting the same toast on every
+    /// polling iteration.
     pub fn update(
         &mut self,
         device_name: &str,
         sample: BatterySample,
     ) -> Result<NotificationOutcome, NotificationError> {
-        self.update_with(device_name, sample, show_low_battery_notification)
+        self.update_with(
+            device_name,
+            sample,
+            Instant::now(),
+            show_low_battery_notification,
+        )
     }
 
     fn update_with(
         &mut self,
         device_name: &str,
         sample: BatterySample,
+        now: Instant,
         dispatch: impl FnOnce(&str, u8) -> Result<(), NotificationError>,
     ) -> Result<NotificationOutcome, NotificationError> {
         if sample.charging || sample.full || sample.percentage >= 100 {
-            let was_notified = self.notified_this_discharge;
-            self.notified_this_discharge = false;
-            return Ok(if was_notified {
+            let had_cycle = !self.notified_thresholds.is_empty() || self.last_repeat.is_some();
+            self.notified_thresholds.clear();
+            self.last_repeat = None;
+            return Ok(if had_cycle {
                 NotificationOutcome::CycleReset
             } else {
                 NotificationOutcome::Unchanged
@@ -123,39 +164,55 @@ impl NotificationEngine {
             return Ok(NotificationOutcome::NotificationsDisabled);
         }
 
-        if sample.percentage > self.threshold_percent {
+        if sample.percentage > self.thresholds[0] {
             return Ok(NotificationOutcome::AboveThreshold);
         }
 
-        if self.notified_this_discharge {
-            return Ok(NotificationOutcome::AlreadyNotified);
+        let reached: Vec<u8> = self
+            .thresholds
+            .iter()
+            .copied()
+            .filter(|threshold| {
+                sample.percentage <= *threshold && !self.notified_thresholds.contains(threshold)
+            })
+            .collect();
+        if !reached.is_empty() {
+            // A single toast covers a jump past several thresholds; mark them
+            // all so later polls cannot deliver stale higher-threshold alerts.
+            self.notified_thresholds.extend(reached);
+            if self
+                .thresholds
+                .last()
+                .is_some_and(|lowest| self.notified_thresholds.contains(lowest))
+            {
+                self.last_repeat = Some(now);
+            }
+            dispatch(device_name, sample.percentage)?;
+            return Ok(NotificationOutcome::Notified);
         }
 
-        if !self.consume_discharge_alert(sample.percentage) {
-            return Ok(NotificationOutcome::AlreadyNotified);
+        let lowest = *self.thresholds.last().expect("thresholds are not empty");
+        if sample.percentage <= lowest
+            && self.notified_thresholds.contains(&lowest)
+            && !self.cooldown.is_zero()
+        {
+            let repeat_due = self
+                .last_repeat
+                .is_none_or(|last| now.saturating_duration_since(last) >= self.cooldown);
+            if repeat_due {
+                self.last_repeat = Some(now);
+                dispatch(device_name, sample.percentage)?;
+                return Ok(NotificationOutcome::Notified);
+            }
         }
 
-        dispatch(device_name, sample.percentage)?;
-        Ok(NotificationOutcome::Notified)
-    }
-
-    fn consume_discharge_alert(&mut self, percentage: u8) -> bool {
-        if percentage > self.threshold_percent || self.notified_this_discharge {
-            return false;
-        }
-        self.notified_this_discharge = true;
-        true
+        Ok(NotificationOutcome::AlreadyNotified)
     }
 }
 
-fn validate_threshold(threshold_percent: u8) -> Result<(), NotificationError> {
-    if (1..=100).contains(&threshold_percent) {
-        Ok(())
-    } else {
-        Err(NotificationError::new(
-            "low-battery threshold must be between 1 and 100 percent",
-        ))
-    }
+fn configured_thresholds(config: &AppConfig) -> Result<Vec<u8>, NotificationError> {
+    normalize_low_battery_thresholds(&config.low_battery_thresholds)
+        .map_err(|error| NotificationError::new(error.to_string()))
 }
 
 #[cfg(windows)]
@@ -189,116 +246,118 @@ fn show_low_battery_notification(
 mod tests {
     use super::*;
 
-    #[test]
-    fn reset_and_threshold_policy_are_one_shot_per_discharge() {
-        let mut engine = NotificationEngine::from_config(AppConfig::default()).unwrap();
-        assert_eq!(engine.threshold_percent(), 20);
-        assert!(!engine.consume_discharge_alert(21));
-        assert!(engine.consume_discharge_alert(20));
-        assert!(!engine.consume_discharge_alert(10));
-        assert_eq!(
-            engine
-                .update(
-                    "Test device",
-                    BatterySample {
-                        percentage: 19,
-                        charging: true,
-                        full: false,
-                    },
-                )
-                .unwrap(),
-            NotificationOutcome::CycleReset
-        );
-        assert!(engine.consume_discharge_alert(10));
-    }
-
-    #[test]
-    fn restored_discharge_latch_suppresses_duplicate_alerts() {
-        let mut engine = NotificationEngine::from_config(AppConfig::default()).unwrap();
-        engine.restore_discharge_notification(true);
-        assert_eq!(
-            engine
-                .update_with(
-                    "Test device",
-                    BatterySample {
-                        percentage: 10,
-                        charging: false,
-                        full: false,
-                    },
-                    |_, _| panic!("a restored alert must not be dispatched again"),
-                )
-                .unwrap(),
-            NotificationOutcome::AlreadyNotified
-        );
-    }
-
-    #[test]
-    fn threshold_is_configurable_and_validated() {
-        let low_threshold = AppConfig {
-            low_battery_threshold: 10,
-            ..AppConfig::default()
-        };
-        let mut engine = NotificationEngine::from_config(low_threshold).unwrap();
-        assert_eq!(engine.threshold_percent(), 10);
-        assert!(NotificationEngine::from_config(AppConfig {
-            low_battery_threshold: 0,
-            ..AppConfig::default()
-        })
-        .is_err());
-        assert!(engine
-            .set_config(AppConfig {
-                low_battery_threshold: 101,
-                ..AppConfig::default()
-            })
-            .is_err());
-        assert_eq!(engine.threshold_percent(), 10);
-        engine
-            .set_config(AppConfig {
-                low_battery_threshold: 25,
-                ..AppConfig::default()
-            })
-            .unwrap();
-        assert_eq!(engine.threshold_percent(), 25);
-    }
-
-    #[test]
-    fn configured_threshold_dispatches_low_battery_notification_once() {
-        let config = AppConfig {
-            low_battery_threshold: 100,
-            ..AppConfig::default()
-        };
-        let mut engine = NotificationEngine::from_config(config).unwrap();
-        let sample = BatterySample {
-            percentage: 78,
+    fn discharging(percentage: u8) -> BatterySample {
+        BatterySample {
+            percentage,
             charging: false,
             full: false,
-        };
-        let mut dispatched = None;
+        }
+    }
+
+    fn config(cooldown_minutes: u64) -> AppConfig {
+        AppConfig {
+            low_battery_cooldown_minutes: cooldown_minutes,
+            ..AppConfig::default()
+        }
+    }
+
+    #[test]
+    fn multi_threshold_alerts_fire_once_per_discharge_cycle() {
+        let mut engine = NotificationEngine::from_config(&AppConfig::default()).unwrap();
+        assert_eq!(engine.thresholds(), [20, 10, 5]);
+        let now = Instant::now();
+        let mut fired = Vec::new();
+        let mut outcomes = Vec::new();
+        for percentage in [25, 19, 19, 9, 9, 4, 4] {
+            outcomes.push(
+                engine
+                    .update_with("Test device", discharging(percentage), now, |_, value| {
+                        fired.push(value);
+                        Ok(())
+                    })
+                    .unwrap(),
+            );
+        }
+
+        assert_eq!(
+            outcomes,
+            [
+                NotificationOutcome::AboveThreshold,
+                NotificationOutcome::Notified,
+                NotificationOutcome::AlreadyNotified,
+                NotificationOutcome::Notified,
+                NotificationOutcome::AlreadyNotified,
+                NotificationOutcome::Notified,
+                NotificationOutcome::AlreadyNotified,
+            ]
+        );
+        assert_eq!(fired, [19, 9, 4]);
+        assert_eq!(engine.notified_thresholds(), BTreeSet::from([5, 10, 20]));
+    }
+
+    #[test]
+    fn jumping_past_thresholds_sends_one_alert_and_suppresses_stale_ones() {
+        let mut engine = NotificationEngine::from_config(&AppConfig::default()).unwrap();
+        let now = Instant::now();
+        let mut fired = Vec::new();
 
         assert_eq!(
             engine
-                .update_with("Test device", sample, |name, percentage| {
-                    dispatched = Some((name.to_owned(), percentage));
+                .update_with("Test device", discharging(4), now, |_, value| {
+                    fired.push(value);
                     Ok(())
                 })
                 .unwrap(),
             NotificationOutcome::Notified
         );
-        assert_eq!(dispatched, Some(("Test device".to_owned(), 78)));
+        assert_eq!(fired, [4]);
+        assert_eq!(engine.notified_thresholds(), BTreeSet::from([5, 10, 20]));
         assert_eq!(
             engine
-                .update_with("Test device", sample, |_, _| {
-                    panic!("a discharge cycle must only dispatch one notification")
-                })
+                .update_with("Test device", discharging(4), now, |_, _| panic!(
+                    "stale thresholds must not be delivered after a jump"
+                ))
                 .unwrap(),
             NotificationOutcome::AlreadyNotified
         );
     }
 
     #[test]
-    fn one_hundred_percent_resets_a_discharge_latch() {
-        let mut engine = NotificationEngine::from_config(AppConfig::default()).unwrap();
-        assert!(engine.consume_discharge_alert(10));
+    fn charging_and_full_samples_reset_every_notified_threshold() {
+        let mut engine = NotificationEngine::from_config(&AppConfig::default()).unwrap();
+        let now = Instant::now();
+        for percentage in [19, 9, 4] {
+            assert!(matches!(
+                engine
+                    .update_with("Test device", discharging(percentage), now, |_, _| Ok(()))
+                    .unwrap(),
+                NotificationOutcome::Notified
+            ));
+        }
+
+        assert_eq!(
+            engine
+                .update_with(
+                    "Test device",
+                    BatterySample {
+                        percentage: 4,
+                        charging: true,
+                        full: false,
+                    },
+                    now,
+                    |_, _| panic!("charging must not dispatch a notification"),
+                )
+                .unwrap(),
+            NotificationOutcome::CycleReset
+        );
+        assert!(engine.notified_thresholds().is_empty());
+        assert_eq!(
+            engine
+                .update_with("Test device", discharging(4), now, |_, _| Ok(()))
+                .unwrap(),
+            NotificationOutcome::Notified
+        );
+
         assert_eq!(
             engine
                 .update_with(
@@ -308,40 +367,100 @@ mod tests {
                         charging: false,
                         full: false,
                     },
+                    now,
                     |_, _| panic!("a full battery must not dispatch a notification"),
                 )
                 .unwrap(),
             NotificationOutcome::CycleReset
         );
-        assert!(engine.consume_discharge_alert(10));
+        assert!(engine.notified_thresholds().is_empty());
+        assert_eq!(
+            engine
+                .update_with("Test device", discharging(19), now, |_, _| Ok(()))
+                .unwrap(),
+            NotificationOutcome::Notified
+        );
     }
 
     #[test]
-    fn failed_dispatch_consumes_the_discharge_latch() {
-        let mut engine = NotificationEngine::from_config(AppConfig::default()).unwrap();
-        let error = engine
-            .update_with(
-                "Test device",
-                BatterySample {
-                    percentage: 10,
-                    charging: false,
-                    full: false,
-                },
-                |_, _| Err(NotificationError::new("dispatch failed")),
-            )
-            .unwrap_err();
+    fn cooldown_repeats_the_lowest_threshold_with_an_injected_clock() {
+        let mut engine = NotificationEngine::from_config(&config(120)).unwrap();
+        let start = Instant::now();
+        for percentage in [19, 9, 4] {
+            assert!(matches!(
+                engine
+                    .update_with("Test device", discharging(percentage), start, |_, _| Ok(()))
+                    .unwrap(),
+                NotificationOutcome::Notified
+            ));
+        }
 
-        assert_eq!(error.to_string(), "dispatch failed");
         assert_eq!(
             engine
                 .update_with(
                     "Test device",
-                    BatterySample {
-                        percentage: 10,
-                        charging: false,
-                        full: false,
-                    },
-                    |_, _| panic!("a failed dispatch must not be retried in the same cycle"),
+                    discharging(4),
+                    start + Duration::from_secs(119 * 60),
+                    |_, _| panic!("the cooldown has not elapsed"),
+                )
+                .unwrap(),
+            NotificationOutcome::AlreadyNotified
+        );
+        assert_eq!(
+            engine
+                .update_with(
+                    "Test device",
+                    discharging(4),
+                    start + Duration::from_secs(120 * 60),
+                    |_, _| Ok(()),
+                )
+                .unwrap(),
+            NotificationOutcome::Notified
+        );
+        assert_eq!(
+            engine
+                .update_with(
+                    "Test device",
+                    discharging(4),
+                    start + Duration::from_secs(239 * 60),
+                    |_, _| panic!("the repeat cooldown restarted after the last repeat"),
+                )
+                .unwrap(),
+            NotificationOutcome::AlreadyNotified
+        );
+        assert_eq!(
+            engine
+                .update_with(
+                    "Test device",
+                    discharging(4),
+                    start + Duration::from_secs(240 * 60),
+                    |_, _| Ok(()),
+                )
+                .unwrap(),
+            NotificationOutcome::Notified
+        );
+    }
+
+    #[test]
+    fn zero_cooldown_disables_repeats() {
+        let mut engine = NotificationEngine::from_config(&config(0)).unwrap();
+        let start = Instant::now();
+        for percentage in [19, 9, 4] {
+            assert!(matches!(
+                engine
+                    .update_with("Test device", discharging(percentage), start, |_, _| Ok(()))
+                    .unwrap(),
+                NotificationOutcome::Notified
+            ));
+        }
+
+        assert_eq!(
+            engine
+                .update_with(
+                    "Test device",
+                    discharging(4),
+                    start + Duration::from_secs(365 * 24 * 60 * 60),
+                    |_, _| panic!("zero cooldown disables repeats"),
                 )
                 .unwrap(),
             NotificationOutcome::AlreadyNotified
@@ -349,59 +468,175 @@ mod tests {
     }
 
     #[test]
+    fn restored_thresholds_suppress_duplicate_alerts() {
+        let mut engine = NotificationEngine::from_config(&AppConfig::default()).unwrap();
+        engine.restore_notified_thresholds([20]);
+        let now = Instant::now();
+        assert_eq!(
+            engine
+                .update_with("Test device", discharging(19), now, |_, _| panic!(
+                    "a restored alert must not be dispatched again"
+                ))
+                .unwrap(),
+            NotificationOutcome::AlreadyNotified
+        );
+        assert_eq!(
+            engine
+                .update_with("Test device", discharging(9), now, |_, _| Ok(()))
+                .unwrap(),
+            NotificationOutcome::Notified
+        );
+    }
+
+    #[test]
+    fn thresholds_are_configurable_validated_and_sorted() {
+        let config = AppConfig {
+            low_battery_thresholds: vec![5, 20, 10, 20],
+            ..AppConfig::default()
+        };
+        let mut engine = NotificationEngine::from_config(&config).unwrap();
+        assert_eq!(engine.thresholds(), [20, 10, 5]);
+        assert!(NotificationEngine::from_config(&AppConfig {
+            low_battery_thresholds: Vec::new(),
+            ..AppConfig::default()
+        })
+        .is_err());
+        assert!(NotificationEngine::from_config(&AppConfig {
+            low_battery_thresholds: vec![0],
+            ..AppConfig::default()
+        })
+        .is_err());
+        assert!(engine
+            .set_config(&AppConfig {
+                low_battery_thresholds: vec![101],
+                ..AppConfig::default()
+            })
+            .is_err());
+        assert_eq!(engine.thresholds(), [20, 10, 5]);
+        engine
+            .set_config(&AppConfig {
+                low_battery_thresholds: vec![25, 15, 25],
+                ..AppConfig::default()
+            })
+            .unwrap();
+        assert_eq!(engine.thresholds(), [25, 15]);
+    }
+
+    #[test]
+    fn configured_threshold_dispatches_low_battery_notification_once() {
+        let config = AppConfig {
+            low_battery_thresholds: vec![100],
+            ..AppConfig::default()
+        };
+        let mut engine = NotificationEngine::from_config(&config).unwrap();
+        let sample = discharging(78);
+        let now = Instant::now();
+        let mut dispatched = None;
+
+        assert_eq!(
+            engine
+                .update_with("Test device", sample, now, |name, percentage| {
+                    dispatched = Some((name.to_owned(), percentage));
+                    Ok(())
+                })
+                .unwrap(),
+            NotificationOutcome::Notified
+        );
+        assert_eq!(dispatched, Some(("Test device".to_owned(), 78)));
+        assert_eq!(
+            engine
+                .update_with("Test device", sample, now, |_, _| {
+                    panic!("a discharge cycle must only dispatch one notification per threshold")
+                })
+                .unwrap(),
+            NotificationOutcome::AlreadyNotified
+        );
+    }
+
+    #[test]
+    fn failed_dispatch_consumes_the_reached_thresholds() {
+        let mut engine = NotificationEngine::from_config(&AppConfig::default()).unwrap();
+        let now = Instant::now();
+        let error = engine
+            .update_with("Test device", discharging(10), now, |_, _| {
+                Err(NotificationError::new("dispatch failed"))
+            })
+            .unwrap_err();
+
+        assert_eq!(error.to_string(), "dispatch failed");
+        assert_eq!(engine.notified_thresholds(), BTreeSet::from([10, 20]));
+        assert_eq!(
+            engine
+                .update_with("Test device", discharging(10), now, |_, _| panic!(
+                    "a failed dispatch must not be retried in the same cycle"
+                ))
+                .unwrap(),
+            NotificationOutcome::AlreadyNotified
+        );
+    }
+
+    #[test]
     fn above_threshold_sample_reports_skipped_notification() {
-        let mut engine = NotificationEngine::from_config(AppConfig::default()).unwrap();
+        let mut engine = NotificationEngine::from_config(&AppConfig::default()).unwrap();
         let outcome = engine
-            .update_with(
-                "Test device",
-                BatterySample {
-                    percentage: 21,
-                    charging: false,
-                    full: false,
-                },
-                |_, _| panic!("an above-threshold sample must not dispatch a notification"),
-            )
+            .update_with("Test device", discharging(21), Instant::now(), |_, _| {
+                panic!("an above-threshold sample must not dispatch a notification")
+            })
             .unwrap();
 
         assert_eq!(outcome, NotificationOutcome::AboveThreshold);
     }
 
     #[test]
-    fn reloading_threshold_preserves_discharge_notification_guard() {
-        let mut engine = NotificationEngine::from_config(AppConfig::default()).unwrap();
-        assert!(engine.consume_discharge_alert(20));
+    fn reloading_thresholds_preserves_matching_discharge_guards() {
+        let mut engine = NotificationEngine::from_config(&AppConfig::default()).unwrap();
+        let now = Instant::now();
+        assert_eq!(
+            engine
+                .update_with("Test device", discharging(19), now, |_, _| Ok(()))
+                .unwrap(),
+            NotificationOutcome::Notified
+        );
         engine
-            .set_config(AppConfig {
-                low_battery_threshold: 10,
+            .set_config(&AppConfig {
+                low_battery_thresholds: vec![10],
                 ..AppConfig::default()
             })
             .unwrap();
-        assert!(!engine.consume_discharge_alert(10));
-        assert_eq!(engine.threshold_percent(), 10);
+        assert_eq!(engine.thresholds(), [10]);
+        assert!(engine.notified_thresholds().is_empty());
+        assert_eq!(
+            engine
+                .update_with("Test device", discharging(9), now, |_, _| Ok(()))
+                .unwrap(),
+            NotificationOutcome::Notified
+        );
     }
 
     #[test]
     fn disabled_notifications_do_not_consume_the_discharge_guard() {
-        let mut engine = NotificationEngine::from_config(AppConfig {
+        let mut engine = NotificationEngine::from_config(&AppConfig {
             notifications_enabled: false,
             ..AppConfig::default()
         })
         .unwrap();
         assert_eq!(
-            engine
-                .update(
-                    "Test device",
-                    BatterySample {
-                        percentage: 10,
-                        charging: false,
-                        full: false,
-                    },
-                )
-                .unwrap(),
+            engine.update("Test device", discharging(10)).unwrap(),
             NotificationOutcome::NotificationsDisabled
         );
+        assert!(engine.notified_thresholds().is_empty());
 
-        engine.set_config(AppConfig::default()).unwrap();
-        assert!(engine.consume_discharge_alert(10));
+        engine.set_config(&AppConfig::default()).unwrap();
+        assert_eq!(
+            engine
+                .update_with(
+                    "Test device",
+                    discharging(10),
+                    Instant::now(),
+                    |_, _| Ok(())
+                )
+                .unwrap(),
+            NotificationOutcome::Notified
+        );
     }
 }

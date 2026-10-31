@@ -21,7 +21,7 @@ pub struct DiagnosticExport {
 }
 
 pub fn generate_diagnostic_report(
-    config: AppConfig,
+    config: &AppConfig,
     log: &VecDeque<String>,
 ) -> Result<DiagnosticExport, Box<dyn Error>> {
     let devices = enumerate_hid_devices()?;
@@ -90,7 +90,7 @@ pub fn generate_diagnostic_report(
 fn render_diagnostic_report(
     devices: &[volty_hid::HidDeviceInfo],
     timestamp: std::time::Duration,
-    config: AppConfig,
+    config: &AppConfig,
     log: &VecDeque<String>,
 ) -> Result<String, fmt::Error> {
     let mut report = format!(
@@ -101,7 +101,8 @@ fn render_diagnostic_report(
          Architecture: {}\n\
          \n\
          [Configuration]\n\
-         Low-battery threshold: {}%\n\
+         Low-battery thresholds: {}\n\
+         Low-battery repeat cooldown: {} minutes\n\
          Poll interval: {} seconds\n\
          Retry interval: {} seconds\n\
          Battery ETA window: {} minutes\n\
@@ -117,7 +118,8 @@ fn render_diagnostic_report(
         std::env::consts::OS,
         std::env::consts::FAMILY,
         std::env::consts::ARCH,
-        config.low_battery_threshold,
+        format_thresholds(&config.low_battery_thresholds),
+        config.low_battery_cooldown_minutes,
         config.poll_interval_seconds,
         config.retry_interval_seconds,
         config.battery_eta_window_minutes,
@@ -183,6 +185,14 @@ fn render_diagnostic_report(
     Ok(report)
 }
 
+fn format_thresholds(thresholds: &[u8]) -> String {
+    thresholds
+        .iter()
+        .map(|threshold| format!("{threshold}%"))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
 fn format_color(color: [u8; 3]) -> String {
     format!("#{:02x}{:02x}{:02x}", color[0], color[1], color[2])
 }
@@ -220,13 +230,14 @@ mod tests {
         let report = render_diagnostic_report(
             &[device],
             std::time::Duration::new(1, 2),
-            AppConfig::default(),
+            &AppConfig::default(),
             &log,
         )
         .unwrap();
 
         assert!(report.contains("Volty Diagnose Log"));
-        assert!(report.contains("Low-battery threshold: 20%"));
+        assert!(report.contains("Low-battery thresholds: 20%, 10%, 5%"));
+        assert!(report.contains("Low-battery repeat cooldown: 120 minutes"));
         assert!(report.contains("Battery ETA window: 10 minutes"));
         assert!(report.contains(
             "Tray color map: red <= 15% (#d23030), yellow <= 30% (#ebbe23), green > 30% (#2daa4b)"

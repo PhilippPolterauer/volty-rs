@@ -10,33 +10,42 @@ use std::{
     time::Instant,
 };
 use volty_battery::{BatteryState, DeviceId};
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum PendingAlertState {
+    /// Replace the persisted thresholds with exactly this set.
+    Set(HashSet<u8>),
+    /// Remove all persisted thresholds for the device.
+    Clear,
+}
+
 pub(super) struct DeviceNotifications {
     config: AppConfig,
     engines: HashMap<DeviceId, NotificationEngine>,
-    persisted_alerts: HashSet<String>,
-    pending_alerts: HashMap<String, bool>,
+    persisted_alerts: HashMap<String, HashSet<u8>>,
+    pending_alerts: HashMap<String, PendingAlertState>,
 }
 impl DeviceNotifications {
     pub(super) fn from_config(config: AppConfig) -> Result<Self, Box<dyn Error>> {
-        NotificationEngine::from_config(config)?;
+        NotificationEngine::from_config(&config)?;
         Ok(Self {
             config,
             engines: HashMap::new(),
-            persisted_alerts: HashSet::new(),
+            persisted_alerts: HashMap::new(),
             pending_alerts: HashMap::new(),
         })
     }
 
-    pub(super) fn restore_persisted_alerts(&mut self, alerts: HashSet<String>) {
+    pub(super) fn restore_persisted_alerts(&mut self, alerts: HashMap<String, HashSet<u8>>) {
         self.persisted_alerts = alerts;
     }
 
-    pub(super) fn set_config(&mut self, config: AppConfig) -> Result<(), Box<dyn Error>> {
+    pub(super) fn set_config(&mut self, config: &AppConfig) -> Result<(), Box<dyn Error>> {
         NotificationEngine::from_config(config)?;
         for engine in self.engines.values_mut() {
             engine.set_config(config)?;
         }
-        self.config = config;
+        self.config = config.clone();
         Ok(())
     }
 
@@ -45,14 +54,15 @@ impl DeviceNotifications {
             .retain(|id, _| is_device_monitored(monitored_devices, id.as_str()));
         let stale_alerts: HashSet<_> = self
             .persisted_alerts
-            .iter()
+            .keys()
             .chain(self.pending_alerts.keys())
             .filter(|identity| !is_device_monitored(monitored_devices, identity))
             .cloned()
             .collect();
         for identity in stale_alerts {
             self.persisted_alerts.remove(&identity);
-            self.pending_alerts.insert(identity, false);
+            self.pending_alerts
+                .insert(identity, PendingAlertState::Clear);
         }
     }
 
@@ -63,24 +73,36 @@ impl DeviceNotifications {
         sample: BatterySample,
     ) -> Result<NotificationOutcome, Box<dyn Error>> {
         let identity_key = id.as_str().to_owned();
-        let previously_notified = self.persisted_alerts.contains(&identity_key);
-        let engine = match self.engines.entry(id) {
-            Entry::Occupied(entry) => entry.into_mut(),
-            Entry::Vacant(entry) => {
-                let mut engine = NotificationEngine::from_config(self.config)?;
-                engine.restore_discharge_notification(previously_notified);
-                entry.insert(engine)
-            }
+        let previously_notified = self
+            .persisted_alerts
+            .get(&identity_key)
+            .cloned()
+            .unwrap_or_default();
+        let (outcome, notified_thresholds) = {
+            let engine = match self.engines.entry(id) {
+                Entry::Occupied(entry) => entry.into_mut(),
+                Entry::Vacant(entry) => {
+                    let mut engine = NotificationEngine::from_config(&self.config)?;
+                    engine.restore_notified_thresholds(previously_notified);
+                    entry.insert(engine)
+                }
+            };
+            let outcome = engine.update(device_name, sample)?;
+            let notified_thresholds: HashSet<u8> =
+                engine.notified_thresholds().into_iter().collect();
+            (outcome, notified_thresholds)
         };
-        let outcome = engine.update(device_name, sample)?;
         match outcome {
             NotificationOutcome::Notified => {
-                self.persisted_alerts.insert(identity_key.clone());
-                self.pending_alerts.insert(identity_key, true);
+                self.persisted_alerts
+                    .insert(identity_key.clone(), notified_thresholds.clone());
+                self.pending_alerts
+                    .insert(identity_key, PendingAlertState::Set(notified_thresholds));
             }
             NotificationOutcome::CycleReset => {
                 self.persisted_alerts.remove(&identity_key);
-                self.pending_alerts.insert(identity_key, false);
+                self.pending_alerts
+                    .insert(identity_key, PendingAlertState::Clear);
             }
             _ => {}
         }
@@ -95,8 +117,13 @@ impl DeviceNotifications {
             self.pending_alerts.clear();
             return Ok(());
         };
-        for (identity, sent) in &self.pending_alerts {
-            state.set_discharge_notification_sent(identity, *sent)?;
+        for (identity, pending) in &self.pending_alerts {
+            state.clear_notified_thresholds(identity)?;
+            if let PendingAlertState::Set(thresholds) = pending {
+                for &threshold in thresholds {
+                    state.mark_threshold_notified(identity, threshold)?;
+                }
+            }
         }
         self.pending_alerts.clear();
         Ok(())
@@ -137,7 +164,7 @@ pub(super) fn process_device_reading(
             reading,
             BatterySample {
                 // Percentage is irrelevant while charging/full because the engine
-                // resets that device's discharge-cycle guard before checking the threshold.
+                // resets that device's discharge-cycle guard before checking thresholds.
                 percentage: percentage.unwrap_or(0),
                 charging,
                 full,
@@ -170,7 +197,8 @@ fn process_notification(
     started: Instant,
 ) -> io::Result<()> {
     let device_name = reading.label.display();
-    let threshold = notifications.config.low_battery_threshold;
+    let thresholds = notifications.config.low_battery_thresholds.clone();
+    let cooldown_minutes = notifications.config.low_battery_cooldown_minutes;
     let enabled = notifications.config.notifications_enabled;
     record_event(
         diagnostic_log,
@@ -178,7 +206,7 @@ fn process_notification(
         started,
         LogLevel::Trace,
         &format!(
-            "Evaluating low-battery notification for {device_name}: battery={}%, charging={}, full={}, enabled={enabled}, threshold={threshold}%",
+            "Evaluating low-battery notification for {device_name}: battery={}%, charging={}, full={}, enabled={enabled}, thresholds={thresholds:?}, cooldown_minutes={cooldown_minutes}",
             sample.percentage, sample.charging, sample.full
         ),
     )?;
@@ -197,7 +225,7 @@ fn process_notification(
         notification_result,
         reading,
         sample,
-        threshold,
+        &thresholds,
         diagnostic_log,
         file_logger,
         started,
@@ -208,7 +236,7 @@ fn record_notification_outcome(
     notification_result: Result<NotificationOutcome, Box<dyn Error>>,
     reading: &mut DeviceReading,
     sample: BatterySample,
-    threshold: u8,
+    thresholds: &[u8],
     diagnostic_log: &mut VecDeque<String>,
     file_logger: &mut FileLogger,
     started: Instant,
@@ -216,27 +244,37 @@ fn record_notification_outcome(
     let device_name = reading.label.display();
     match notification_result {
         Ok(outcome) => {
-            let detail = match outcome {
-                NotificationOutcome::NotificationsDisabled => "skipped: disabled in configuration",
-                NotificationOutcome::AboveThreshold => "skipped: battery is above the threshold",
-                NotificationOutcome::AlreadyNotified => {
-                    "skipped: already delivered during this discharge cycle"
+            let (detail, level) = match outcome {
+                NotificationOutcome::NotificationsDisabled => (
+                    "skipped: disabled in configuration".to_owned(),
+                    LogLevel::Trace,
+                ),
+                NotificationOutcome::AboveThreshold => (
+                    "skipped: battery is above every threshold".to_owned(),
+                    LogLevel::Trace,
+                ),
+                NotificationOutcome::AlreadyNotified => (
+                    "skipped: every reached threshold was already delivered and no repeat is due"
+                        .to_owned(),
+                    LogLevel::Trace,
+                ),
+                NotificationOutcome::Unchanged => {
+                    ("no notification due".to_owned(), LogLevel::Trace)
                 }
-                NotificationOutcome::Unchanged => "no notification due",
-                NotificationOutcome::CycleReset => "discharge cycle reset",
-                NotificationOutcome::Notified => "delivered successfully",
+                NotificationOutcome::CycleReset => {
+                    ("discharge cycle reset".to_owned(), LogLevel::Trace)
+                }
+                NotificationOutcome::Notified => {
+                    ("delivered successfully".to_owned(), LogLevel::Info)
+                }
             };
             record_event(
                 diagnostic_log,
                 file_logger,
                 started,
-                if outcome == NotificationOutcome::Notified {
-                    LogLevel::Info
-                } else {
-                    LogLevel::Trace
-                },
+                level,
                 &format!(
-                    "Low-battery notification for {device_name} at {}% (threshold={threshold}%): {detail}",
+                    "Low-battery notification for {device_name} at {}% (thresholds={thresholds:?}): {detail}",
                     sample.percentage
                 ),
             )
@@ -265,28 +303,72 @@ mod tests {
         let mut notifications = DeviceNotifications::from_config(AppConfig::default()).unwrap();
         notifications.engines.insert(
             monitored.clone(),
-            NotificationEngine::from_config(AppConfig::default()).unwrap(),
+            NotificationEngine::from_config(&AppConfig::default()).unwrap(),
         );
         notifications.engines.insert(
             unmonitored.clone(),
-            NotificationEngine::from_config(AppConfig::default()).unwrap(),
+            NotificationEngine::from_config(&AppConfig::default()).unwrap(),
         );
         let monitored_devices = BTreeMap::from([(unmonitored.as_str().to_owned(), false)]);
         let monitored_key = monitored.as_str().to_owned();
         let unmonitored_key = unmonitored.as_str().to_owned();
-        notifications.restore_persisted_alerts(HashSet::from([
-            monitored_key.clone(),
-            unmonitored_key.clone(),
+        notifications.restore_persisted_alerts(HashMap::from([
+            (monitored_key.clone(), HashSet::from([20])),
+            (unmonitored_key.clone(), HashSet::from([20, 10])),
         ]));
 
         notifications.retain_monitored_devices(&monitored_devices);
         assert!(notifications.engines.contains_key(&monitored));
         assert!(!notifications.engines.contains_key(&unmonitored));
-        assert!(notifications.persisted_alerts.contains(&monitored_key));
-        assert!(!notifications.persisted_alerts.contains(&unmonitored_key));
+        assert!(notifications.persisted_alerts.contains_key(&monitored_key));
+        assert!(!notifications
+            .persisted_alerts
+            .contains_key(&unmonitored_key));
         assert_eq!(
             notifications.pending_alerts.get(&unmonitored_key),
-            Some(&false)
+            Some(&PendingAlertState::Clear)
+        );
+    }
+
+    #[test]
+    fn persisted_thresholds_suppress_replayed_alerts_after_restart() {
+        let device = DeviceId::new("hid:restored#1");
+        let identity = device.as_str().to_owned();
+        let mut notifications = DeviceNotifications::from_config(AppConfig::default()).unwrap();
+        notifications
+            .restore_persisted_alerts(HashMap::from([(identity.clone(), HashSet::from([20]))]));
+
+        assert_eq!(
+            notifications
+                .update(
+                    device.clone(),
+                    "Test device",
+                    BatterySample {
+                        percentage: 19,
+                        charging: false,
+                        full: false,
+                    },
+                )
+                .unwrap(),
+            NotificationOutcome::AlreadyNotified
+        );
+        assert_eq!(
+            notifications
+                .update(
+                    device,
+                    "Test device",
+                    BatterySample {
+                        percentage: 9,
+                        charging: false,
+                        full: false,
+                    },
+                )
+                .unwrap(),
+            NotificationOutcome::Notified
+        );
+        assert_eq!(
+            notifications.pending_alerts.get(&identity),
+            Some(&PendingAlertState::Set(HashSet::from([10, 20])))
         );
     }
 }

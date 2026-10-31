@@ -8,7 +8,8 @@ use std::{
 
 use toml_edit::DocumentMut;
 
-pub const DEFAULT_LOW_BATTERY_THRESHOLD: u8 = 20;
+pub const DEFAULT_LOW_BATTERY_THRESHOLDS: &[u8] = &[20, 10, 5];
+pub const DEFAULT_LOW_BATTERY_COOLDOWN_MINUTES: u64 = 120;
 pub const DEFAULT_POLL_INTERVAL_SECONDS: u64 = 120;
 pub const DEFAULT_RETRY_INTERVAL_SECONDS: u64 = 15;
 pub const DEFAULT_BATTERY_ETA_WINDOW_MINUTES: u64 = 10;
@@ -82,9 +83,10 @@ impl LogLevel {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AppConfig {
-    pub low_battery_threshold: u8,
+    pub low_battery_thresholds: Vec<u8>,
+    pub low_battery_cooldown_minutes: u64,
     pub poll_interval_seconds: u64,
     pub retry_interval_seconds: u64,
     pub battery_eta_window_minutes: u64,
@@ -96,7 +98,8 @@ pub struct AppConfig {
 impl Default for AppConfig {
     fn default() -> Self {
         Self {
-            low_battery_threshold: DEFAULT_LOW_BATTERY_THRESHOLD,
+            low_battery_thresholds: DEFAULT_LOW_BATTERY_THRESHOLDS.to_vec(),
+            low_battery_cooldown_minutes: DEFAULT_LOW_BATTERY_COOLDOWN_MINUTES,
             poll_interval_seconds: DEFAULT_POLL_INTERVAL_SECONDS,
             retry_interval_seconds: DEFAULT_RETRY_INTERVAL_SECONDS,
             battery_eta_window_minutes: DEFAULT_BATTERY_ETA_WINDOW_MINUTES,
@@ -142,8 +145,10 @@ impl AppConfig {
         let defaults = Self::default();
         let contents = format!(
             "# Volty user configuration\n\
-            # Notify at or below this battery percentage (1-100).\n\
-             # low_battery_threshold = {}\n\
+            # Battery percentages that trigger an alert, highest first (each 1-100).\n\
+             # low_battery_thresholds = {:?}\n\
+             # Minutes before repeating an alert at or below the lowest threshold; 0 disables repeats.\n\
+             # low_battery_cooldown_minutes = {}\n\
              # Seconds between successful battery readings (10-3600).\n\
              # poll_interval_seconds = {}\n\
              # Seconds between retries after a polling error (5-300).\n\
@@ -163,7 +168,8 @@ impl AppConfig {
              # yellow = \"#ebbe23\"\n\
              # green = \"#2daa4b\"\n\
              # Per-device monitoring choices are stored in local SQLite state.\n",
-            defaults.low_battery_threshold,
+            defaults.low_battery_thresholds,
+            defaults.low_battery_cooldown_minutes,
             defaults.poll_interval_seconds,
             defaults.retry_interval_seconds,
             defaults.battery_eta_window_minutes,
@@ -205,6 +211,28 @@ impl AppConfig {
         })?;
         Ok(path.to_path_buf())
     }
+}
+
+/// Validates and normalizes configured low-battery thresholds: at least one
+/// value, each 1-100 percent, sorted from highest to lowest without duplicates.
+pub fn normalize_low_battery_thresholds(thresholds: &[u8]) -> Result<Vec<u8>, ConfigError> {
+    if thresholds.is_empty() {
+        return Err(ConfigError::new(
+            "low_battery_thresholds must contain at least one threshold",
+        ));
+    }
+    if thresholds
+        .iter()
+        .any(|threshold| !(1..=100).contains(threshold))
+    {
+        return Err(ConfigError::new(
+            "low_battery_thresholds entries must be between 1 and 100 percent",
+        ));
+    }
+    let mut thresholds = thresholds.to_vec();
+    thresholds.sort_unstable_by(|left, right| right.cmp(left));
+    thresholds.dedup();
+    Ok(thresholds)
 }
 
 pub fn config_path() -> Option<PathBuf> {
@@ -350,20 +378,57 @@ fn parse_toml(contents: &str, path: &Path) -> Result<AppConfig, ConfigError> {
     let mut config = AppConfig::default();
     for (key, value) in table {
         match key.as_str() {
-            "low_battery_threshold" => {
-                let threshold = value.as_integer().ok_or_else(|| {
+            "low_battery_thresholds" => {
+                let values = value.as_array().ok_or_else(|| {
                     ConfigError::new(format!(
-                        "invalid configuration {}: low_battery_threshold must be an integer",
+                        "invalid configuration {}: low_battery_thresholds must be an array of integers",
                         path.display()
                     ))
                 })?;
-                if !(1..=100).contains(&threshold) {
+                let mut thresholds = Vec::with_capacity(values.len());
+                for value in values {
+                    let threshold = value.as_integer().ok_or_else(|| {
+                        ConfigError::new(format!(
+                            "invalid configuration {}: low_battery_thresholds entries must be integers",
+                            path.display()
+                        ))
+                    })?;
+                    if !(1..=100).contains(&threshold) {
+                        return Err(ConfigError::new(format!(
+                            "invalid configuration {}: low_battery_thresholds entries must be between 1 and 100 percent",
+                            path.display()
+                        )));
+                    }
+                    thresholds.push(threshold as u8);
+                }
+                config.low_battery_thresholds = normalize_low_battery_thresholds(&thresholds)
+                    .map_err(|error| {
+                        ConfigError::new(format!(
+                            "invalid configuration {}: {error}",
+                            path.display()
+                        ))
+                    })?;
+            }
+            "low_battery_cooldown_minutes" => {
+                let minutes = value.as_integer().ok_or_else(|| {
+                    ConfigError::new(format!(
+                        "invalid configuration {}: low_battery_cooldown_minutes must be an integer",
+                        path.display()
+                    ))
+                })?;
+                if minutes < 0 {
                     return Err(ConfigError::new(format!(
-                        "invalid configuration {}: low_battery_threshold must be between 1 and 100 percent",
+                        "invalid configuration {}: low_battery_cooldown_minutes must be zero or greater",
                         path.display()
                     )));
                 }
-                config.low_battery_threshold = threshold as u8;
+                config.low_battery_cooldown_minutes = minutes as u64;
+            }
+            "low_battery_threshold" => {
+                return Err(ConfigError::new(format!(
+                    "invalid configuration {}: low_battery_threshold has been replaced by low_battery_thresholds (for example low_battery_thresholds = [20, 10, 5])",
+                    path.display()
+                )))
             }
             "poll_interval_seconds" => {
                 config.poll_interval_seconds =
@@ -549,25 +614,40 @@ mod tests {
     fn toml_config_accepts_defaults_and_threshold_values() {
         let path = Path::new("config.toml");
         assert_eq!(AppConfig::default().battery_eta_window_minutes, 10);
+        assert_eq!(AppConfig::default().low_battery_thresholds, [20, 10, 5]);
+        assert_eq!(AppConfig::default().low_battery_cooldown_minutes, 120);
         assert_eq!(
             parse_toml("# Volty configuration\n", path).unwrap(),
             AppConfig::default()
         );
         assert_eq!(
-            parse_toml("low_battery_threshold = 15\n", path).unwrap(),
+            parse_toml("low_battery_thresholds = [15]\n", path).unwrap(),
             AppConfig {
-                low_battery_threshold: 15,
+                low_battery_thresholds: vec![15],
                 ..AppConfig::default()
             }
         );
         assert_eq!(
             parse_toml(
-                "low_battery_threshold = 80\npoll_interval_seconds = 300\nretry_interval_seconds = 30\nbattery_eta_window_minutes = 20\nnotifications_enabled = false\nlog_level = \"debug\"\n",
+                "low_battery_thresholds = [5, 20, 10, 20]\nlow_battery_cooldown_minutes = 0\n",
                 path
             )
             .unwrap(),
             AppConfig {
-                low_battery_threshold: 80,
+                low_battery_thresholds: vec![20, 10, 5],
+                low_battery_cooldown_minutes: 0,
+                ..AppConfig::default()
+            }
+        );
+        assert_eq!(
+            parse_toml(
+                "low_battery_thresholds = [80]\nlow_battery_cooldown_minutes = 240\npoll_interval_seconds = 300\nretry_interval_seconds = 30\nbattery_eta_window_minutes = 20\nnotifications_enabled = false\nlog_level = \"debug\"\n",
+                path
+            )
+            .unwrap(),
+            AppConfig {
+                low_battery_thresholds: vec![80],
+                low_battery_cooldown_minutes: 240,
                 poll_interval_seconds: 300,
                 retry_interval_seconds: 30,
                 battery_eta_window_minutes: 20,
@@ -626,10 +706,16 @@ mod tests {
     fn toml_config_rejects_malformed_and_unsupported_settings() {
         let path = Path::new("config.toml");
         for malformed in [
-            "low_battery_threshold =",
-            "low_battery_threshold = \"20\"",
-            "low_battery_threshold = 0",
-            "low_battery_threshold = 101",
+            "low_battery_thresholds =",
+            "low_battery_thresholds = \"20\"",
+            "low_battery_thresholds = []",
+            "low_battery_thresholds = [0]",
+            "low_battery_thresholds = [101]",
+            "low_battery_thresholds = [20, \"10\"]",
+            "low_battery_thresholds = [20, -1]",
+            "low_battery_cooldown_minutes = -1",
+            "low_battery_cooldown_minutes = \"120\"",
+            "low_battery_threshold = 20",
             "poll_interval_seconds = 9",
             "poll_interval_seconds = 3601",
             "poll_interval_seconds = \"120\"",
@@ -653,10 +739,17 @@ mod tests {
             "[battery_color_map]\nyellow = \"#12345g\"",
             "[battery_color_map]\nunknown = 3",
             "unknown_setting = 20",
-            "low_battery_threshold = 20\nlow_battery_threshold = 15",
+            "low_battery_thresholds = [20]\nlow_battery_thresholds = [15]",
         ] {
             assert!(parse_toml(malformed, path).is_err(), "{malformed}");
         }
+        let old_key_error = parse_toml("low_battery_threshold = 20\n", path).unwrap_err();
+        assert!(
+            old_key_error
+                .to_string()
+                .contains("replaced by low_battery_thresholds"),
+            "{old_key_error}"
+        );
     }
 
     #[test]
@@ -685,11 +778,14 @@ mod tests {
         let created_path = path.as_path();
         let contents = fs::read_to_string(created_path).unwrap();
         assert!(contents.lines().all(|line| line.starts_with('#')));
+        assert!(contents.contains("# low_battery_thresholds = [20, 10, 5]"));
+        assert!(contents.contains("# low_battery_cooldown_minutes = 120"));
 
         fs::remove_file(created_path).unwrap();
         assert_eq!(AppConfig::load_from(&path).unwrap(), AppConfig::default());
         let recreated_contents = fs::read_to_string(created_path).unwrap();
         assert!(recreated_contents.lines().all(|line| line.starts_with('#')));
+        assert!(recreated_contents.contains("# low_battery_thresholds = [20, 10, 5]"));
 
         fs::remove_dir_all(directory).unwrap();
     }
@@ -708,7 +804,7 @@ mod tests {
         fs::create_dir_all(&directory).unwrap();
         fs::write(
             &path,
-            "# User comment\nlow_battery_threshold = 25\n\n[monitored_devices]\n\"bluetooth:test\" = false\n\n[battery_color_map]\nred_max_percent = 10\n",
+            "# User comment\nlow_battery_thresholds = [25, 15]\nlow_battery_cooldown_minutes = 60\n\n[monitored_devices]\n\"bluetooth:test\" = false\n\n[battery_color_map]\nred_max_percent = 10\n",
         )
         .unwrap();
 
@@ -719,7 +815,8 @@ mod tests {
         remove_legacy_monitored_devices_from(&path).unwrap();
 
         let reloaded = AppConfig::load_from(&path).unwrap();
-        assert_eq!(reloaded.low_battery_threshold, 25);
+        assert_eq!(reloaded.low_battery_thresholds, [25, 15]);
+        assert_eq!(reloaded.low_battery_cooldown_minutes, 60);
         assert_eq!(reloaded.battery_color_map.red_max_percent, 10);
         let contents = fs::read_to_string(&path).unwrap();
         assert!(contents.contains("# User comment"));

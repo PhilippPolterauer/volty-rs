@@ -25,7 +25,7 @@ pub(super) enum PollUpdate {
     Finished(PollResult),
 }
 pub(super) fn spawn_poll_worker(
-    active_config: AppConfig,
+    active_config: &AppConfig,
     diagnostic_log: &mut VecDeque<String>,
     file_logger: &mut FileLogger,
     started: Instant,
