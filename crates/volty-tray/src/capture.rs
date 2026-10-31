@@ -745,6 +745,7 @@ pub(crate) fn battery_snapshot(battery: &BatteryStatus) -> BatterySnapshot {
         raw_level: battery.raw_level,
         raw_status: battery.raw_status,
         source: battery.source.to_owned(),
+        voltage_mv: battery.voltage_mv,
     }
 }
 

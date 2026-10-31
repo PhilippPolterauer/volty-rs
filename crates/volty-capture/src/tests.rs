@@ -52,6 +52,7 @@ fn sample_battery() -> BatterySnapshot {
         raw_level: 0x55,
         raw_status: Some(0x03),
         source: "HID++ Unified Battery".to_owned(),
+        voltage_mv: None,
     }
 }
 
@@ -268,6 +269,22 @@ fn hid_samples_without_state_bits_from_older_captures_still_parse() {
         panic!("expected a HID sample");
     };
     assert!(sample.buttons.is_empty());
+}
+
+#[test]
+fn battery_snapshots_without_voltage_from_older_captures_still_parse() {
+    let record: CaptureRecord = serde_json::from_str(
+        r#"{"type":"reading","id":"iface-1","device_index":1,"t_ms":1,
+            "backend":"Logitech HID++ 2.0","label":null,
+            "battery":{"percent":60,"level":"good","state":"unknown",
+            "raw_level":0,"raw_status":null,
+            "source":"HID++ Battery Voltage (estimated)"}}"#,
+    )
+    .unwrap();
+    let CaptureRecord::Reading(reading) = record else {
+        panic!("expected a reading");
+    };
+    assert_eq!(reading.battery.voltage_mv, None);
 }
 
 #[test]

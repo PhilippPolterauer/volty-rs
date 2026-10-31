@@ -14,14 +14,15 @@ use volty_capture::{
     CaptureHidppExchange, CaptureHidppFeatures, CaptureRecord, HidReportKind,
 };
 use volty_hid::{
-    decode_generic_battery, parse_legacy_battery_status, parse_unified_battery,
-    parse_unified_battery_capabilities, BatteryProtocol, BatteryStatus, GenericBatteryButton,
-    GenericBatteryButtonReading, GenericBatteryLayout, GenericBatteryValue,
+    decode_generic_battery, parse_battery_voltage, parse_legacy_battery_status,
+    parse_unified_battery, parse_unified_battery_capabilities, BatteryProtocol, BatteryStatus,
+    GenericBatteryButton, GenericBatteryButtonReading, GenericBatteryLayout, GenericBatteryValue,
     GenericBatteryValueReading, GenericReportKind, HidppFrame, UnifiedBatteryCapabilities,
-    FEATURE_BATTERY_STATUS, FEATURE_ROOT, FEATURE_SET, FEATURE_UNIFIED_BATTERY,
-    FUNCTION_GET_BATTERY_STATUS, FUNCTION_GET_FEATURE, FUNCTION_GET_FEATURE_SET_COUNT,
-    FUNCTION_GET_FEATURE_SET_ID, FUNCTION_GET_UNIFIED_BATTERY_CAPABILITIES,
-    FUNCTION_GET_UNIFIED_BATTERY_INFO, GENERIC_HID_BATTERY, LOGITECH_HIDPP_20,
+    FEATURE_BATTERY_STATUS, FEATURE_BATTERY_VOLTAGE, FEATURE_ROOT, FEATURE_SET,
+    FEATURE_UNIFIED_BATTERY, FUNCTION_GET_BATTERY_STATUS, FUNCTION_GET_BATTERY_VOLTAGE,
+    FUNCTION_GET_FEATURE, FUNCTION_GET_FEATURE_SET_COUNT, FUNCTION_GET_FEATURE_SET_ID,
+    FUNCTION_GET_UNIFIED_BATTERY_CAPABILITIES, FUNCTION_GET_UNIFIED_BATTERY_INFO,
+    GENERIC_HID_BATTERY, LOGITECH_HIDPP_20,
 };
 
 use crate::capture::battery_snapshot;
@@ -298,6 +299,15 @@ fn replay_exchange(
                 battery,
             ));
         }
+        FEATURE_BATTERY_VOLTAGE => {
+            let battery = parse_battery_voltage(&response)?;
+            decoded.push((
+                exchange.id.clone(),
+                exchange.device_index,
+                exchange.t_ms,
+                battery,
+            ));
+        }
         _ => {
             return Err(io::Error::other(format!(
                 "no replay decoder for logical feature 0x{logical:04x}"
@@ -317,6 +327,7 @@ fn is_read_only(logical: u16, function: u8) -> bool {
                 FUNCTION_GET_FEATURE_SET_COUNT | FUNCTION_GET_FEATURE_SET_ID
             )
             | (FEATURE_BATTERY_STATUS, FUNCTION_GET_BATTERY_STATUS)
+            | (FEATURE_BATTERY_VOLTAGE, FUNCTION_GET_BATTERY_VOLTAGE)
             | (
                 FEATURE_UNIFIED_BATTERY,
                 FUNCTION_GET_UNIFIED_BATTERY_CAPABILITIES | FUNCTION_GET_UNIFIED_BATTERY_INFO
@@ -876,6 +887,7 @@ mod tests {
             raw_level,
             raw_status,
             source: source.to_owned(),
+            voltage_mv: None,
         }
     }
 
@@ -1193,6 +1205,57 @@ mod tests {
         assert!(error.contains("does not match"));
     }
 
+    fn hardware_fixture(name: &str) -> CaptureFile {
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/hardware");
+        CaptureFile::read(root.join(name)).unwrap()
+    }
+
+    fn first_reading(file: &CaptureFile) -> &CaptureReading {
+        file.records
+            .iter()
+            .find_map(|record| match record {
+                CaptureRecord::Reading(reading) => Some(reading),
+                _ => None,
+            })
+            .expect("fixture has a reading")
+    }
+
+    #[test]
+    fn battery_voltage_fixture_replays_feature_table_and_voltage() {
+        let file = hardware_fixture("synthetic-battery-voltage.volty.jsonl");
+        let report = replay_capture(&file).unwrap();
+        assert_eq!(report.exchanges, 4);
+        assert_eq!(report.features, 1);
+        assert_eq!(report.readings, 1);
+        assert_eq!(report.transport_errors, 0);
+
+        let reading = first_reading(&file);
+        assert_eq!(reading.battery.percent, Some(60));
+        assert_eq!(reading.battery.level, "good");
+        assert_eq!(reading.battery.state, "unknown");
+        assert_eq!(reading.battery.raw_level, 0);
+        assert_eq!(reading.battery.raw_status, None);
+        assert_eq!(reading.battery.source, "HID++ Battery Voltage (estimated)");
+        assert_eq!(reading.battery.voltage_mv, Some(3700));
+    }
+
+    #[test]
+    fn replay_detects_a_tampered_battery_voltage() {
+        let mut file = hardware_fixture("synthetic-battery-voltage.volty.jsonl");
+        let reading = file
+            .records
+            .iter_mut()
+            .find_map(|record| match record {
+                CaptureRecord::Reading(reading) => Some(reading),
+                _ => None,
+            })
+            .expect("fixture has a reading");
+        reading.battery.voltage_mv = Some(3699);
+
+        let error = replay_capture(&file).unwrap_err().to_string();
+        assert!(error.contains("does not match"), "{error}");
+    }
+
     fn bluetooth_capture(
         kind: CaptureBluetoothKind,
         backend: &'static str,
@@ -1332,14 +1395,14 @@ mod tests {
 
     #[test]
     fn fixture_files_validate_and_replay() {
-        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/hardware");
         for name in [
             "synthetic-g502x-unified.volty.jsonl",
+            "synthetic-battery-voltage.volty.jsonl",
             "g502x-plus-unified.volty.jsonl",
             "synthetic-generic-battery.volty.jsonl",
             "synthetic-bluetooth-headset.volty.jsonl",
         ] {
-            let file = CaptureFile::read(root.join(name)).unwrap();
+            let file = hardware_fixture(name);
             let report = replay_capture(&file).unwrap();
             assert!(
                 report.exchanges > 0 || report.samples > 0 || report.bluetooth_readings > 0,
