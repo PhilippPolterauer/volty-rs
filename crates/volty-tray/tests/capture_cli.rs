@@ -5,8 +5,9 @@ use std::{
     process::Command,
 };
 
-const FIXTURES: [&str; 4] = [
+const FIXTURES: [&str; 5] = [
     "synthetic-g502x-unified.volty.jsonl",
+    "synthetic-battery-voltage.volty.jsonl",
     "g502x-plus-unified.volty.jsonl",
     "synthetic-generic-battery.volty.jsonl",
     "synthetic-bluetooth-headset.volty.jsonl",

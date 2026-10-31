@@ -353,6 +353,9 @@ pub struct BatterySnapshot {
     pub raw_level: u8,
     pub raw_status: Option<u8>,
     pub source: String,
+    /// Raw battery voltage in millivolts when the backend measured one.
+    #[serde(default)]
+    pub voltage_mv: Option<u16>,
 }
 
 /// Diagnostic message recorded during a capture.

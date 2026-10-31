@@ -203,8 +203,10 @@ only `0x1001` was available, so it is exercised only by unit tests and synthetic
 HID++ frames. The percentage is an estimate from voltage and may differ from
 the vendor's own curve, especially under load, at temperature extremes, or on
 non-LiPo cells. Treat it as a best-effort indicator; the raw millivolts in
-`BatteryStatus` are the unmodified device reading. Capture replay does not yet
-decode `0x1001` exchanges.
+`BatteryStatus` are the unmodified device reading. Captures retain that raw
+voltage in `BatterySnapshot::voltage_mv`, and capture replay decodes `0x1001`
+exchanges with the same decoder as the tray. All `0x1001` evidence remains
+synthetic and hardware-unvalidated.
 
 ## How HID diagnostics fit
 
@@ -258,9 +260,11 @@ descriptor probing and report reads require Windows HID APIs and hardware.
 HID++ Unified Battery, legacy Battery Status, and the Battery Voltage fallback
 are unit-tested with synthetic frames, including the voltage curve, clamping,
 and monotonicity. Battery Voltage support has not been validated on hardware
-because no device exposing only `0x1001` was available. On-demand diagnostics
-can verify a HID++ interface or feature mapping, but tray support must be tested
-through its own polling path; a successful standalone diagnostic query does not
-prove that the tray consumes that reading. The current primary use case is the
-Logitech G502 X Superlight RGB, and hardware validation remains limited; do not
-infer support for every model from one working device.
+because no device exposing only `0x1001` was available; its synthetic capture
+fixture exercises Root discovery, the voltage read, feature-table verification,
+and reading comparison including raw voltage during offline replay. On-demand
+diagnostics can verify a HID++ interface or feature mapping, but tray support
+must be tested through its own polling path; a successful standalone diagnostic
+query does not prove that the tray consumes that reading. The current primary
+use case is the Logitech G502 X Superlight RGB, and hardware validation remains
+limited; do not infer support for every model from one working device.
