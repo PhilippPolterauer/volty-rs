@@ -11,6 +11,8 @@ mod config;
 mod diagnose;
 mod hid_cli;
 #[cfg(windows)]
+mod history;
+#[cfg(windows)]
 mod logging;
 #[cfg(windows)]
 mod native_ui;
@@ -31,7 +33,10 @@ mod win32;
 
 fn main() {
     #[cfg(windows)]
-    let cli_mode = matches!(std::env::args().nth(1).as_deref(), Some("hid" | "capture"));
+    let cli_mode = matches!(
+        std::env::args().nth(1).as_deref(),
+        Some("hid" | "capture" | "history")
+    );
 
     #[cfg(windows)]
     if !cli_mode {
@@ -190,6 +195,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         Some("hid") => return hid_cli::run(&args.collect::<Vec<_>>()).map_err(Into::into),
         #[cfg(windows)]
         Some("capture") => return capture::run_cli(&args.collect::<Vec<_>>()),
+        #[cfg(windows)]
+        Some("history") => return history::run_cli(&args.collect::<Vec<_>>()),
         _ => {}
     }
 
