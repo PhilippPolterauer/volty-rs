@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Battery Voltage (`0x1001`) fallback for HID++ devices without Unified Battery (`0x1004`) or legacy Battery Status (`0x1000`). The percentage is estimated from a documented single-cell LiPo curve, measured millivolts are retained in `BatteryStatus` and hardware captures, and `volty capture replay` decodes them offline. This path is synthetic-tested only and not hardware-validated.
+- Multiple configurable low-battery thresholds (`low_battery_thresholds`, 20/10/5 by default), each firing once per discharge cycle, with a repeat cooldown after the lowest threshold. The old singular `low_battery_threshold` key now reports the replacement setting.
+- Local battery history: the tray records monitored-device samples in `%LOCALAPPDATA%\Volty\battery-history.sqlite3`, and `volty history` summarizes or exports them as CSV. Samples are deduplicated within five minutes and pruned after 30 days; nothing is uploaded.
+- Tray display modes: switch between the battery glyph and a numeric percentage icon, and optionally pin the icon to one discovered device. Both choices persist in local SQLite state.
+- Last-seen age and stale markers in tray status lines and tooltips. `stale_after_minutes` (15 by default) controls when a reading is marked stale, and labels refresh about once a minute.
+
 ### Changed
 
 - Logs now use one file per local day (`volty-YYYY-MM-DD.log`) and remove daily files older than seven days. Each daily file still rotates at 5 MiB with one `.1` backup, and an existing `volty.log` is moved into the current day's file.
