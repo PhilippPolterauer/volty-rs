@@ -95,7 +95,7 @@ fn main() {
 #[cfg(windows)]
 fn attach_parent_console() -> std::io::Result<()> {
     use windows_sys::Win32::{
-        Foundation::{GetLastError, ERROR_ACCESS_DENIED, ERROR_INVALID_HANDLE},
+        Foundation::GetLastError,
         System::Console::{AttachConsole, ATTACH_PARENT_PROCESS},
     };
 
@@ -106,11 +106,23 @@ fn attach_parent_console() -> std::io::Result<()> {
 
     // SAFETY: this reads the error immediately after AttachConsole failed.
     let error = unsafe { GetLastError() };
-    if error == ERROR_ACCESS_DENIED || error == ERROR_INVALID_HANDLE {
+    if is_expected_parent_console_error(error) {
         return Ok(());
     }
 
     Err(std::io::Error::from_raw_os_error(error as i32))
+}
+
+#[cfg(windows)]
+fn is_expected_parent_console_error(error: u32) -> bool {
+    use windows_sys::Win32::Foundation::{
+        ERROR_ACCESS_DENIED, ERROR_INVALID_HANDLE, ERROR_INVALID_PARAMETER,
+    };
+
+    matches!(
+        error,
+        ERROR_ACCESS_DENIED | ERROR_INVALID_HANDLE | ERROR_INVALID_PARAMETER
+    )
 }
 
 #[cfg(windows)]
@@ -296,8 +308,19 @@ impl Drop for SingleInstance {
 
 #[cfg(all(test, windows))]
 mod tests {
-    use super::SingleInstance;
+    use super::{is_expected_parent_console_error, SingleInstance};
     use std::time::{SystemTime, UNIX_EPOCH};
+    use windows_sys::Win32::Foundation::{
+        ERROR_ACCESS_DENIED, ERROR_FILE_NOT_FOUND, ERROR_INVALID_HANDLE, ERROR_INVALID_PARAMETER,
+    };
+
+    #[test]
+    fn missing_parent_console_errors_are_ignored() {
+        assert!(is_expected_parent_console_error(ERROR_ACCESS_DENIED));
+        assert!(is_expected_parent_console_error(ERROR_INVALID_HANDLE));
+        assert!(is_expected_parent_console_error(ERROR_INVALID_PARAMETER));
+        assert!(!is_expected_parent_console_error(ERROR_FILE_NOT_FOUND));
+    }
 
     #[test]
     fn mutex_stays_exclusive_for_the_guard_lifetime() {
