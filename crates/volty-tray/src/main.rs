@@ -129,9 +129,7 @@ fn is_expected_parent_console_error(error: u32) -> bool {
 fn show_error(message: &str) {
     use windows_sys::Win32::UI::WindowsAndMessaging::MB_OK;
 
-    let message = crate::win32::to_wide(message);
-    let title = crate::win32::to_wide("Volty");
-    crate::app_icon::show_message_box(&message, &title, MB_OK);
+    crate::app_icon::show_message_box(message, "Volty", MB_OK);
 }
 
 #[cfg(windows)]

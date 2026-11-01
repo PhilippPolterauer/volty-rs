@@ -319,6 +319,14 @@ mod tests {
     use super::{is_terminated_wide, to_wide};
 
     #[test]
+    fn wide_strings_convert_empty_and_ordinary_strings_with_one_terminator() {
+        assert_eq!(to_wide(""), [0]);
+        assert_eq!(to_wide("Volty"), [86, 111, 108, 116, 121, 0]);
+        assert!(is_terminated_wide(&to_wide("")));
+        assert!(is_terminated_wide(&to_wide("Volty")));
+    }
+
+    #[test]
     fn wide_strings_replace_embedded_nuls_and_append_one_terminator() {
         assert_eq!(to_wide("a\0b"), [b'a' as u16, 0xfffd, b'b' as u16, 0]);
         assert!(is_terminated_wide(&[b'a' as u16, 0]));

@@ -126,7 +126,9 @@ pub fn tao_window_icon() -> io::Result<Icon> {
         .map_err(|error| io::Error::other(format!("could not create window icon: {error}")))
 }
 
-pub fn show_message_box(text: &[u16], title: &[u16], style: u32) -> i32 {
+pub fn show_message_box(text: &str, title: &str, style: u32) -> i32 {
+    let text = crate::win32::to_wide(text);
+    let title = crate::win32::to_wide(title);
     // SAFETY: a null module name requests the current process executable's module handle.
     let instance = unsafe { GetModuleHandleW(ptr::null()) };
     if instance.is_null() {
@@ -144,7 +146,7 @@ pub fn show_message_box(text: &[u16], title: &[u16], style: u32) -> i32 {
         lpfnMsgBoxCallback: None,
         dwLanguageId: 0,
     };
-    // SAFETY: parameters, title, and text remain live for the synchronous dialog call.
+    // SAFETY: parameters and both NUL-terminated strings remain live for the synchronous call.
     unsafe { MessageBoxIndirectW(&parameters) }
 }
 

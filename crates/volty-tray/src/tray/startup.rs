@@ -41,15 +41,12 @@ pub(super) fn start_on_boot_for_first_run() -> Result<bool, TrayError> {
         return Ok(enabled);
     }
 
-    let text = crate::win32::to_wide(
-        "Would you like Volty to start automatically when you sign in to Windows?\n\n\
+    let text = "Would you like Volty to start automatically when you sign in to Windows?\n\n\
          If you choose Yes, Windows will start Volty from this executable's current location. \
-         Keep the file there. You can change this later from the tray menu.",
-    );
-    let title = crate::win32::to_wide("Start Volty with Windows?");
+         Keep the file there. You can change this later from the tray menu.";
     let response = crate::app_icon::show_message_box(
-        &text,
-        &title,
+        text,
+        "Start Volty with Windows?",
         windows_sys::Win32::UI::WindowsAndMessaging::MB_DEFBUTTON2
             | windows_sys::Win32::UI::WindowsAndMessaging::MB_YESNO,
     );
@@ -101,7 +98,7 @@ pub fn confirm_reset(
     configuration_file: &std::path::Path,
     local_state_file: &std::path::Path,
 ) -> Result<bool, TrayError> {
-    let text = crate::win32::to_wide(&format!(
+    let text = format!(
         "This permanently deletes Volty's configuration and local device state, disables Windows startup, and resets the first-run startup prompt:\n\n\
          Configuration: {}\n\
          Local state: {}\n\n\
@@ -109,11 +106,10 @@ pub fn confirm_reset(
          Continue?",
         configuration_file.display(),
         local_state_file.display()
-    ));
-    let title = crate::win32::to_wide("Reset Volty?");
+    );
     let response = crate::app_icon::show_message_box(
         &text,
-        &title,
+        "Reset Volty?",
         windows_sys::Win32::UI::WindowsAndMessaging::MB_DEFBUTTON2
             | windows_sys::Win32::UI::WindowsAndMessaging::MB_YESNO,
     );
