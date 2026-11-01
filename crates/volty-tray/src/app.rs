@@ -550,6 +550,35 @@ impl App {
             return Ok(());
         }
 
+        let other_process_ids = match crate::update::find_other_volty_process_ids() {
+            Ok(process_ids) => process_ids,
+            Err(error) => {
+                self.update_operation_running = false;
+                self.restore_update_menu();
+                let message = format!("Could not check for other Volty processes: {error}");
+                self.report_error("Update process check failed", &message)?;
+                self.show_update_message(
+                    "Could not check for other Volty processes",
+                    &message,
+                    windows_sys::Win32::UI::WindowsAndMessaging::MB_OK
+                        | windows_sys::Win32::UI::WindowsAndMessaging::MB_ICONERROR,
+                );
+                return Ok(());
+            }
+        };
+        if !other_process_ids.is_empty() {
+            self.update_operation_running = false;
+            self.restore_update_menu();
+            let message = crate::update::other_volty_process_warning(&other_process_ids);
+            self.show_update_message(
+                "Close other Volty instances",
+                &message,
+                windows_sys::Win32::UI::WindowsAndMessaging::MB_OK
+                    | windows_sys::Win32::UI::WindowsAndMessaging::MB_ICONWARNING,
+            );
+            return Ok(());
+        }
+
         let action_sender = self.tray.action_sender();
         if let Err(error) = thread::Builder::new()
             .name("volty-update-install".to_owned())

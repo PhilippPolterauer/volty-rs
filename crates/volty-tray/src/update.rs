@@ -212,7 +212,15 @@ pub fn apply_update_cli(arguments: &[String]) -> Result<(), Box<dyn Error>> {
     })?;
     wait_for_process_exit(request.parent_process_id)?;
 
-    let result = replace_executable(&request);
+    let result = match find_other_volty_process_ids_for(&request.target_executable) {
+        Ok(process_ids) if !process_ids.is_empty() => {
+            Err(UpdateError::new(other_volty_process_warning(&process_ids)))
+        }
+        Ok(_) => replace_executable(&request),
+        Err(error) => Err(UpdateError::new(format!(
+            "could not check for other Volty processes: {error}"
+        ))),
+    };
     match result {
         Ok(backup) => {
             if let Err(error) = launch_updated_executable(
@@ -261,6 +269,99 @@ pub fn apply_update_cli(arguments: &[String]) -> Result<(), Box<dyn Error>> {
     }
 
     Ok(())
+}
+
+pub fn find_other_volty_process_ids() -> io::Result<Vec<u32>> {
+    let executable = std::env::current_exe()?;
+    find_other_volty_process_ids_for(&executable)
+}
+
+fn find_other_volty_process_ids_for(target_executable: &Path) -> io::Result<Vec<u32>> {
+    use windows_sys::Win32::{
+        Foundation::{CloseHandle, GetLastError, ERROR_NO_MORE_FILES, INVALID_HANDLE_VALUE},
+        System::Diagnostics::ToolHelp::{
+            CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W,
+            TH32CS_SNAPPROCESS,
+        },
+    };
+
+    let target_name = target_executable
+        .file_name()
+        .ok_or_else(|| io::Error::other("update target path has no executable name"))?
+        .to_string_lossy();
+
+    // SAFETY: CreateToolhelp32Snapshot takes only scalar arguments and returns an owned handle.
+    let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) };
+    if snapshot == INVALID_HANDLE_VALUE {
+        return Err(io::Error::last_os_error());
+    }
+
+    let result = (|| {
+        // SAFETY: PROCESSENTRY32W is a plain Win32 output structure initialized before use.
+        let mut entry: PROCESSENTRY32W = unsafe { std::mem::zeroed() };
+        entry.dwSize = std::mem::size_of::<PROCESSENTRY32W>() as u32;
+
+        // SAFETY: snapshot is a valid process snapshot and entry has the required size set.
+        if unsafe { Process32FirstW(snapshot, &mut entry) } == 0 {
+            // SAFETY: GetLastError is read immediately after Process32FirstW failed.
+            let error = unsafe { GetLastError() };
+            if error == ERROR_NO_MORE_FILES {
+                return Ok(Vec::new());
+            }
+            return Err(io::Error::from_raw_os_error(error as i32));
+        }
+
+        let mut process_ids = Vec::new();
+        loop {
+            let name_end = entry
+                .szExeFile
+                .iter()
+                .position(|character| *character == 0)
+                .unwrap_or(entry.szExeFile.len());
+            if String::from_utf16_lossy(&entry.szExeFile[..name_end])
+                .eq_ignore_ascii_case(&target_name)
+                && entry.th32ProcessID != std::process::id()
+            {
+                process_ids.push(entry.th32ProcessID);
+            }
+
+            // SAFETY: snapshot is a valid process snapshot and entry remains a writable output.
+            if unsafe { Process32NextW(snapshot, &mut entry) } == 0 {
+                // SAFETY: GetLastError is read immediately after Process32NextW failed.
+                let error = unsafe { GetLastError() };
+                if error != ERROR_NO_MORE_FILES {
+                    return Err(io::Error::from_raw_os_error(error as i32));
+                }
+                break;
+            }
+        }
+
+        Ok(process_ids)
+    })();
+
+    // SAFETY: this function uniquely owns the snapshot handle returned by CreateToolhelp32Snapshot.
+    let close_result = unsafe { CloseHandle(snapshot) };
+    match (result, close_result) {
+        (Err(error), _) => Err(error),
+        (Ok(_), 0) => Err(io::Error::last_os_error()),
+        (Ok(process_ids), _) => Ok(process_ids),
+    }
+}
+
+pub fn other_volty_process_warning(process_ids: &[u32]) -> String {
+    let process_ids_text = process_ids
+        .iter()
+        .map(u32::to_string)
+        .collect::<Vec<_>>()
+        .join(", ");
+    let (running_processes, process_reference, process_id_label) = if process_ids.len() == 1 {
+        ("Another Volty process is still running", "it", "PID")
+    } else {
+        ("Other Volty processes are still running", "them", "PIDs")
+    };
+    format!(
+        "{running_processes} ({process_id_label}: {process_ids_text}). Windows cannot replace the executable while another copy is running. Close {process_reference} and try the update again."
+    )
 }
 
 pub fn finish_update_cli(arguments: &[String]) -> Result<(), Box<dyn Error>> {
@@ -835,9 +936,9 @@ fn show_update_error(message: &str) {
 #[cfg(test)]
 mod tests {
     use super::{
-        digest_to_hex, download_verified_executable, find_release_asset, is_executable_path,
-        parse_release_version, parse_sha256_checksum, remove_staged_file, unique_suffix,
-        GitHubReleaseAsset,
+        digest_to_hex, download_verified_executable, find_other_volty_process_ids,
+        find_release_asset, is_executable_path, other_volty_process_warning, parse_release_version,
+        parse_sha256_checksum, remove_staged_file, unique_suffix, GitHubReleaseAsset,
     };
     use crate::update_progress::{Phase, UpdateProgress};
     use semver::Version;
@@ -936,6 +1037,24 @@ mod tests {
         assert!(is_executable_path(Path::new(r"C:\Apps\volty.EXE")));
         assert!(!is_executable_path(Path::new(r"C:\Apps\volty.txt")));
         assert!(!is_executable_path(Path::new("volty.exe")));
+    }
+
+    #[test]
+    fn other_process_warning_lists_one_or_many_processes() {
+        assert_eq!(
+            other_volty_process_warning(&[123]),
+            "Another Volty process is still running (PID: 123). Windows cannot replace the executable while another copy is running. Close it and try the update again."
+        );
+        assert_eq!(
+            other_volty_process_warning(&[123, 456]),
+            "Other Volty processes are still running (PIDs: 123, 456). Windows cannot replace the executable while another copy is running. Close them and try the update again."
+        );
+    }
+
+    #[test]
+    fn process_scan_does_not_report_the_current_process() {
+        let process_ids = find_other_volty_process_ids().unwrap();
+        assert!(!process_ids.contains(&std::process::id()));
     }
 
     #[test]
