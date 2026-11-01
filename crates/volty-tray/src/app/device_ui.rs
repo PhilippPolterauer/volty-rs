@@ -1,7 +1,4 @@
-use super::{
-    append_config_error, battery_status_label, record_event, DeviceId, DeviceReading, FileLogger,
-    LogLevel,
-};
+use super::{append_config_error, record_event, DeviceId, DeviceReading, FileLogger, LogLevel};
 use super::{battery_eta::battery_eta_label, poll::PollResult};
 use crate::tray::{DeviceMonitorEntry, TrayController};
 use std::{
@@ -129,54 +126,13 @@ pub(super) fn update_tray_devices(
             .iter()
             .position(|reading| reading.id.as_str() == identity)
     });
-    let mut device_statuses = Vec::with_capacity(readings.len());
-    let mut tooltip_statuses = Vec::with_capacity(readings.len());
-    for reading in readings {
-        let device_name = reading.label.display();
-        let percentage = reading.battery.level_percent;
-        let mut status = battery_status_label(&reading.battery);
-        if let Some(eta_label) = battery_eta_label(reading) {
-            status.push_str("; ");
-            status.push_str(&eta_label);
-        }
-        if let Some(error) = &reading.notification_error {
-            status.push_str("; notification error: ");
-            status.push_str(error);
-        }
-        let last_seen = last_seen_label(reading.observed_at, now, stale_after);
-        if let Some(last_seen) = &last_seen {
-            status.push_str("; ");
-            status.push_str(last_seen);
-        }
-        let percentage_label = percentage.map_or_else(
-            || "percentage unavailable".to_owned(),
-            |value| format!("{value}%"),
-        );
-        device_statuses.push(format!("{device_name}: {percentage_label} ({status})"));
-        tooltip_statuses.push(compact_device_status(reading, last_seen.as_deref()));
-    }
-    let device_count = device_statuses.len();
-    if let Some(error) = notification_config_error {
-        device_statuses.push(format!("Notification configuration error: {error}"));
-    }
-    let mut summary = if let Some(index) = pinned_index {
-        format!("Pinned {}", device_statuses[index])
-    } else if driver.pinned_device_unavailable {
-        format!(
-            "Pinned device unavailable · {device_count} device{} monitored",
-            if device_count == 1 { "" } else { "s" }
-        )
-    } else {
-        format!(
-            "{device_count} device{} monitored",
-            if device_count == 1 { "" } else { "s" }
-        )
-    };
-    append_config_error(&mut summary, notification_config_error);
-    let tooltip_statuses = prioritized_tooltip_statuses(
-        tooltip_statuses,
+    let (summary, device_statuses, tooltip_statuses) = tray_status_view(
+        readings,
         pinned_index,
         driver.pinned_device_unavailable,
+        notification_config_error,
+        now,
+        stale_after,
     );
 
     if let Err(error) = tray.update_devices(
@@ -194,6 +150,63 @@ pub(super) fn update_tray_devices(
         )?;
     }
     Ok(())
+}
+
+/// Builds the compact status line, the extra menu rows, and the tooltip lines.
+///
+/// One monitored device is already the status line, so it gets no duplicate
+/// row. A pinned device is summarized as `Pinned …` and omitted from the rows;
+/// the other devices stay listed when more than one is monitored.
+fn tray_status_view(
+    readings: &[DeviceReading],
+    pinned_index: Option<usize>,
+    pinned_device_unavailable: bool,
+    notification_config_error: Option<&str>,
+    now: Instant,
+    stale_after: Duration,
+) -> (String, Vec<String>, Vec<String>) {
+    let compact_statuses: Vec<_> = readings
+        .iter()
+        .map(|reading| {
+            let last_seen = last_seen_label(reading.observed_at, now, stale_after);
+            compact_device_status(reading, last_seen.as_deref())
+        })
+        .collect();
+    let device_count = compact_statuses.len();
+    let mut summary = if let Some(index) = pinned_index {
+        format!("Pinned {}", compact_statuses[index])
+    } else if pinned_device_unavailable {
+        format!(
+            "Pinned device unavailable · {device_count} device{} monitored",
+            if device_count == 1 { "" } else { "s" }
+        )
+    } else if device_count == 1 {
+        compact_statuses[0].clone()
+    } else {
+        format!(
+            "{device_count} device{} monitored",
+            if device_count == 1 { "" } else { "s" }
+        )
+    };
+    append_config_error(&mut summary, notification_config_error);
+
+    let single_device_is_the_summary =
+        device_count == 1 && pinned_index.is_none() && !pinned_device_unavailable;
+    let device_statuses = if readings.is_empty() {
+        vec!["No device status available".to_owned()]
+    } else if single_device_is_the_summary {
+        Vec::new()
+    } else {
+        compact_statuses
+            .iter()
+            .enumerate()
+            .filter(|(index, _)| pinned_index != Some(*index))
+            .map(|(_, status)| status.clone())
+            .collect()
+    };
+    let tooltip_statuses =
+        prioritized_tooltip_statuses(compact_statuses, pinned_index, pinned_device_unavailable);
+    (summary, device_statuses, tooltip_statuses)
 }
 
 /// Puts the pinned device first in the tooltip and announces a missing pin.
@@ -222,6 +235,9 @@ fn compact_device_status(reading: &DeviceReading, last_seen: Option<&str>) -> St
         },
         None => format!("{name}: battery unknown"),
     };
+    if reading.notification_error.is_some() {
+        status.push_str(" · notification failed");
+    }
     if let Some(last_seen) = last_seen {
         status.push_str(" · ");
         status.push_str(last_seen);
@@ -452,6 +468,17 @@ mod tests {
     }
 
     #[test]
+    fn compact_device_status_marks_failed_notifications() {
+        let mut reading = test_reading();
+        reading.notification_error = Some("toast delivery failed".to_owned());
+
+        assert_eq!(
+            compact_device_status(&reading, None),
+            "Test device (slot 1): 20% · ETA calculating · notification failed"
+        );
+    }
+
+    #[test]
     fn compact_device_status_appends_last_seen_text() {
         let mut reading = test_reading();
         reading.estimated_time_remaining = Some(Duration::from_secs(90 * 60));
@@ -608,6 +635,129 @@ mod tests {
                 .and_then(|reading| reading.battery.level_percent),
             None
         );
+    }
+
+    fn named_reading(id: &str, name: &str, percentage: u8, eta_minutes: u64) -> DeviceReading {
+        let mut reading = reading_with(id, Some(percentage));
+        reading.label = DeviceLabel::new(name);
+        reading.estimated_time_remaining = Some(Duration::from_secs(eta_minutes * 60));
+        reading
+    }
+
+    fn status_view(
+        readings: &[DeviceReading],
+        pinned_index: Option<usize>,
+    ) -> (String, Vec<String>, Vec<String>) {
+        tray_status_view(
+            readings,
+            pinned_index,
+            false,
+            None,
+            Instant::now(),
+            Duration::from_secs(15 * 60),
+        )
+    }
+
+    #[test]
+    fn one_monitored_device_uses_a_single_compact_status_line() {
+        let readings = vec![named_reading("hid:a#1", "Mouse A", 47, 90)];
+
+        let (summary, rows, tooltip) = status_view(&readings, None);
+
+        assert_eq!(summary, "Mouse A: 47% · ETA 1h 30m");
+        assert!(rows.is_empty());
+        assert_eq!(tooltip, vec!["Mouse A: 47% · ETA 1h 30m"]);
+    }
+
+    #[test]
+    fn no_devices_keep_the_placeholder_row() {
+        let (summary, rows, tooltip) = status_view(&[], None);
+
+        assert_eq!(summary, "0 devices monitored");
+        assert_eq!(rows, vec!["No device status available".to_owned()]);
+        assert!(tooltip.is_empty());
+    }
+
+    #[test]
+    fn pinned_device_status_is_not_repeated_as_a_row() {
+        let readings = vec![named_reading("hid:a#1", "Mouse A", 47, 90)];
+
+        let (summary, rows, tooltip) = status_view(&readings, Some(0));
+
+        assert_eq!(summary, "Pinned Mouse A: 47% · ETA 1h 30m");
+        assert!(rows.is_empty());
+        assert_eq!(tooltip, vec!["Mouse A: 47% · ETA 1h 30m"]);
+    }
+
+    #[test]
+    fn multiple_devices_keep_the_summary_and_list_each_device() {
+        let readings = vec![
+            named_reading("hid:a#1", "Mouse A", 80, 120),
+            named_reading("hid:b#1", "Mouse B", 20, 90),
+        ];
+
+        let (summary, rows, _) = status_view(&readings, None);
+
+        assert_eq!(summary, "2 devices monitored");
+        assert_eq!(
+            rows,
+            vec![
+                "Mouse A: 80% · ETA 2h".to_owned(),
+                "Mouse B: 20% · ETA 1h 30m".to_owned(),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_pinned_device_is_omitted_from_the_other_device_rows() {
+        let readings = vec![
+            named_reading("hid:a#1", "Mouse A", 80, 120),
+            named_reading("hid:b#1", "Mouse B", 20, 90),
+        ];
+
+        let (summary, rows, tooltip) = status_view(&readings, Some(1));
+
+        assert_eq!(summary, "Pinned Mouse B: 20% · ETA 1h 30m");
+        assert_eq!(rows, vec!["Mouse A: 80% · ETA 2h".to_owned()]);
+        assert_eq!(tooltip[0], "Mouse B: 20% · ETA 1h 30m");
+    }
+
+    #[test]
+    fn an_unavailable_pin_keeps_the_device_rows_visible() {
+        let readings = vec![named_reading("hid:a#1", "Mouse A", 47, 90)];
+        let now = Instant::now();
+        let (summary, rows, tooltip) = tray_status_view(
+            &readings,
+            None,
+            true,
+            None,
+            now,
+            Duration::from_secs(15 * 60),
+        );
+
+        assert_eq!(summary, "Pinned device unavailable · 1 device monitored");
+        assert_eq!(rows, vec!["Mouse A: 47% · ETA 1h 30m".to_owned()]);
+        assert_eq!(tooltip[0], "Pinned device unavailable");
+    }
+
+    #[test]
+    fn notification_config_errors_stay_in_the_summary() {
+        let readings = vec![named_reading("hid:a#1", "Mouse A", 47, 90)];
+        let now = Instant::now();
+        let (summary, rows, _) = tray_status_view(
+            &readings,
+            None,
+            false,
+            Some("invalid notification settings"),
+            now,
+            Duration::from_secs(15 * 60),
+        );
+
+        assert_eq!(
+            summary,
+            "Mouse A: 47% · ETA 1h 30m; notification config error: invalid notification settings"
+        );
+        assert!(rows.is_empty());
     }
 
     #[test]

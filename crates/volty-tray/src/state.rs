@@ -5,7 +5,7 @@ use std::{
     time::Duration,
 };
 
-use rusqlite::{params, Connection, TransactionBehavior};
+use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 
 /// Version 4 adds persisted tray display preferences next to the per-device
 /// monitoring and notification state from version 3.
@@ -13,6 +13,7 @@ const SCHEMA_VERSION: i64 = 4;
 
 const TRAY_ICON_STYLE_KEY: &str = "tray_icon_style";
 const PINNED_DEVICE_KEY: &str = "pinned_device";
+const ADVANCED_OPTIONS_VISIBLE_KEY: &str = "advanced_options_visible";
 
 /// How the tray draws its battery percentage.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -404,6 +405,38 @@ impl DeviceState {
         Ok(())
     }
 
+    pub fn advanced_options_visible(&self) -> Result<bool, Box<dyn std::error::Error>> {
+        let value = self
+            .connection
+            .query_row(
+                "SELECT value FROM settings WHERE key = ?1",
+                [ADVANCED_OPTIONS_VISIBLE_KEY],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?;
+        match value.as_deref() {
+            None | Some("false") => Ok(false),
+            Some("true") => Ok(true),
+            Some(value) => Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("unknown advanced-options visibility {value:?}"),
+            )
+            .into()),
+        }
+    }
+
+    pub fn set_advanced_options_visible(
+        &mut self,
+        visible: bool,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        self.connection.execute(
+            "INSERT INTO settings (key, value) VALUES (?1, ?2)
+             ON CONFLICT (key) DO UPDATE SET value = excluded.value",
+            params![ADVANCED_OPTIONS_VISIBLE_KEY, visible.to_string()],
+        )?;
+        Ok(())
+    }
+
     pub fn import_legacy_monitored_devices(
         &mut self,
         devices: &BTreeMap<String, bool>,
@@ -782,6 +815,7 @@ mod tests {
     fn fresh_database_uses_default_tray_display_settings() {
         let path = fresh_state_path("volty-fresh-tray-state");
         let state = DeviceState::open(&path).unwrap();
+        assert!(!state.advanced_options_visible().unwrap());
         assert_eq!(
             state.tray_display().unwrap(),
             TrayDisplaySettings {
@@ -795,6 +829,38 @@ mod tests {
             .unwrap();
         assert_eq!(version, 4);
         drop(state);
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn advanced_options_visibility_is_persisted_and_validated() {
+        let path = fresh_state_path("volty-advanced-options-state");
+
+        {
+            let mut state = DeviceState::open(&path).unwrap();
+            assert!(!state.advanced_options_visible().unwrap());
+            state.set_advanced_options_visible(true).unwrap();
+        }
+
+        {
+            let mut state = DeviceState::open(&path).unwrap();
+            assert!(state.advanced_options_visible().unwrap());
+            state.set_advanced_options_visible(false).unwrap();
+            state
+                .connection
+                .execute(
+                    "INSERT INTO settings (key, value) VALUES (?1, 'sometimes')
+                     ON CONFLICT (key) DO UPDATE SET value = excluded.value",
+                    [ADVANCED_OPTIONS_VISIBLE_KEY],
+                )
+                .unwrap();
+            assert_eq!(
+                state.advanced_options_visible().unwrap_err().to_string(),
+                "unknown advanced-options visibility \"sometimes\""
+            );
+        }
+
+        drop(DeviceState::open(&path).unwrap());
         fs::remove_file(path).unwrap();
     }
 

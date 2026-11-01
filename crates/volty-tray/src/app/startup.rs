@@ -18,6 +18,7 @@ pub(super) struct StartupState {
     pub(super) monitor_state: Option<DeviceState>,
     pub(super) monitored_devices: BTreeMap<String, bool>,
     pub(super) tray_display: TrayDisplaySettings,
+    pub(super) advanced_options_visible: bool,
     pub(super) active_config: AppConfig,
     pub(super) notification_config_error: Option<String>,
     pub(super) warnings: Vec<String>,
@@ -84,6 +85,18 @@ pub(super) fn load_startup_state() -> StartupState {
         },
         None => TrayDisplaySettings::default(),
     };
+    let advanced_options_visible = match monitor_state.as_ref() {
+        Some(state) => match state.advanced_options_visible() {
+            Ok(visible) => visible,
+            Err(error) => {
+                warnings.push(format!(
+                    "Could not load advanced tray options preference; using the basic menu: {error}"
+                ));
+                false
+            }
+        },
+        None => false,
+    };
     let (active_config, notification_config_error) = match AppConfig::load() {
         Ok(config) => (config, None),
         Err(error) => (AppConfig::default(), Some(error.to_string())),
@@ -93,6 +106,7 @@ pub(super) fn load_startup_state() -> StartupState {
         monitor_state,
         monitored_devices,
         tray_display,
+        advanced_options_visible,
         active_config,
         notification_config_error,
         warnings,
@@ -152,28 +166,22 @@ pub(super) fn process_windows_messages() -> bool {
 }
 pub(super) fn open_configuration() -> Result<(), Box<dyn Error>> {
     let path = AppConfig::ensure_config_file()?;
-    if let Err(code) = shell_open(path.as_os_str()) {
-        std::process::Command::new("notepad.exe")
-            .arg(&path)
-            .spawn()
-            .map_err(|error| {
-                format!(
-                    "could not open configuration {} with its associated editor (ShellExecuteW code {code}) or Notepad: {error}",
-                    path.display()
-                )
-            })?;
-    }
-
-    Ok(())
+    open_file(&path, "configuration")
 }
 pub(super) fn open_log_file(path: &Path) -> Result<(), Box<dyn Error>> {
+    open_file(path, "log file")
+}
+pub(super) fn open_capture_file(path: &Path) -> Result<(), Box<dyn Error>> {
+    open_file(path, "hardware capture")
+}
+fn open_file(path: &Path, description: &str) -> Result<(), Box<dyn Error>> {
     if let Err(code) = shell_open(path.as_os_str()) {
         std::process::Command::new("notepad.exe")
             .arg(path)
             .spawn()
             .map_err(|error| {
                 format!(
-                    "could not open log file {} with its associated application (ShellExecuteW code {code}) or Notepad: {error}",
+                    "could not open {description} {} with its associated application (ShellExecuteW code {code}) or Notepad: {error}",
                     path.display()
                 )
             })?;

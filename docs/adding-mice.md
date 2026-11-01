@@ -108,7 +108,7 @@ To make a non-standard battery feature available in the tray:
 3. For another Logitech HID++ feature, keep feature discovery and request
    handling within the HID++ backend, then parse its response into the shared
    `BatteryStatus` representation in
-   [`crates/volty-hid/src/battery.rs`](../crates/volty-hid/src/battery.rs).
+    [`crates/volty-hid/src/battery.rs`](https://github.com/PhilippPolterauer/volty-rs/blob/main/crates/volty-hid/src/battery.rs).
    Set `level_percent` only when the device's protocol guarantees that value
    is a percentage; preserve unknown status values rather than guessing.
 4. Add unit tests using captured response frames, including malformed and

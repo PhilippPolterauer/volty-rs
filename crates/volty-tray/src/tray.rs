@@ -18,6 +18,7 @@ pub use startup::{confirm_reset, set_start_on_boot_enabled, start_on_boot_enable
 use std::{
     error::Error,
     fmt,
+    path::PathBuf,
     sync::mpsc::{self, Receiver, Sender, TryRecvError},
 };
 
@@ -30,6 +31,7 @@ use crate::{config::BatteryColorMap, state::TrayIconStyle};
 
 const MAX_STATUS_CHARS: usize = 80;
 const MAX_TOOLTIP_UTF16_UNITS: usize = 127;
+const MENU_ITEMS_AFTER_ADVANCED_OPTIONS: usize = 3; // About, separator, Quit.
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum MenuItemId {
@@ -37,8 +39,10 @@ enum MenuItemId {
     Discover,
     Configuration,
     LogFile,
+    SaveHardwareCapture,
     Diagnose,
     StartOnBoot,
+    ShowAdvancedOptions,
     ResetVolty,
     MonitoredDevices,
     MonitoredDevice(u64),
@@ -58,8 +62,10 @@ impl MenuItemId {
             Self::Discover => "volty.discover".to_owned(),
             Self::Configuration => "volty.configuration".to_owned(),
             Self::LogFile => "volty.open-log-file".to_owned(),
+            Self::SaveHardwareCapture => "volty.save-hardware-capture".to_owned(),
             Self::Diagnose => "volty.diagnose".to_owned(),
             Self::StartOnBoot => "volty.start-on-boot".to_owned(),
+            Self::ShowAdvancedOptions => "volty.show-advanced-options".to_owned(),
             Self::ResetVolty => "volty.reset".to_owned(),
             Self::MonitoredDevices => "volty.monitored-devices".to_owned(),
             Self::MonitoredDevice(sequence) => {
@@ -81,8 +87,10 @@ impl MenuItemId {
             "volty.discover" => Some(Self::Discover),
             "volty.configuration" => Some(Self::Configuration),
             "volty.open-log-file" => Some(Self::LogFile),
+            "volty.save-hardware-capture" => Some(Self::SaveHardwareCapture),
             "volty.diagnose" => Some(Self::Diagnose),
             "volty.start-on-boot" => Some(Self::StartOnBoot),
+            "volty.show-advanced-options" => Some(Self::ShowAdvancedOptions),
             "volty.reset" => Some(Self::ResetVolty),
             "volty.monitored-devices" => Some(Self::MonitoredDevices),
             "volty.tray-display" => Some(Self::TrayDisplay),
@@ -123,15 +131,18 @@ struct PinnedDeviceMenuItem {
     item: CheckMenuItem,
 }
 
-/// Actions that the application should handle after polling the controller.
+/// Actions the application should handle after menu events or notification clicks.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TrayAction {
     DiscoverDevicesNow,
     OpenConfiguration,
     OpenLogFile,
+    SaveHardwareCapture,
     Diagnose,
     ToggleStartOnBoot,
+    SetAdvancedOptionsVisible { visible: bool },
     ResetVolty,
+    OpenSavedHardwareCapture { path: PathBuf },
     SetDeviceMonitored { identity: String, monitored: bool },
     SetTrayIconStyle { style: TrayIconStyle },
     SetPinnedDevice { identity: Option<String> },
@@ -168,10 +179,9 @@ pub struct TrayController {
     monitored_device_items: Vec<MonitoredDeviceMenuItem>,
     known_monitored_devices: Vec<DeviceMonitorEntry>,
     next_monitored_device_menu_id: u64,
-    tray_display_menu: Submenu,
-    battery_style_item: CheckMenuItem,
-    percentage_style_item: CheckMenuItem,
-    pinned_lowest_item: CheckMenuItem,
+    show_advanced_options_item: CheckMenuItem,
+    advanced_menu_items: AdvancedMenuItems,
+    advanced_options_visible: bool,
     pinned_device_items: Vec<PinnedDeviceMenuItem>,
     next_pinned_device_menu_id: u64,
     pinned_device: Option<String>,
@@ -192,55 +202,63 @@ struct TrayMenu {
     status_item: MenuItem,
     monitored_devices_menu: Submenu,
     monitored_devices_empty_item: MenuItem,
-    tray_display_menu: Submenu,
-    battery_style_item: CheckMenuItem,
-    percentage_style_item: CheckMenuItem,
-    pinned_lowest_item: CheckMenuItem,
+    show_advanced_options_item: CheckMenuItem,
+    advanced_menu_items: AdvancedMenuItems,
     start_on_boot_item: CheckMenuItem,
 }
 
 struct TrayMenuItems {
     status_item: MenuItem,
-    discover_item: MenuItem,
-    configuration_item: MenuItem,
-    open_log_item: MenuItem,
-    diagnose_item: MenuItem,
-    start_on_boot_item: CheckMenuItem,
     monitored_devices_menu: Submenu,
     monitored_devices_empty_item: MenuItem,
+    start_on_boot_item: CheckMenuItem,
+    show_advanced_options_item: CheckMenuItem,
+    advanced_options_separator: PredefinedMenuItem,
+    advanced_menu_items: AdvancedMenuItems,
+    about_item: MenuItem,
+    about_separator: PredefinedMenuItem,
+    quit_item: MenuItem,
+}
+
+struct AdvancedMenuItems {
     tray_display_menu: Submenu,
     battery_style_item: CheckMenuItem,
     percentage_style_item: CheckMenuItem,
     pinned_lowest_item: CheckMenuItem,
-    about_item: MenuItem,
+    tray_display_separator: PredefinedMenuItem,
+    discover_item: MenuItem,
+    configuration_item: MenuItem,
+    open_log_item: MenuItem,
+    save_capture_item: MenuItem,
+    diagnose_item: MenuItem,
     reset_item: MenuItem,
-    quit_item: MenuItem,
+    end_separator: PredefinedMenuItem,
 }
 
-fn create_tray_menu(start_on_boot: bool) -> Result<TrayMenu, TrayError> {
+impl AdvancedMenuItems {
+    fn menu_items(&self) -> [&dyn tray_icon::menu::IsMenuItem; 9] {
+        [
+            &self.tray_display_menu,
+            &self.tray_display_separator,
+            &self.discover_item,
+            &self.configuration_item,
+            &self.open_log_item,
+            &self.save_capture_item,
+            &self.diagnose_item,
+            &self.reset_item,
+            &self.end_separator,
+        ]
+    }
+}
+
+fn create_tray_menu(
+    start_on_boot: bool,
+    advanced_options_visible: bool,
+) -> Result<TrayMenu, TrayError> {
     let status_item = MenuItem::with_id(
         MenuItemId::Status.as_id(),
         "Searching for supported devices",
         false,
-        None,
-    );
-    let discover_item = MenuItem::with_id(
-        MenuItemId::Discover.as_id(),
-        "Discover Devices Now",
-        true,
-        None,
-    );
-    let configuration_item = MenuItem::with_id(
-        MenuItemId::Configuration.as_id(),
-        "Open Configuration",
-        true,
-        None,
-    );
-    let open_log_item = MenuItem::with_id(MenuItemId::LogFile.as_id(), "Open Log File", true, None);
-    let diagnose_item = MenuItem::with_id(
-        MenuItemId::Diagnose.as_id(),
-        "Diagnose / Report an Issue",
-        true,
         None,
     );
     let start_on_boot_item = CheckMenuItem::with_id(
@@ -248,6 +266,13 @@ fn create_tray_menu(start_on_boot: bool) -> Result<TrayMenu, TrayError> {
         "Start on Boot",
         true,
         start_on_boot,
+        None,
+    );
+    let show_advanced_options_item = CheckMenuItem::with_id(
+        MenuItemId::ShowAdvancedOptions.as_id(),
+        "Show Advanced Options",
+        true,
+        advanced_options_visible,
         None,
     );
     let monitored_devices_menu = Submenu::with_id(
@@ -264,6 +289,7 @@ fn create_tray_menu(start_on_boot: bool) -> Result<TrayMenu, TrayError> {
                 "could not add empty monitored-devices status: {error}"
             ))
         })?;
+
     let battery_style_item = CheckMenuItem::with_id(
         MenuItemId::TrayIconStyleBattery.as_id(),
         "Battery",
@@ -295,39 +321,72 @@ fn create_tray_menu(start_on_boot: bool) -> Result<TrayMenu, TrayError> {
             .append(item)
             .map_err(|error| TrayError::new(format!("could not add {description}: {error}")))?;
     }
-    let items = TrayMenuItems {
-        status_item,
-        discover_item,
-        configuration_item,
-        open_log_item,
-        diagnose_item,
-        start_on_boot_item,
-        monitored_devices_menu,
-        monitored_devices_empty_item,
+
+    let advanced_menu_items = AdvancedMenuItems {
         tray_display_menu,
         battery_style_item,
         percentage_style_item,
         pinned_lowest_item,
-        about_item: MenuItem::with_id(MenuItemId::About.as_id(), "About Volty", true, None),
+        tray_display_separator: PredefinedMenuItem::separator(),
+        discover_item: MenuItem::with_id(
+            MenuItemId::Discover.as_id(),
+            "Discover Devices Now",
+            true,
+            None,
+        ),
+        configuration_item: MenuItem::with_id(
+            MenuItemId::Configuration.as_id(),
+            "Open Configuration",
+            true,
+            None,
+        ),
+        open_log_item: MenuItem::with_id(MenuItemId::LogFile.as_id(), "Open Log File", true, None),
+        save_capture_item: MenuItem::with_id(
+            MenuItemId::SaveHardwareCapture.as_id(),
+            "Save Hardware Capture",
+            true,
+            None,
+        ),
+        diagnose_item: MenuItem::with_id(
+            MenuItemId::Diagnose.as_id(),
+            "Diagnose / Report an Issue",
+            true,
+            None,
+        ),
         reset_item: MenuItem::with_id(MenuItemId::ResetVolty.as_id(), "Reset Volty...", true, None),
+        end_separator: PredefinedMenuItem::separator(),
+    };
+
+    let items = TrayMenuItems {
+        status_item,
+        monitored_devices_menu,
+        monitored_devices_empty_item,
+        start_on_boot_item,
+        show_advanced_options_item,
+        advanced_options_separator: PredefinedMenuItem::separator(),
+        advanced_menu_items,
+        about_item: MenuItem::with_id(MenuItemId::About.as_id(), "About Volty", true, None),
+        about_separator: PredefinedMenuItem::separator(),
         quit_item: MenuItem::with_id(MenuItemId::Quit.as_id(), "Quit", true, None),
     };
     let menu = Menu::new();
-    append_tray_menu_items(&menu, &items)?;
+    append_tray_menu_items(&menu, &items, advanced_options_visible)?;
     Ok(TrayMenu {
         menu,
         status_item: items.status_item,
         monitored_devices_menu: items.monitored_devices_menu,
         monitored_devices_empty_item: items.monitored_devices_empty_item,
-        tray_display_menu: items.tray_display_menu,
-        battery_style_item: items.battery_style_item,
-        percentage_style_item: items.percentage_style_item,
-        pinned_lowest_item: items.pinned_lowest_item,
+        show_advanced_options_item: items.show_advanced_options_item,
+        advanced_menu_items: items.advanced_menu_items,
         start_on_boot_item: items.start_on_boot_item,
     })
 }
 
-fn append_tray_menu_items(menu: &Menu, items: &TrayMenuItems) -> Result<(), TrayError> {
+fn append_tray_menu_items(
+    menu: &Menu,
+    items: &TrayMenuItems,
+    advanced_options_visible: bool,
+) -> Result<(), TrayError> {
     menu.append(&items.status_item)
         .map_err(|error| TrayError::new(format!("could not add tray status: {error}")))?;
     menu.append(&PredefinedMenuItem::separator())
@@ -336,44 +395,77 @@ fn append_tray_menu_items(menu: &Menu, items: &TrayMenuItems) -> Result<(), Tray
         .map_err(|error| {
             TrayError::new(format!("could not add monitored-devices menu: {error}"))
         })?;
-    menu.append(&items.tray_display_menu)
-        .map_err(|error| TrayError::new(format!("could not add tray-display menu: {error}")))?;
-    menu.append(&PredefinedMenuItem::separator())
-        .map_err(|error| TrayError::new(format!("could not add tray separator: {error}")))?;
-    menu.append(&items.discover_item).map_err(|error| {
-        TrayError::new(format!("could not add device-discovery action: {error}"))
-    })?;
-    menu.append(&items.configuration_item)
-        .map_err(|error| TrayError::new(format!("could not add configuration action: {error}")))?;
-    menu.append(&items.open_log_item)
-        .map_err(|error| TrayError::new(format!("could not add log-file action: {error}")))?;
-    menu.append(&items.diagnose_item)
-        .map_err(|error| TrayError::new(format!("could not add Diagnose action: {error}")))?;
     menu.append(&items.start_on_boot_item)
         .map_err(|error| TrayError::new(format!("could not add start-on-boot action: {error}")))?;
-    menu.append(&PredefinedMenuItem::separator())
-        .map_err(|error| TrayError::new(format!("could not add tray separator: {error}")))?;
+    menu.append(&items.show_advanced_options_item)
+        .map_err(|error| {
+            TrayError::new(format!("could not add advanced-options toggle: {error}"))
+        })?;
+    menu.append(&items.advanced_options_separator)
+        .map_err(|error| {
+            TrayError::new(format!("could not add advanced-options separator: {error}"))
+        })?;
+    if advanced_options_visible {
+        append_advanced_menu_items(menu, &items.advanced_menu_items)?;
+    }
     menu.append(&items.about_item)
         .map_err(|error| TrayError::new(format!("could not add About action: {error}")))?;
-    menu.append(&PredefinedMenuItem::separator())
-        .map_err(|error| TrayError::new(format!("could not add tray separator: {error}")))?;
-    menu.append(&items.reset_item)
-        .map_err(|error| TrayError::new(format!("could not add reset action: {error}")))?;
-    menu.append(&PredefinedMenuItem::separator())
+    menu.append(&items.about_separator)
         .map_err(|error| TrayError::new(format!("could not add tray separator: {error}")))?;
     menu.append(&items.quit_item)
         .map_err(|error| TrayError::new(format!("could not add quit action: {error}")))?;
     Ok(())
 }
 
+fn append_advanced_menu_items(menu: &Menu, items: &AdvancedMenuItems) -> Result<(), TrayError> {
+    for (index, item) in items.menu_items().into_iter().enumerate() {
+        menu.append(item).map_err(|error| {
+            TrayError::new(format!(
+                "could not add advanced tray option {}: {error}",
+                index + 1
+            ))
+        })?;
+    }
+    Ok(())
+}
+
+fn insert_advanced_menu_items(
+    menu: &Menu,
+    items: &AdvancedMenuItems,
+    position: usize,
+) -> Result<(), TrayError> {
+    let mut inserted = Vec::new();
+    for (offset, item) in items.menu_items().into_iter().enumerate() {
+        if let Err(error) = menu.insert(item, position + offset) {
+            for inserted_item in inserted.into_iter().rev() {
+                let _ = menu.remove(inserted_item);
+            }
+            return Err(TrayError::new(format!(
+                "could not show advanced tray options: {error}"
+            )));
+        }
+        inserted.push(item);
+    }
+    Ok(())
+}
+
+fn remove_advanced_menu_items(menu: &Menu, items: &AdvancedMenuItems) -> Result<(), TrayError> {
+    for item in items.menu_items().into_iter().rev() {
+        menu.remove(item).map_err(|error| {
+            TrayError::new(format!("could not hide advanced tray options: {error}"))
+        })?;
+    }
+    Ok(())
+}
+
 impl TrayController {
-    /// Creates the tray icon and menu.
+    /// Creates the tray icon and menu with the saved advanced-menu preference.
     ///
     /// The Start on Boot state is initialized from the Windows Run key. On
     /// other platforms the check item starts unchecked and the action reports
     /// that autostart is unsupported when selected.
-    pub fn new() -> Result<Self, TrayError> {
-        let tray_menu = create_tray_menu(start_on_boot_for_first_run()?)?;
+    pub fn new(advanced_options_visible: bool) -> Result<Self, TrayError> {
+        let tray_menu = create_tray_menu(start_on_boot_for_first_run()?, advanced_options_visible)?;
         let icon = TrayIconBuilder::new()
             .with_tooltip("Volty — Searching for supported devices")
             .with_icon(unknown_battery_icon_at_size(ICON_SIZE)?)
@@ -392,10 +484,9 @@ impl TrayController {
             monitored_device_items: Vec::new(),
             known_monitored_devices: Vec::new(),
             next_monitored_device_menu_id: 0,
-            tray_display_menu: tray_menu.tray_display_menu,
-            battery_style_item: tray_menu.battery_style_item,
-            percentage_style_item: tray_menu.percentage_style_item,
-            pinned_lowest_item: tray_menu.pinned_lowest_item,
+            show_advanced_options_item: tray_menu.show_advanced_options_item,
+            advanced_menu_items: tray_menu.advanced_menu_items,
+            advanced_options_visible,
             pinned_device_items: Vec::new(),
             next_pinned_device_menu_id: 0,
             pinned_device: None,
@@ -467,18 +558,16 @@ impl TrayController {
         let icon_percentage = self.update_percentage(percentage, device_statuses.is_empty());
 
         let tooltip = tooltip_for_devices(summary, tooltip_statuses);
-        let empty_status = "No device status available".to_owned();
-        let menu_device_statuses = if device_statuses.is_empty() {
-            std::slice::from_ref(&empty_status)
-        } else {
-            device_statuses
-        };
+        let menu_device_statuses: Vec<_> = device_statuses
+            .iter()
+            .map(|status| shorten_status(status))
+            .collect();
         self.update_display(
             &shorten_status(summary),
             &tooltip,
             icon_percentage,
             ICON_SIZE,
-            menu_device_statuses,
+            &menu_device_statuses,
         )
     }
 
@@ -512,7 +601,8 @@ impl TrayController {
 
     fn clear_pinned_device_items(&mut self) -> Result<(), TrayError> {
         for entry in self.pinned_device_items.drain(..) {
-            self.tray_display_menu
+            self.advanced_menu_items
+                .tray_display_menu
                 .remove(&entry.item)
                 .map_err(|error| {
                     TrayError::new(format!("could not clear pinned devices: {error}"))
@@ -528,8 +618,15 @@ impl TrayController {
             .ok_or_else(|| TrayError::new("pinned-device menu ID space exhausted"))?;
         let menu_id = MenuItemId::PinnedDevice(sequence);
         let checked = self.pinned_device.as_deref() == Some(device.identity.as_str());
-        let item = CheckMenuItem::with_id(menu_id.as_id(), &device.name, true, checked, None);
-        self.tray_display_menu
+        let item = CheckMenuItem::with_id(
+            menu_id.as_id(),
+            shorten_status(&device.name),
+            true,
+            checked,
+            None,
+        );
+        self.advanced_menu_items
+            .tray_display_menu
             .append(&item)
             .map_err(|error| TrayError::new(format!("could not add pinned device: {error}")))?;
         self.pinned_device_items.push(PinnedDeviceMenuItem {
@@ -581,8 +678,13 @@ impl TrayController {
             .checked_add(1)
             .ok_or_else(|| TrayError::new("monitored-device menu ID space exhausted"))?;
         let menu_id = MenuItemId::MonitoredDevice(sequence);
-        let item =
-            CheckMenuItem::with_id(menu_id.as_id(), &device.name, true, device.monitored, None);
+        let item = CheckMenuItem::with_id(
+            menu_id.as_id(),
+            shorten_status(&device.name),
+            true,
+            device.monitored,
+            None,
+        );
         self.monitored_devices_menu
             .append(&item)
             .map_err(|error| TrayError::new(format!("could not add monitored device: {error}")))?;
@@ -685,8 +787,12 @@ impl TrayController {
             MenuItemId::Discover => Some(TrayAction::DiscoverDevicesNow),
             MenuItemId::Configuration => Some(TrayAction::OpenConfiguration),
             MenuItemId::LogFile => Some(TrayAction::OpenLogFile),
+            MenuItemId::SaveHardwareCapture => Some(TrayAction::SaveHardwareCapture),
             MenuItemId::Diagnose => Some(TrayAction::Diagnose),
             MenuItemId::StartOnBoot => Some(TrayAction::ToggleStartOnBoot),
+            MenuItemId::ShowAdvancedOptions => Some(TrayAction::SetAdvancedOptionsVisible {
+                visible: self.show_advanced_options_item.is_checked(),
+            }),
             MenuItemId::MonitoredDevice(menu_id) => self
                 .monitored_device_items
                 .iter()
@@ -724,6 +830,33 @@ impl TrayController {
         self.start_on_boot_item.set_checked(checked);
     }
 
+    pub fn set_advanced_options_visible(&mut self, visible: bool) -> Result<(), TrayError> {
+        if visible == self.advanced_options_visible {
+            self.show_advanced_options_item.set_checked(visible);
+            return Ok(());
+        }
+
+        if visible {
+            let position = self
+                .menu
+                .items()
+                .len()
+                .checked_sub(MENU_ITEMS_AFTER_ADVANCED_OPTIONS)
+                .ok_or_else(|| TrayError::new("tray menu is missing its About and Quit items"))?;
+            insert_advanced_menu_items(&self.menu, &self.advanced_menu_items, position)?;
+        } else {
+            remove_advanced_menu_items(&self.menu, &self.advanced_menu_items)?;
+        }
+
+        self.advanced_options_visible = visible;
+        self.show_advanced_options_item.set_checked(visible);
+        Ok(())
+    }
+
+    pub(crate) fn action_sender(&self) -> Sender<TrayAction> {
+        self.actions_tx.clone()
+    }
+
     pub fn set_device_monitored_checked(&self, identity: &str, checked: bool) {
         if let Some(entry) = self
             .monitored_device_items
@@ -738,9 +871,11 @@ impl TrayController {
     /// the native menu has no radio groups.
     pub fn set_tray_icon_style(&mut self, style: TrayIconStyle) {
         self.tray_icon_style = style;
-        self.battery_style_item
+        self.advanced_menu_items
+            .battery_style_item
             .set_checked(style == TrayIconStyle::Battery);
-        self.percentage_style_item
+        self.advanced_menu_items
+            .percentage_style_item
             .set_checked(style == TrayIconStyle::Percentage);
     }
 
@@ -751,7 +886,8 @@ impl TrayController {
     }
 
     fn apply_pinned_device_checks(&self) {
-        self.pinned_lowest_item
+        self.advanced_menu_items
+            .pinned_lowest_item
             .set_checked(self.pinned_device.is_none());
         for entry in &self.pinned_device_items {
             entry
@@ -887,8 +1023,10 @@ mod tests {
             MenuItemId::Discover,
             MenuItemId::Configuration,
             MenuItemId::LogFile,
+            MenuItemId::SaveHardwareCapture,
             MenuItemId::Diagnose,
             MenuItemId::StartOnBoot,
+            MenuItemId::ShowAdvancedOptions,
             MenuItemId::ResetVolty,
             MenuItemId::MonitoredDevices,
             MenuItemId::MonitoredDevice(42),
@@ -920,6 +1058,84 @@ mod tests {
         assert_eq!(
             MenuItemId::parse("volty.monitored-device.18446744073709551616"),
             None
+        );
+    }
+
+    fn menu_item_ids(menu: &Menu) -> Vec<String> {
+        menu.items()
+            .iter()
+            .map(|item| item.id().0.clone())
+            .collect()
+    }
+
+    #[test]
+    fn advanced_options_are_hidden_by_default_and_toggle_in_place() {
+        let tray_menu = create_tray_menu(false, false).unwrap();
+        let basic_ids = menu_item_ids(&tray_menu.menu);
+        assert!(basic_ids.contains(&MenuItemId::ShowAdvancedOptions.as_id()));
+        assert!(basic_ids.contains(&MenuItemId::MonitoredDevices.as_id()));
+        assert!(basic_ids.contains(&MenuItemId::StartOnBoot.as_id()));
+        for id in [
+            MenuItemId::TrayDisplay,
+            MenuItemId::Discover,
+            MenuItemId::Configuration,
+            MenuItemId::LogFile,
+            MenuItemId::SaveHardwareCapture,
+            MenuItemId::Diagnose,
+            MenuItemId::ResetVolty,
+        ] {
+            assert!(!basic_ids.contains(&id.as_id()), "{id:?} should be hidden");
+        }
+
+        let insertion_position = basic_ids.len() - MENU_ITEMS_AFTER_ADVANCED_OPTIONS;
+        insert_advanced_menu_items(
+            &tray_menu.menu,
+            &tray_menu.advanced_menu_items,
+            insertion_position,
+        )
+        .unwrap();
+        let advanced_ids = menu_item_ids(&tray_menu.menu);
+        for id in [
+            MenuItemId::TrayDisplay,
+            MenuItemId::Discover,
+            MenuItemId::Configuration,
+            MenuItemId::LogFile,
+            MenuItemId::SaveHardwareCapture,
+            MenuItemId::Diagnose,
+            MenuItemId::ResetVolty,
+        ] {
+            assert!(
+                advanced_ids.contains(&id.as_id()),
+                "{id:?} should be visible"
+            );
+        }
+        assert!(
+            advanced_ids
+                .iter()
+                .position(|id| id == &MenuItemId::ShowAdvancedOptions.as_id())
+                .unwrap()
+                < advanced_ids
+                    .iter()
+                    .position(|id| id == &MenuItemId::TrayDisplay.as_id())
+                    .unwrap()
+        );
+        assert!(
+            advanced_ids
+                .iter()
+                .position(|id| id == &MenuItemId::TrayDisplay.as_id())
+                .unwrap()
+                < advanced_ids
+                    .iter()
+                    .position(|id| id == &MenuItemId::About.as_id())
+                    .unwrap()
+        );
+
+        remove_advanced_menu_items(&tray_menu.menu, &tray_menu.advanced_menu_items).unwrap();
+        assert_eq!(menu_item_ids(&tray_menu.menu), basic_ids);
+
+        let restored_menu = create_tray_menu(false, true).unwrap();
+        assert!(
+            menu_item_ids(&restored_menu.menu).contains(&MenuItemId::SaveHardwareCapture.as_id())
         );
     }
 

@@ -1,0 +1,14 @@
+[book]
+title = "Volty Documentation"
+authors = ["Volty contributors"]
+description = "User, hardware support, and development documentation for Volty."
+language = "en"
+src = "docs"
+
+[build]
+build-dir = "target/mdbook"
+
+[output.html]
+site-url = "/volty-rs/"
+git-repository-url = "https://github.com/PhilippPolterauer/volty-rs"
+edit-url-template = "https://github.com/PhilippPolterauer/volty-rs/edit/main/docs/{path}"

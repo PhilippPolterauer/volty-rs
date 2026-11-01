@@ -67,17 +67,21 @@ behavior, not executable instructions.
 
 ## Generate a capture from the tray
 
-1. Right-click the Volty tray icon and choose **Diagnose / Report an Issue**.
-2. Volty saves the text diagnostic report under `%APPDATA%\Volty\reports` and a
-   timestamped `.volty.jsonl` hardware capture under
-   `%APPDATA%\Volty\captures`. The Diagnose window shows the exact paths.
+1. Right-click the Volty tray icon, select **Show Advanced Options**, then
+   choose **Save Hardware Capture** for a capture alone or
+   **Diagnose / Report an Issue** for a text report plus a capture.
+2. Volty saves the timestamped `.volty.jsonl` hardware capture under
+   `%APPDATA%\Volty\captures`. The tray status line shows the saved file name,
+   and the log records the full path. A Windows notification appears; click its
+   body or **Open Capture** button to open the saved file. Diagnose also saves a
+   text report under `%APPDATA%\Volty\reports` and shows both exact paths.
    Bluetooth evidence is included only when Volty was built with the opt-in
    `bluetooth` feature.
 3. Review the capture before sharing it, then attach it to a **Hardware report**
    issue if you are reporting device support or battery behavior.
 
-If the capture file is not created, include the text report and the error shown
-by the Diagnose window in your issue.
+If the capture file is not created, check the tray status or log for the error;
+for Diagnose, the window also shows the failure.
 
 ## Command-line capture
 

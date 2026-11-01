@@ -1,7 +1,7 @@
 # Volty (`volty-rs`)
 
 <p align="center">
-  <img src="docs/icon.png" alt="Volty logo" width="220">
+  <img src="docs/icon.png" alt="Volty logo" width="180">
 </p>
 
 <p align="center">
@@ -14,584 +14,55 @@
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="MIT license"></a>
 </p>
 
-<p align="center">
-  <a href="#features">Features</a> •
-  <a href="#using-a-released-binary">Usage</a> •
-  <a href="#architecture">Architecture</a> •
-  <a href="#quick-start">Quick Start</a> •
-  <a href="#building-and-testing">Building</a> •
-  <a href="#releases">Releases</a> •
-  <a href="CHANGELOG.md">Changelog</a> •
-  <a href="#license">License</a>
-</p>
+Volty monitors battery levels from supported Logitech HID++ and standard HID
+battery reports on Windows 10/11. Bluetooth battery monitoring is experimental
+and available only in opt-in builds.
 
----
+> **Project status:** Volty is a hobby project with limited hardware testing. It
+> is not production-ready or affiliated with Logitech. Device support and
+> readings are best-effort.
 
-## Device support
-
-Volty supports Logitech HID++ 2.0 interfaces and standard HID battery reports
-on Windows 10/11. The table below tracks devices that have actually been tested
-on hardware. Devices that use a supported protocol are handled best-effort even
-when they are not listed, but they are not marked as verified until a reading
-and its capture replay are confirmed.
-
-| Device | Connection | Battery backend | Tested functionality | Status |
-| --- | --- | --- | --- | --- |
-| Logitech G502 X Superlight RGB | USB cable or Lightspeed receiver | Logitech HID++ 2.0 Unified Battery (`0x1004`) | Battery percentage, charging/discharging state, HID++ capture and offline replay | Verified |
-| Logitech HID++ devices exposing only Battery Voltage (`0x1001`) | Any HID++ 2.0 transport | HID++ 2.0 Battery Voltage fallback | Estimated percentage from raw millivolts; raw voltage retained in `BatteryStatus` and captures; HID++ capture replay from a synthetic fixture | Experimental; implemented, not hardware-validated |
-| Baseus Bass BS2 Lite | Bluetooth Classic (HFP/A2DP) | Windows PnP battery property (`DEVPKEY_Device_BatteryLevel`) | Battery percentage, Bluetooth property capture and offline replay; charging state is not reported | Verified, opt-in Bluetooth build |
-| Keychron K8 Pro | USB cable or Bluetooth | None exposed to Windows | No standard HID battery, BLE GATT Battery Service, or usable vendor battery command | Not supported |
-| Generic HID battery devices | Any HID transport | Standard HID battery usages | Battery percentage, charging state when the descriptor reports it, layout capture and offline replay | Experimental; no named hardware verified |
-
-Status meanings:
-
-- **Verified:** a battery reading was observed on real hardware and reproduced
-  from a hardware capture.
-- **Experimental:** the code path is implemented and covered by synthetic
-  fixtures, but no named hardware has been verified.
-- **Not supported:** tested on real hardware and no non-invasive host-readable
-  battery source was found.
-
-To add a device, collect a reviewed hardware capture and open a **Hardware
-report** issue. See [Hardware capture](./docs/hardware-capture.md). A device is
-added to this table only after its reading is verified.
-
-The Bluetooth tray integration is opt-in and disabled in default builds because
-hardware validation is still limited: one Bluetooth Classic headset has been
-verified through the Windows PnP battery property, while the BLE GATT path has
-not been tested on real hardware. To include it in a local build, pass the tray
-crate's `bluetooth` feature:
-
-```powershell
-cargo run --release --package volty-tray --features bluetooth
-```
-
-Other vendor HID protocols, classic Bluetooth HFP battery indications, and
-vendor-specific Bluetooth protocols are not currently supported. Generic HID
-support covers devices whose report descriptor declares a battery level (Generic
-Device Controls *Battery Strength* or the Battery System page); a device that
-only exposes its battery through a vendor-defined report is not detected.
-For Logitech HID++ devices, Volty falls back to Battery Voltage (`0x1001`) when
-neither Unified Battery (`0x1004`) nor legacy Battery Status (`0x1000`) is
-available. That fallback is implemented and unit-tested with synthetic frames,
-but it is not hardware-validated because no such device was available. Its
-percentage is estimated from a documented single-cell LiPo curve and can differ
-from the vendor's own estimate; the measured millivolts remain available in
-`BatteryStatus::voltage_mv`, are written to hardware captures, and are decoded
-again by `volty capture replay`. All `0x1001` evidence remains synthetic and
-hardware-unvalidated.
-Hardware captures made by a `bluetooth` build also record raw Bluetooth
-property or GATT evidence, and `volty capture replay` validates that evidence
-even in default builds.
-
-The project owner's current primary use case is the Logitech G502 X Superlight
-RGB; device support remains best-effort and hardware validation is limited.
-
-> **Project status:** Volty is a vibe-coded hobby project. It is experimental,
-> has limited hardware testing, and is not production-ready or affiliated with
-> Logitech. Treat device support and battery readings as best-effort.
-
----
-
-## Features
-
-* **HID++ Battery Monitoring:** Polls supported Logitech interfaces and paired-device indexes, prioritizes recently successful receiver slots from a machine-local SQLite cache, caches each slot's battery feature so steady-state polls need one request, and uses each device's HID++ name when available. Devices with neither Unified Battery nor legacy Battery Status fall back to Battery Voltage, whose percentage is estimated from raw millivolts, retained in captures, and replayed offline; the path is not hardware-validated.
-* **Generic HID Battery:** Reads the standard HID battery usages for any device that declares them, shown as "HID Battery".
-* **Battery Runtime Estimate:** Estimates time remaining from the recent discharge rate, using a configurable history window (10 minutes by default).
-* **Local Battery History:** Records monitored readings to a local SQLite database with automatic 30-day pruning, and exposes them through the `volty history` command as a table or CSV.
-* **Experimental Bluetooth integration:** Opt-in via the `bluetooth` Cargo feature and disabled in default builds. Validated with one Bluetooth Classic headset through the Windows PnP battery property; only devices Windows reports as connected are read, so paired-but-offline devices keep no stale percentage. BLE GATT support is implemented but not yet hardware-validated.
-* **Configurable Color Coding:** The default tray map is green above 30%, yellow from 16–30%, and red at 15% or below. Thresholds and colors can be overridden in the TOML configuration.
-* **Tray Display Modes:** Choose the battery glyph or a numeric percentage drawn from a built-in 3×5 pixel font, and optionally pin the icon to one discovered device. Both choices persist in local SQLite state, not `config.toml`.
-* **Stale-Aware Readings:** Tooltip lines show a last-seen age and are marked `stale` after a configurable period without a fresh reading, so a sleeping or disconnected device is not shown as live.
-* **Threshold Alerts:** Native Windows toast notifications at configurable battery thresholds (20%, 10%, and 5% by default), each fired once per discharge cycle, with an optional repeat cooldown after the lowest threshold.
-* **One-Click Diagnostics:** A native Diagnose window shows recent app logs, backend status, and HID details, with buttons to copy the log or open a GitHub issue draft, and saves a machine-readable `.volty.jsonl` hardware capture (including Bluetooth property and GATT evidence when built with the `bluetooth` feature) in addition to the text report for local review.
-* **Retry After Read Errors:** Polling resumes after errors using the configurable retry interval.
-* **Per-Device Control:** Choose which discovered devices are monitored from the tray's **Monitored Devices** submenu; the choice is persisted locally.
-* **Self-Maintaining Logs:** Writes one log file per local day, caps each at 5 MiB with one `.1` backup, and keeps the last seven days.
-* **Standalone Executable:** Releases provide a single `.exe` with no installer. Optional Start on Boot uses the current user's Windows Run setting.
-
----
-
-## Using a released binary
+## Get started
 
 Download the latest
-[Volty release](https://github.com/PhilippPolterauer/volty-rs/releases/latest).
-For a standard 64-bit Windows PC, download the asset named
-`Volty-vX.Y.Z-x86_64-pc-windows-msvc.exe` (the version number changes with
-each release). The `.sha256` file alongside it contains the executable's
-SHA-256 checksum for verification. Volty is a standalone executable; there is
-no installer or additional runtime file to download.
+[Windows release](https://github.com/PhilippPolterauer/volty-rs/releases/latest)
+and run the standalone `.exe`. No installer or additional runtime is required.
 
-Save the executable where you want to keep it, then double-click it. Volty
-starts directly in the Windows notification area without opening a terminal.
-On first launch, choose whether to start Volty automatically when you sign in.
-That choice is remembered and can be changed at any time using **Start on
-Boot** in the tray menu. If enabled, Windows starts Volty from the executable's
-current location, so keep the file there. Volty monitors supported HID
-devices while running. Bluetooth is disabled in the default build and remains
-opt-in because hardware validation is limited. Its tray icon shows the lowest
-reported battery level unless you pin a specific device or switch to the
-numeric icon style; hover over it for one compact line per device with its
-name, battery percentage, an estimated time remaining when available, and a
-last-seen age once the reading is more than a minute old. After
-`stale_after_minutes` without a fresh reading, the line is marked `stale`.
+**[Read the Volty documentation](https://philipppolterauer.github.io/volty-rs/)**
+for installation and usage, supported devices, configuration, troubleshooting,
+and development guides.
 
-![Volty tray icon showing a monitored device's battery and charging status](./docs/tray.png)
+## Highlights
 
-Low-battery alerts appear as Windows notifications. They are enabled by
-default, fire at 20%, 10%, and 5%, and can be configured or disabled in
-Volty's configuration file.
+- Windows notification-area battery monitor with per-device controls.
+- Low-battery alerts, estimated remaining time, tray display customization, and
+  local battery history.
+- Read-only hardware captures with local inspection and replay; nothing is
+  uploaded automatically.
+- Modular Rust workspace with separate battery, HID, Bluetooth, capture, and
+  tray crates.
 
-![Volty low-battery notification](./docs/notification.png)
+Device support is best-effort beyond the hardware listed in the
+[device support guide](https://philipppolterauer.github.io/volty-rs/device-support.html).
+Bluetooth is disabled in default builds. See the
+[Bluetooth validation notes](https://philipppolterauer.github.io/volty-rs/bluetooth-headphone-battery-support.html)
+for current limitations.
 
-Right-click the tray icon to discover devices and refresh readings
-(**Discover Devices Now**), choose **Monitored Devices**, switch the icon or pin
-a device under **Tray Display**, open configuration or logs, view diagnostics,
-enable **Start on Boot**, see **About Volty**, reset Volty, or quit the app.
-**Start on Boot** toggles startup for the current Windows user and does not
-require administrator privileges.
+## Build and test
 
-![Volty tray menu](./docs/context.png)
-
-### Tray display modes
-
-**Tray Display** in the tray menu controls what the icon shows:
-
-* **Battery** (default) draws the battery glyph that fills to the percentage.
-* **Percentage** draws the number itself. The digits come from a built-in 3×5
-  bitmap glyph table compiled into the application; no font file or extra
-  dependency is used. The icon shows the number only, without a percent sign,
-  because a mark would crowd the third digit. At 16 px, `100` uses 11 of the
-  16 horizontal pixels, so three-digit values are tight but centered; a 32 px
-  icon uses two-by-two glyph pixels. Digits use the active
-  `[battery_color_map]` color for the percentage, and an unknown level still
-  shows the neutral question-mark battery icon.
-
-The same submenu pins the icon to one device. **Lowest battery (default)**
-restores the original behavior of showing the lowest monitored percentage and
-is selected when no device is pinned. Choosing a discovered device makes its
-percentage drive the icon, the first tooltip line, and the tray status text;
-other monitored devices remain listed at the top of the menu. If the pinned
-device is not currently present, Volty falls back to the lowest monitored
-percentage and reports **Pinned device unavailable** in the status and tooltip.
-The pin is not cleared automatically, so it applies again when the device
-returns. Unchecking a device in **Monitored Devices** while it is pinned has
-the same fallback behavior.
-
-Both choices are stored in the local SQLite state database at
-`%LOCALAPPDATA%\Volty\device-state.sqlite3`, not in `config.toml`. **Reset
-Volty** deletes that database and restores the battery icon with no pin.
-
-Configuration and logs are stored in `%APPDATA%\Volty`. Choose
-**Open Configuration** or **Open Log File** in the tray menu to access them.
-For troubleshooting, choose **Diagnose / Report an Issue**. It saves a text
-report under `%APPDATA%\Volty\reports` and a machine-readable `.volty.jsonl`
-hardware capture under `%APPDATA%\Volty\captures`; the Diagnose window shows
-the exact paths. Bluetooth evidence is included when Volty was built with the
-opt-in `bluetooth` feature. Review both files before sharing them, because
-names or log messages can identify your setup. Nothing is uploaded
-automatically. To report battery support or behavior, choose the **Hardware
-report** issue template, attach the capture, and describe what you expected
-versus what Volty showed; see [Hardware capture](./docs/hardware-capture.md)
-for what the file contains and what is deliberately left out. For a console
-snapshot, run `volty capture`; add `--strict` to omit model strings or
-`--output <path>` to choose the file. `volty capture inspect <file>` validates
-a capture, and `volty capture replay <file>` checks that its recorded HID or
-Bluetooth readings can be decoded again without hardware.
-**Reset Volty** asks for confirmation before deleting
-`%APPDATA%\Volty\config.toml` and
-`%LOCALAPPDATA%\Volty\device-state.sqlite3`. It also disables **Start on Boot**
-and clears the first-run startup prompt preference, then reinitializes Volty in
-place with fresh defaults. The startup prompt appears again the next time
-Volty launches; logs and the battery history database are retained.
-
----
-
-## 🏗️ Architecture
-
-`volty-rs` is structured as a modular Cargo workspace, keeping hardware protocol handling strictly separated from UI rendering:
-
-```text
-volty-rs/
-├── crates/
-│   ├── volty-battery/         # Dependency-free BatteryStatus, DeviceId and the BatteryProvider trait
-│   ├── volty-bluetooth/       # Windows Bluetooth provider (classic, SetupAPI, BLE phases under a shared scan budget)
-│   ├── volty-capture/         # Versioned, append-only JSONL hardware capture schema and reader/writer
-│   ├── volty-hid/             # Zero-UI HID protocol crate
-│   │   ├── src/
-│   │   │   ├── lib.rs         # Module root and public re-exports
-│   │   │   ├── interface.rs   # HID interface metadata, selectors and stable interface keys
-│   │   │   ├── hid.rs         # Optional hidapi device enumeration and sessions
-│   │   │   ├── device.rs      # Device name and feature queries
-│   │   │   ├── protocol.rs    # Protocol/device traits and support catalog
-│   │   │   ├── profile.rs     # Device profile parsing (`profile` feature)
-│   │   │   ├── command.rs     # HID++ feature commands (`profile` feature)
-│   │   │   ├── recording.rs   # HID++ transport wrapper that records raw exchanges
-│   │   │   ├── logitech_hidpp.rs # HID++ 2.0 transport and battery backend
-│   │   │   ├── generic_battery.rs # Standard HID battery usages (Windows HID parser in `generic_battery/native.rs`)
-│   │   │   └── battery.rs     # HID++ battery decoding (0x1004, 0x1000, 0x1001)
-│   │   └── Cargo.toml
-│   │
-│   └── volty-tray/            # Windows binary application
-│       ├── build.rs           # Embeds the Windows application manifest and icon
-│       ├── volty.manifest
-│       ├── assets/
-│       │   └── volty.ico      # Windows application icon
-│       ├── src/
-│       │   ├── main.rs        # CLI dispatch and single-instance guard
-│       │   ├── hid_cli.rs     # On-demand HID++ interface/feature diagnostics
-│       │   ├── history.rs     # Local SQLite battery history and the `volty history` CLI
-│       │   ├── app.rs         # Event loop and application state
-│       │   ├── app/           # Device session, polling worker, battery ETA, notifications, labels
-│       │   ├── capture.rs     # Hardware capture assembly for diagnostics
-│       │   ├── replay.rs      # Offline capture validation and replay
-│       │   ├── provider.rs    # Battery providers the tray polls (HID, optional Bluetooth)
-│       │   ├── provider/      # HID provider (stable identity, slot probing) and device-name cache
-│       │   ├── config.rs      # Per-user TOML settings
-│       │   ├── state.rs       # Local SQLite device, notification and tray display state
-│       │   ├── tray.rs        # Tray controller and context menu
-│       │   ├── tray/          # Icon rendering and start-on-boot registry handling
-│       │   ├── about.rs       # About window
-│       │   ├── diagnose.rs    # Native diagnostic window and clipboard actions
-│       │   ├── win32.rs       # Shared Win32 window and control helpers
-│       │   ├── native_ui.rs   # Native message boxes and icon helpers
-│       │   ├── report.rs      # Local diagnostic report generation
-│       │   ├── logging.rs     # Level-filtered local log file
-│       │   └── notify.rs      # Windows toast dispatcher
-│       └── Cargo.toml
-│
-└── Cargo.toml                 # Workspace manifest
-```
-
-### Runtime data flow
-
-```text
-HID interface enumeration        Bluetooth battery discovery
-        |                                |
-        v                                ├── Windows battery-life property (optional)
-SUPPORTED_HID_DEVICES -> BatteryProtocol └── Windows-paired BLE GATT Battery Service (optional)
-        |                                |
-   HidProvider                    BluetoothProvider
-        |                                |
-        └────────────────┬───────────────┘
-                         v
-        BatteryProvider -> DeviceId + DeviceLabel + BatteryStatus
-                         |
-        DeviceSession (poller thread, readings, ETA)
-                         |
-             tray state, icon, notifications
-```
-
-`volty-battery` defines the transport-neutral vocabulary: `BatteryStatus`
-(its `source` is a plain label set by the backend), the stable `DeviceId`, and
-the `BatteryProvider` trait. A provider yields readings keyed by `DeviceId`;
-the tray consumes only that and never sees HID++ opcodes, device indices or
-interface paths. A new source (headphones, another HID family) implements
-`BatteryProvider` and is added to `default_providers` in the tray; it does not
-extend the HID catalog or add a branch to the poller.
-
-`volty-hid` owns HID protocol behavior: `BatteryProtocol` implements interface
-matching, device-address iteration, and the protocol-specific battery query.
-`HidBatteryDevice` associates a device family with a backend. The
-`SUPPORTED_HID_DEVICES` catalog is the HID dispatch source: an interface must
-match exactly one device; no match is skipped and overlapping matches are
-reported. Its current catalog contains the Logitech HID++ 2.0 device and a
-generic HID battery device. The generic family matches an interface only when
-its report descriptor declares a readable battery level (probed once per
-interface and cached), and never matches vendor-defined usage pages, so it
-cannot overlap the HID++ family.
-
-HID identity does not depend on the Windows interface path, which changes when
-USB re-enumerates. `stable_interface_keys` derives a key from VID/PID,
-interface number, usage page/usage and (when present) a hash of the serial
-number; indistinguishable twins are split deterministically. The tray's cache,
-monitor flags and low-battery alert de-duplication all key off
-`hid:{stable key}#{slot}`.
-
-`volty-bluetooth` contains experimental Windows Bluetooth battery discovery,
-exposed to the tray as `BluetoothProvider`. The tray only compiles and polls
-it when built with `--package volty-tray --features bluetooth`. One
-Bluetooth Classic headset (Baseus Bass BS2 Lite) has been validated through
-the Windows PnP battery property with a stable device identity; the BLE GATT
-path and broader headset coverage still need hardware validation. The
-integration therefore stays feature-gated in default builds. Its three probes
-(battery-life property, SetupAPI, paired GATT) are an implementation detail
-contained inside the crate. Validated hardware, limitations and the remaining
-validation checklist are in
-[Bluetooth headphone battery support](./docs/bluetooth-headphone-battery-support.md).
-
-`volty-tray` owns polling, configuration, tray presentation, and
-notifications. Its `build.rs` embeds `volty.manifest` in Windows builds.
-The `volty hid` diagnostic commands (the `profile` feature of `volty-hid`)
-inspect interfaces and feature mappings or send explicitly authorized raw
-HID++ requests. They are separate from tray polling and do not select or
-register battery backends.
-
-The tray is Windows-only and does not pretend otherwise: `rusqlite` state is
-only built for `x86_64-pc-windows-msvc`. Three native surfaces are in play:
-`hidapi` (HID), `windows-sys` (Win32 UI) and `windows` (WinRT Bluetooth).
-
-Adding a device that shares the existing HID++ wire protocol requires a specific
-`HidBatteryDevice` matcher and a catalog entry. `HidBatteryDevice` supplies the
-family name, backend, and interface match (`matches` can override the default
-backend match). Add it to `SUPPORTED_HID_DEVICES`; that is the only HID
-dispatch catalog.
-
-A new wire protocol needs a new `BatteryProtocol`; a new encoding on an
-existing protocol can extend that backend. Its `supports_interface`
-identifies candidate interfaces, `device_indices` returns addresses to try,
-and `query_battery` performs discovery/transport/decoding and returns a
-normalized `BatteryStatus`. Set `level_percent` only when the device really
-reports a percentage, or when a documented estimate is explicitly labeled in
-`source` (the HID++ Battery Voltage fallback does this). Add or update a
-`HidBatteryDevice` and register it in
-`SUPPORTED_HID_DEVICES` when the interface needs a new or more specific match. The
-existing tray code consumes `BatteryStatus`, so a new backend does not need a
-tray/UI trait or a protocol-specific icon.
-
-If an existing model already matches the interface and its backend already
-reads the device's battery feature, no new trait implementation is needed.
-An on-demand diagnostic command alone never registers tray support. See
-[Generic HID battery-level support](./docs/hid-battery-support.md) for the
-extension flow and current limitations.
-
-## Quick start
-
-Run the application on Windows from the workspace root:
-
-```powershell
-cargo run --release --package volty-tray
-```
-
-The first battery query is made at startup; subsequent polling occurs every two
-minutes by default. Volty runs a single tray-app instance. The tray lists all
-monitored devices with readable battery status; its icon reflects the lowest
-reported percentage unless you pin a device or switch to the numeric icon style
-(see [Tray display modes](#tray-display-modes)). Use **Monitored Devices** in
-the tray menu to uncheck
-devices you do not want tracked; unchecked devices are omitted from the tray
-status, icon percentage, low-battery notifications, and battery history.
-Per-device choices are
-saved in the local SQLite state database at
-`%LOCALAPPDATA%\Volty\device-state.sqlite3`; unlisted devices are monitored by
-default. Legacy `[monitored_devices]` entries in `config.toml` are migrated to
-SQLite on startup and removed after a successful migration. The menu also lets
-you discover devices, open configuration, enable startup, or quit. **About Volty** opens
-a small native window with the app version and a button to visit the project on
-GitHub.
-The database also remembers which low-battery thresholds have already fired
-for each device in its current discharge cycle, preventing repeat alerts after
-a restart; a charging or full reading clears that runtime state.
-
-Low-battery alerts default to 20%, 10%, and 5%. Each threshold fires once per
-discharge cycle, and after the lowest threshold fires the alert may repeat once
-per cooldown while the battery stays at or below it. Select **Open
-Configuration** in the tray menu to create or open
-`%APPDATA%\Volty\config.toml` in your default editor (Notepad is used if no
-editor is associated with `.toml` files). Supported settings are:
-
-```toml
-low_battery_thresholds = [20, 10, 5] # 1-100 percent each; order and duplicates are normalized
-low_battery_cooldown_minutes = 120 # repeat interval after the lowest threshold; 0 disables repeats
-poll_interval_seconds = 120 # 10-3600 seconds after a successful reading
-retry_interval_seconds = 15 # 5-300 seconds after an error
-battery_eta_window_minutes = 10 # 1-180 minutes of discharge history
-stale_after_minutes = 15 # 1-1440 minutes without a fresh reading before it is marked stale
-notifications_enabled = true
-log_level = "info" # error, warn, info, debug, or trace
-
-# Optional tray color-map overrides. Uncomment the table and any values to activate.
-# Thresholds are inclusive upper bounds; red_max_percent must be below yellow_max_percent.
-# Colors use #RRGGBB notation.
-# [battery_color_map]
-# red_max_percent = 15
-# yellow_max_percent = 30
-# red = "#d23030"
-# yellow = "#ebbe23"
-# green = "#2daa4b"
-```
-
-`low_battery_threshold` from older configs has been replaced by
-`low_battery_thresholds`. A config that still contains the old key is rejected
-with a clear error while the previous valid configuration stays active; replace
-the key with a list such as `[20, 10, 5]`. Thresholds are validated to 1-100,
-deduplicated, and sorted from highest to lowest. A cooldown of `0` disables
-repeats while still keeping one alert per threshold and discharge cycle.
-
-Settings are stored per-user and do not require administrator privileges.
-Volty watches the file for changes, and **Discover Devices Now** also reloads it.
-Invalid settings are reported while the last valid configuration stays active.
-Battery ETA appears after a full configured history window of discharging
-readings; it is hidden while charging or when the recent level trend cannot
-produce a reliable estimate. Volty also keeps a per-device long-run discharge
-rate (percent lost per hour it was actually running and watching the device,
-never counting time it was closed or the device was away) in its local state.
-After a restart this rate provides the ETA immediately, once at least an hour
-and 2 percentage points of discharge have been observed; the recent-window
-estimate takes over when available. This in-memory ETA history is capped at
-about two weeks; the separate history database keeps 30 days as described in
-[Battery history](#battery-history).
-Tray lines show a relative last-seen age once a reading is more than a minute
-old, and mark it `stale, last seen …` after `stale_after_minutes` (15 minutes
-by default) pass without a fresh reading. Labels refresh about once a minute
-even when no poll completes, so a sleeping or disconnected device does not look
-like a live one. The default tray color map matches the green/yellow/red ranges
-above; uncomment `[battery_color_map]` to override its cutoffs or colors. Any
-omitted values retain their defaults. The red and yellow cutoffs can be set from
-0–99 and 1–100 percent respectively, and must be ordered so red is lower than
-yellow.
-Colors must be six-digit hexadecimal RGB values such as `"#d23030"`.
-Logs append to a daily file such as `%APPDATA%\Volty\volty-2026-10-30.log`;
-choose **Open Log File** in the tray menu to view the current one. Each file
-rotates at 5 MiB and keeps one `.1` backup, and daily files older than seven
-days are removed. An existing `volty.log` is moved into the current day's file
-on first start. The default `info` level records lifecycle and errors, `debug`
-adds successful battery readings, and `trace` adds low-level event details
-(trace strings are only built at this level). Changes to `log_level` take effect
-when the config is reloaded.
-
-Choose **Diagnose / Report an Issue** in the tray menu to open a native Windows
-window with recent application events, the active configuration, Bluetooth
-read status, and HID interfaces visible to hidapi. The report includes HID
-device IDs, usage information, and available manufacturer/product names, but
-omits HID paths, serial numbers, and Bluetooth device IDs/addresses. Review
-the contents before sharing; nothing is uploaded automatically. **Copy Log**
-copies the report to the clipboard, while
-**Open Issue** starts a GitHub issue draft. A local copy is saved under
-`%APPDATA%\Volty\reports`.
-
-## HID diagnostics
-
-The `volty` executable also has explicit, on-demand HID++ diagnostics. These
-commands run before the tray app's single-instance check; launching `volty`
-without a `hid` subcommand still starts the normal tray app.
-For the first worked backend example—verifying a Logitech mouse or adding
-support for a different HID++ battery feature—see
-[Adding a Logitech mouse](./docs/adding-mice.md).
-For the generic HID battery-monitoring architecture and backend extension
-points, see
-[Generic HID battery-level support](./docs/hid-battery-support.md).
-
-```powershell
-volty hid inspect
-volty hid inspect --vid 0x046d --pid 0xc547 --usage-page 0xff00 --usage 0x0002
-volty hid features --vid 0x046d --pid 0xc547 --usage-page 0xff00 --usage 0x0002 --device-index 0x01
-volty hid raw --device-index 0x01 --feature-index 0x06 --function-index 1 --report-type long --params 00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00 --allow-state-changing --vid 0x046d --pid 0xc547 --usage-page 0xff00 --usage 0x0002
-```
-
-`inspect` prints matching interfaces' VID/PID, usage page/usage, interface
-number, bus, product name, and hidapi path. The path is shown only by this
-explicit diagnostic; serial numbers are never printed. hidapi does not expose
-report lengths here, so Volty does not infer or display them. Selectors accept
-`--vid`, `--pid`, `--usage-page`, `--usage`, `--interface`, and `--path`.
-Commands that open a device require exactly one interface match: if a selector
-is missing or ambiguous, use `inspect` to narrow it. Do not confuse the USB
-interface number with the HID++ `--device-index`, which addresses a paired
-device behind a receiver.
-
-`features` queries the device's Root/FeatureSet mappings and prints each
-logical feature ID alongside its dynamically assigned runtime index, type, and
-version. Runtime indexes can vary by device and must not be copied from one
-device to another. On one tested receiver, logical Battery
-feature `0x1004` resolved to runtime index `0x06`, version `0x03`, and the
-status decoder reported 78%; that mapping is an observation, not a constant.
-
-`raw` accepts only exact HID++ report payload sizes: 3 parameter bytes for a
-short report or 16 for a long report. It requires
-`--allow-state-changing` because arbitrary raw requests cannot be safely
-classified as read-only from their bytes alone, and it prints a warning before
-transmission. Prefer `inspect` and `features` for discovery; use `raw` only
-when those commands do not provide the needed information.
-
-Interface usage combinations and report behavior are device-specific. For
-example, one tested `046D:C547` receiver exchanged valid 20-byte HID++ reports
-on usage `FF00/0002`, while `FF00/0001` accepted a 7-byte write without a
-matching response. This observation is not a universal rule for other
-receivers or devices; select the interface that responds correctly on the
-particular system. CLI output is local and is not uploaded. Review any
-diagnostic output before sharing it. To save a local transcript in PowerShell,
-pipe a command to `Tee-Object .\volty-hid.log`; inspect the file before sharing
-it because diagnostic interface paths can identify local devices.
-
-## Battery history
-
-`volty history` reads the local battery history database at
-`%LOCALAPPDATA%\Volty\battery-history.sqlite3`. It works while the tray is
-running, never opens a device, and never uploads anything.
-
-```powershell
-volty history
-volty history --days 30
-volty history --device receiver
-volty history --csv > battery-history.csv
-```
-
-The default view covers the last 7 days and lists one row per device with its
-name, sample count, first and last timestamps (RFC 3339, UTC), latest, minimum,
-and maximum percentage, and an estimated discharge rate in percentage points per
-day when at least an hour of decreasing readings is available. `--device`
-filters by a case-insensitive substring of the device identity or name, and
-`--database <path>` reads a different database file.
-
-The tray records samples automatically while it runs, for monitored devices
-only. Readings are appended when they change or when the previous sample for
-that device is at least five minutes old, so a two-minute poll interval does not
-fill the database with duplicates. Samples older than 30 days are pruned
-automatically. Recording failures are logged and never interrupt polling. The
-database is local-only.
-
-`--csv` writes
-`timestamp_utc,identity,name,percent,charging,voltage_mv` rows ordered by
-timestamp and identity. Percent and voltage are empty when the device did not
-report them.
-
-## Building and testing
-
-Prerequisites: Windows 10/11 and the `x86_64-pc-windows-msvc` Rust toolchain
-(Rust 1.99 or newer; the stable channel is recommended). The release binary is
-written to `target\release\volty.exe`.
+Windows 10/11 and Rust 1.99 or newer are required to build the tray app.
 
 ```powershell
 cargo build --release --package volty-tray --locked
 cargo test --workspace --all-features --locked
 ```
 
-CI runs the same checks on every push and pull request, plus a build with the
-`bluetooth` feature, a workspace check on the minimum supported Rust version
-(1.99.0), and a dependency audit on Ubuntu:
+See the [development guide](https://philipppolterauer.github.io/volty-rs/development.html)
+for CI checks and hardware-testing notes.
 
-```powershell
-cargo fmt --all -- --check
-cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
-cargo test --workspace --all-features --locked
-cargo build -p volty-tray --features bluetooth --locked
-cargo check --workspace --all-features --locked
-cargo audit --deny warnings
-```
+## Project links
 
-The `cargo check` command runs in the MSRV job with Rust 1.99.0; the `cargo
-audit` command runs in the audit job against the committed `Cargo.lock`.
-
-See the [sustained-run performance assessment](./docs/performance-assessment.md)
-for one-minute resource measurements and polling-path limitations.
-
-## Releases
-
-User-facing changes are tracked in [CHANGELOG.md](./CHANGELOG.md).
-
-To cut a release, bump the version once in `[workspace.package]` in the root
-`Cargo.toml`, move the `[Unreleased]` changelog entries under the new version
-heading, commit, and push a matching tag such as `v0.4.0`. The Windows release
-workflow verifies the tag against the `volty-tray` package version, runs
-format, Clippy, and test checks, and publishes a standalone
-`x86_64-pc-windows-msvc` executable with a SHA-256 checksum to the GitHub
-Release. No installer or sidecar runtime files are required.
-
-Protocol-frame unit tests use mock byte buffers and do not require a connected
-mouse. Device communication and tray behavior should be verified on Windows
-with compatible hardware; the current primary target is the Logitech G502 X
-Superlight RGB.
-
-## License
-
-All crates are released under the [MIT License](LICENSE).
+- [Documentation site](https://philipppolterauer.github.io/volty-rs/)
+- [Releases](https://github.com/PhilippPolterauer/volty-rs/releases)
+- [Changelog](CHANGELOG.md)
+- [License](LICENSE)

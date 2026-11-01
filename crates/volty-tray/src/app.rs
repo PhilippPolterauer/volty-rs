@@ -16,13 +16,15 @@ use notifications::{process_device_reading, DeviceNotifications};
 use poll::PollUpdate;
 use session::DeviceSession;
 use startup::{
-    load_startup_state, open_configuration, open_log_file, process_windows_messages,
-    remove_reset_files, toggle_start_on_boot, watch_config_file, ConfigWatch,
+    load_startup_state, open_capture_file, open_configuration, open_log_file,
+    process_windows_messages, remove_reset_files, toggle_start_on_boot, watch_config_file,
+    ConfigWatch,
 };
 use std::{
     collections::{BTreeMap, VecDeque},
     error::Error,
     io,
+    path::PathBuf,
     sync::mpsc::TryRecvError,
     time::{Duration, Instant},
 };
@@ -32,6 +34,7 @@ use volty_battery::{
 
 use crate::{
     about::show_about_window,
+    capture,
     config::{config_path, AppConfig, LogLevel},
     diagnose::show_diagnose_window,
     history::{unix_now, HistorySample, HistoryStore},
@@ -67,6 +70,7 @@ struct App {
     monitored_devices: BTreeMap<String, bool>,
     tray_icon_style: TrayIconStyle,
     pinned_device: Option<String>,
+    advanced_options_visible: bool,
     active_config: AppConfig,
     notification_config_error: Option<String>,
     notifications: DeviceNotifications,
@@ -122,7 +126,7 @@ impl App {
             )?;
         }
 
-        let mut tray = TrayController::new()?;
+        let mut tray = TrayController::new(startup.advanced_options_visible)?;
         tray.set_battery_color_map(startup.active_config.battery_color_map)?;
         tray.set_tray_icon_style(startup.tray_display.icon_style);
         tray.set_pinned_device_checked(startup.tray_display.pinned_device.as_deref());
@@ -194,6 +198,7 @@ impl App {
             monitored_devices: startup.monitored_devices,
             tray_icon_style: startup.tray_display.icon_style,
             pinned_device: startup.tray_display.pinned_device,
+            advanced_options_visible: startup.advanced_options_visible,
             active_config: startup.active_config,
             notification_config_error: startup.notification_config_error,
             notifications,
@@ -269,9 +274,16 @@ impl App {
         match action {
             TrayAction::DiscoverDevicesNow => self.discover_devices_now()?,
             TrayAction::OpenLogFile => self.open_log_file()?,
+            TrayAction::SaveHardwareCapture => self.save_hardware_capture()?,
             TrayAction::OpenConfiguration => self.open_configuration()?,
             TrayAction::Diagnose => self.show_diagnostic_report()?,
             TrayAction::ToggleStartOnBoot => self.toggle_start_on_boot()?,
+            TrayAction::SetAdvancedOptionsVisible { visible } => {
+                self.set_advanced_options_visible(visible)?
+            }
+            TrayAction::OpenSavedHardwareCapture { path } => {
+                self.open_saved_hardware_capture(path)?
+            }
             TrayAction::SetDeviceMonitored {
                 identity,
                 monitored,
@@ -317,6 +329,80 @@ impl App {
                 &format!("Opened log file: {}", path.display()),
             ),
             Err(error) => self.report_error("Log file error", &error.to_string()),
+        }
+    }
+
+    fn save_hardware_capture(&mut self) -> Result<(), Box<dyn Error>> {
+        match capture::write_default_snapshot() {
+            Ok(outcome) => {
+                let path_text = outcome.path.display().to_string();
+                let file_name = outcome
+                    .path
+                    .file_name()
+                    .map(|name| name.to_string_lossy())
+                    .unwrap_or_default();
+                self.record_event(
+                    LogLevel::Info,
+                    &format!("Hardware capture saved: {path_text}"),
+                )?;
+                match crate::notify::show_capture_saved_notification(&outcome.path) {
+                    Ok(notification) => {
+                        let action_sender = self.tray.action_sender();
+                        let path = outcome.path.clone();
+                        let result = std::thread::Builder::new()
+                            .name("volty-capture-notification".to_owned())
+                            .spawn(move || {
+                                let wait_result = notification.wait_for_response(
+                                    move |response: &notify_rust::NotificationResponse| {
+                                        if crate::notify::capture_notification_opens_file(response)
+                                            && action_sender
+                                                .send(TrayAction::OpenSavedHardwareCapture { path })
+                                            .is_ok()
+                                        {
+                                            wake::signal();
+                                        }
+                                    },
+                                );
+                                if let Err(error) = wait_result {
+                                    eprintln!(
+                                        "Volty hardware-capture notification handler failed: {error}"
+                                    );
+                                }
+                            });
+                        if let Err(error) = result {
+                            self.record_event(
+                                LogLevel::Warn,
+                                &format!(
+                                    "Could not start hardware-capture notification handler: {error}"
+                                ),
+                            )?;
+                        }
+                    }
+                    Err(error) => self.record_event(
+                        LogLevel::Warn,
+                        &format!("Hardware capture notification error: {error}"),
+                    )?,
+                }
+                if let Err(error) = self.tray.update_status(
+                    "",
+                    &format!("Hardware capture saved: {file_name}"),
+                    None,
+                ) {
+                    self.record_event(LogLevel::Error, &format!("Tray update error: {error}"))?;
+                }
+            }
+            Err(error) => self.report_error("Hardware capture error", &error.to_string())?,
+        }
+        Ok(())
+    }
+
+    fn open_saved_hardware_capture(&mut self, path: PathBuf) -> io::Result<()> {
+        match open_capture_file(&path) {
+            Ok(()) => self.record_event(
+                LogLevel::Info,
+                &format!("Opened hardware capture: {}", path.display()),
+            ),
+            Err(error) => self.report_error("Hardware capture open error", &error.to_string()),
         }
     }
 
@@ -378,6 +464,42 @@ impl App {
         }
         Ok(())
     }
+
+    fn set_advanced_options_visible(&mut self, visible: bool) -> Result<(), Box<dyn Error>> {
+        if visible == self.advanced_options_visible {
+            self.tray.set_advanced_options_visible(visible)?;
+            return Ok(());
+        }
+        if let Err(error) = self.tray.set_advanced_options_visible(visible) {
+            self.tray
+                .set_advanced_options_visible(self.advanced_options_visible)?;
+            self.report_error("Tray menu error", &error.to_string())?;
+            return Ok(());
+        }
+
+        self.advanced_options_visible = visible;
+        self.record_event(
+            LogLevel::Info,
+            if visible {
+                "Advanced tray options shown"
+            } else {
+                "Advanced tray options hidden"
+            },
+        )?;
+        match self.monitor_state.as_mut() {
+            Some(state) => {
+                if let Err(error) = state.set_advanced_options_visible(visible) {
+                    self.report_error("Advanced options preference error", &error.to_string())?;
+                }
+            }
+            None => self.record_event(
+                LogLevel::Warn,
+                "Advanced options visibility is session-only because local state is unavailable",
+            )?,
+        }
+        Ok(())
+    }
+
     fn set_device_monitored(
         &mut self,
         identity: &str,
@@ -566,6 +688,8 @@ impl App {
         };
         self.tray_icon_style = TrayIconStyle::Battery;
         self.pinned_device = None;
+        self.tray.set_advanced_options_visible(false)?;
+        self.advanced_options_visible = false;
         (self.active_config, self.notification_config_error) = match AppConfig::load() {
             Ok(config) => (config, None),
             Err(error) => (AppConfig::default(), Some(error.to_string())),

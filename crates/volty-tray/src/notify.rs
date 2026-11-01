@@ -8,6 +8,7 @@ use std::{
     collections::BTreeSet,
     error::Error,
     fmt,
+    path::Path,
     time::{Duration, Instant},
 };
 
@@ -232,6 +233,36 @@ fn show_low_battery_notification(
         })
 }
 
+/// Shows a toast whose body or Open Capture action can open the saved file.
+pub(crate) fn show_capture_saved_notification(
+    path: &Path,
+) -> Result<notify_rust::NotificationHandle, NotificationError> {
+    let file_name = path
+        .file_name()
+        .map(|name| name.to_string_lossy())
+        .unwrap_or_else(|| "hardware capture".into());
+    let body = format!("Saved {file_name}. Click to open it.");
+    let mut notification = notify_rust::Notification::new();
+    notification
+        .summary("Volty — Hardware Capture Saved")
+        .body(&body)
+        .action("open_capture", "Open Capture");
+    notification.show().map_err(|error| {
+        NotificationError::new(format!("could not show hardware-capture toast: {error}"))
+    })
+}
+
+pub(crate) fn capture_notification_opens_file(
+    response: &notify_rust::NotificationResponse,
+) -> bool {
+    match response {
+        notify_rust::NotificationResponse::Default => true,
+        notify_rust::NotificationResponse::Action(action) => action == "open_capture",
+        notify_rust::NotificationResponse::Reply(_)
+        | notify_rust::NotificationResponse::Closed(_) => false,
+    }
+}
+
 #[cfg(not(windows))]
 fn show_low_battery_notification(
     _device_name: &str,
@@ -245,6 +276,27 @@ fn show_low_battery_notification(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn capture_notification_opens_only_for_the_body_or_open_button() {
+        use notify_rust::{CloseReason, NotificationResponse};
+
+        assert!(capture_notification_opens_file(
+            &NotificationResponse::Default
+        ));
+        assert!(capture_notification_opens_file(
+            &NotificationResponse::Action("open_capture".to_owned())
+        ));
+        assert!(!capture_notification_opens_file(
+            &NotificationResponse::Action("other".to_owned())
+        ));
+        assert!(!capture_notification_opens_file(
+            &NotificationResponse::Closed(CloseReason::Dismissed)
+        ));
+        assert!(!capture_notification_opens_file(
+            &NotificationResponse::Reply("not used".to_owned())
+        ));
+    }
 
     fn discharging(percentage: u8) -> BatterySample {
         BatterySample {

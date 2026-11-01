@@ -76,9 +76,9 @@ The HID path enumerates interfaces, resolves each against
 device index. That contract is specifically for HID; a Bluetooth GATT device
 should not be forced into it. Both sources meet at the `BatteryProvider` trait
 in `volty-battery`, which yields a stable `DeviceId`, a `DeviceLabel` and a
-`BatteryStatus`. See [`protocol.rs`](../crates/volty-hid/src/protocol.rs),
-[`provider.rs`](../crates/volty-battery/src/provider.rs) and the polling flow
-in [`app.rs`](../crates/volty-tray/src/app.rs).
+`BatteryStatus`. See [`protocol.rs`](https://github.com/PhilippPolterauer/volty-rs/blob/main/crates/volty-hid/src/protocol.rs),
+[`provider.rs`](https://github.com/PhilippPolterauer/volty-rs/blob/main/crates/volty-battery/src/provider.rs) and the polling flow
+in [`app.rs`](https://github.com/PhilippPolterauer/volty-rs/blob/main/crates/volty-tray/src/app.rs).
 
 The tray accepts multiple device rows, computes the lowest reported percentage
 for its icon, and sends per-device low-battery notifications.

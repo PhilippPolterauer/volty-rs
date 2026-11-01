@@ -28,9 +28,9 @@ The process had been running for about 2 minutes 18 seconds at the end of sampli
 
 ### Polling and idle behavior
 
-- The default successful-poll wait is 120 seconds, with a configurable range of 10-3600 seconds; the default retry wait is 15 seconds. The worker waits after each query completes, so query duration adds to the start-to-start interval. ([config.rs](../crates/volty-tray/src/config.rs#L12), [app/poll.rs](../crates/volty-tray/src/app/poll.rs))
-- Device discovery runs on a dedicated worker thread. The tray loop is event-driven: it blocks in `MsgWaitForMultipleObjects` and is woken by window messages, the poll worker, and the config watcher, so it uses no CPU while idle and processes queued work immediately. ([app.rs](../crates/volty-tray/src/app.rs), [wake.rs](../crates/volty-tray/src/app/wake.rs))
-- The in-memory diagnostic log is capped at 200 entries. The file logger appends and flushes each accepted entry and rotates at 5 MiB, keeping one `.1` backup, so sustained trace logging is bounded to roughly 10 MiB of disk. ([app.rs](../crates/volty-tray/src/app.rs), [logging.rs](../crates/volty-tray/src/logging.rs))
+- The default successful-poll wait is 120 seconds, with a configurable range of 10-3600 seconds; the default retry wait is 15 seconds. The worker waits after each query completes, so query duration adds to the start-to-start interval. ([config.rs](https://github.com/PhilippPolterauer/volty-rs/blob/main/crates/volty-tray/src/config.rs#L12), [app/poll.rs](https://github.com/PhilippPolterauer/volty-rs/blob/main/crates/volty-tray/src/app/poll.rs))
+- Device discovery runs on a dedicated worker thread. The tray loop is event-driven: it blocks in `MsgWaitForMultipleObjects` and is woken by window messages, the poll worker, and the config watcher, so it uses no CPU while idle and processes queued work immediately. ([app.rs](https://github.com/PhilippPolterauer/volty-rs/blob/main/crates/volty-tray/src/app.rs), [wake.rs](https://github.com/PhilippPolterauer/volty-rs/blob/main/crates/volty-tray/src/app/wake.rs))
+- The in-memory diagnostic log is capped at 200 entries. The file logger appends and flushes each accepted entry and rotates at 5 MiB, keeping one `.1` backup, so sustained trace logging is bounded to roughly 10 MiB of disk. ([app.rs](https://github.com/PhilippPolterauer/volty-rs/blob/main/crates/volty-tray/src/app.rs), [logging.rs](https://github.com/PhilippPolterauer/volty-rs/blob/main/crates/volty-tray/src/logging.rs))
 
 ### 10-second successful-poll scenario
 
@@ -44,9 +44,9 @@ The battery ETA uses a per-device discharge history, defaulting to a 10-minute w
 
 ### Optional Bluetooth path
 
-Bluetooth is not enabled by default in the tray crate. ([Cargo.toml](../crates/volty-tray/Cargo.toml))
+Bluetooth is not enabled by default in the tray crate. ([Cargo.toml](https://github.com/PhilippPolterauer/volty-rs/blob/main/crates/volty-tray/Cargo.toml))
 
-When enabled, each device query performs classic Bluetooth property discovery, SetupAPI device-property discovery, and paired BLE discovery sequentially under one shared 30-second overall scan budget. Individual Windows Runtime operations still time out after five seconds. If the budget is exhausted, phases stop and return results gathered so far with a warning. The work is on the device-poller thread, not the tray UI thread, but it can delay the next battery update. ([budget.rs](../crates/volty-bluetooth/src/windows_backend/budget.rs#L5), [budget.rs](../crates/volty-bluetooth/src/windows_backend/budget.rs#L6), [ble.rs](../crates/volty-bluetooth/src/windows_backend/ble.rs#L25))
+When enabled, each device query performs classic Bluetooth property discovery, SetupAPI device-property discovery, and paired BLE discovery sequentially under one shared 30-second overall scan budget. Individual Windows Runtime operations still time out after five seconds. If the budget is exhausted, phases stop and return results gathered so far with a warning. The work is on the device-poller thread, not the tray UI thread, but it can delay the next battery update. ([budget.rs](https://github.com/PhilippPolterauer/volty-rs/blob/main/crates/volty-bluetooth/src/windows_backend/budget.rs#L5), [budget.rs](https://github.com/PhilippPolterauer/volty-rs/blob/main/crates/volty-bluetooth/src/windows_backend/budget.rs#L6), [ble.rs](https://github.com/PhilippPolterauer/volty-rs/blob/main/crates/volty-bluetooth/src/windows_backend/ble.rs#L25))
 
 ## Conclusion and follow-up
 
