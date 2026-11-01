@@ -139,7 +139,9 @@ pub fn show_diagnose_window(report: &str) -> Result<(), Box<dyn Error>> {
         return Err(error);
     }
     state.create_complete = true;
-    win32::run_message_loop(window, SW_SHOW, &mut state.create_complete)?;
+    win32::run_message_loop(window, SW_SHOW, state, |state, value| {
+        state.create_complete = value;
+    })?;
     Ok(())
 }
 
