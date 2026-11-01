@@ -822,11 +822,9 @@ fn remove_staged_file(path: &Path) -> io::Result<()> {
 }
 
 fn show_update_error(message: &str) {
-    let text = crate::win32::to_wide(message);
-    let title = crate::win32::to_wide("Volty update failed");
     crate::app_icon::show_message_box(
-        &text,
-        &title,
+        message,
+        "Volty update failed",
         windows_sys::Win32::UI::WindowsAndMessaging::MB_OK
             | windows_sys::Win32::UI::WindowsAndMessaging::MB_ICONERROR,
     );

@@ -578,9 +578,7 @@ impl App {
     }
 
     fn show_update_message(&mut self, title: &str, message: &str, style: u32) -> i32 {
-        let text = crate::win32::to_wide(message);
-        let title = crate::win32::to_wide(title);
-        let response = crate::app_icon::show_message_box(&text, &title, style);
+        let response = crate::app_icon::show_message_box(message, title, style);
         if response == 0 {
             let error = io::Error::last_os_error();
             if let Err(report_error) = self.report_error("Update dialog error", &error.to_string())
