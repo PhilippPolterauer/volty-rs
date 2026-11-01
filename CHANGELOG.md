@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-11-01
+
 ### Added
 
 - **Save Hardware Capture** tray action writes a `.volty.jsonl` snapshot without opening the Diagnose window, shows the saved file name in the tray status line, and sends a clickable notification that opens the capture.
@@ -15,6 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - The tray menu now uses the compact percentage/ETA/last-seen format, shows a single status line for one monitored device instead of repeating it as a device row, and omits the pinned device from the remaining device rows. Menu item text is bounded so a long device name or error cannot stretch the popup.
 - The tray menu now starts in a compact basic mode. **Show Advanced Options** reveals tray customization and technical actions; the choice persists in local state.
+- Reorganized the user and developer documentation into a browsable documentation site, with installation, configuration, troubleshooting, device support, and development guides.
 
 ### Fixed
 
