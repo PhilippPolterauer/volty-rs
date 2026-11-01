@@ -639,6 +639,9 @@ impl App {
     }
 
     fn show_update_message(&mut self, title: &str, message: &str, style: u32) -> i32 {
+        let style = style
+            | windows_sys::Win32::UI::WindowsAndMessaging::MB_SETFOREGROUND
+            | windows_sys::Win32::UI::WindowsAndMessaging::MB_TOPMOST;
         let response = crate::app_icon::show_message_box(message, title, style);
         if response == 0 {
             let error = io::Error::last_os_error();

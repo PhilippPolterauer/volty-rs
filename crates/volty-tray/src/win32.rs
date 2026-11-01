@@ -10,9 +10,10 @@ use windows_sys::Win32::{
         Shell::ShellExecuteW,
         WindowsAndMessaging::{
             CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetMessageW,
-            GetWindowLongPtrW, PostQuitMessage, RegisterClassExW, SetWindowLongPtrW,
-            SetWindowTextW, ShowWindow, TranslateMessage, BS_PUSHBUTTON, CREATESTRUCTW,
-            GWLP_USERDATA, MSG, SW_SHOWNORMAL, WNDCLASSEXW, WS_CHILD, WS_TABSTOP, WS_VISIBLE,
+            GetWindowLongPtrW, PostQuitMessage, RegisterClassExW, SetForegroundWindow,
+            SetWindowLongPtrW, SetWindowTextW, ShowWindow, TranslateMessage, BS_PUSHBUTTON,
+            CREATESTRUCTW, GWLP_USERDATA, MSG, SW_SHOWNORMAL, WNDCLASSEXW, WS_CHILD, WS_TABSTOP,
+            WS_VISIBLE,
         },
     },
 };
@@ -247,11 +248,36 @@ pub fn set_window_text(window: HWND, text: &[u16]) -> io::Result<()> {
 pub fn run_message_loop<T>(
     window: HWND,
     show_command: i32,
+    state: Box<T>,
+    set_create_complete: impl Fn(&mut T, bool),
+) -> io::Result<()> {
+    run_message_loop_inner(window, show_command, state, false, set_create_complete)
+}
+
+pub fn run_foreground_message_loop<T>(
+    window: HWND,
+    show_command: i32,
+    state: Box<T>,
+    set_create_complete: impl Fn(&mut T, bool),
+) -> io::Result<()> {
+    run_message_loop_inner(window, show_command, state, true, set_create_complete)
+}
+
+fn run_message_loop_inner<T>(
+    window: HWND,
+    show_command: i32,
     mut state: Box<T>,
+    foreground: bool,
     set_create_complete: impl Fn(&mut T, bool),
 ) -> io::Result<()> {
     // SAFETY: window is the live HWND created by the caller on this thread.
     unsafe { ShowWindow(window, show_command) };
+    if foreground {
+        // SAFETY: window is the live HWND created by the caller on this thread.
+        if unsafe { SetForegroundWindow(window) } == 0 {
+            eprintln!("Volty could not bring the window to the foreground");
+        }
+    }
     // SAFETY: MSG is a plain Win32 output structure where every bit pattern is valid.
     let mut message: MSG = unsafe { mem::zeroed() };
     let message_error = loop {
