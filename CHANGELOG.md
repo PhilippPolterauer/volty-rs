@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-11-01
+
+### Added
+
+- The native dashboard can pause or resume history recording per device, preview and remove stored history, clear device-specific Volty preferences, and manage saved captures and diagnostic reports.
+- Clicking an update-available notification opens the update confirmation prompt.
+
+### Fixed
+
+- Updates are blocked while another Volty instance is running, preventing replacement of an executable that is still in use.
+- Improved Windows window-message cleanup and corrected text termination in native error dialogs.
+
 ## [0.9.1] - 2026-11-01
 
 ### Fixed
