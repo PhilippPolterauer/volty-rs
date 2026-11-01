@@ -13,4 +13,5 @@ To prepare a release:
 The Windows release workflow checks that the tag matches the `volty-tray`
 package version, runs formatting, Clippy, and tests, then publishes a standalone
 `x86_64-pc-windows-msvc` executable and SHA-256 checksum to the GitHub Release.
-No installer or sidecar runtime files are required.
+The tray app's update flow expects those versioned executable and `.sha256`
+asset names. No installer or sidecar runtime files are required.

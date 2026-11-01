@@ -33,10 +33,21 @@ cooldown are configurable.
 ![Volty low-battery notification](notification.png)
 
 Right-click the icon for the compact menu: manage **Monitored Devices**, toggle
-**Start on Boot**, open **About Volty**, or quit. **Show Advanced Options**
-reveals manual discovery, tray customization, configuration and log access,
-hardware capture, diagnostics, and reset. The advanced-menu choice is saved
-locally; **Reset Volty** returns to the compact menu.
+**Start on Boot**, check for updates, open **About Volty**, or quit.
+**Check for Updates...** checks the latest stable GitHub release and asks before
+downloading. Volty verifies the executable against the release's SHA-256 file,
+then restarts through a temporary helper that replaces the executable at its
+current location. The existing **Start on Boot** entry keeps pointing to that
+same path. The destination folder must be writable by your Windows user; if an
+update cannot be installed, Volty restarts the previous version and reports the
+error. Checks and downloads run only when requested. Existing installations
+must install the first release that includes this updater manually; later
+releases can be installed from the tray menu.
+
+**Show Advanced Options** reveals manual discovery, tray customization,
+configuration and log access, hardware capture, diagnostics, and reset. The
+advanced-menu choice is saved locally; **Reset Volty** returns to the compact
+menu.
 
 ![Volty tray menu](context.png)
 

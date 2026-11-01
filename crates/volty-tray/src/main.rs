@@ -33,6 +33,8 @@ mod state;
 #[cfg(windows)]
 mod tray;
 #[cfg(windows)]
+mod update;
+#[cfg(windows)]
 mod win32;
 
 fn main() {
@@ -208,6 +210,14 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         Some("history") => return history::run_cli(&args.collect::<Vec<_>>()),
         #[cfg(windows)]
         Some("dashboard") => return dashboard::run_cli(&args.collect::<Vec<_>>()),
+        #[cfg(windows)]
+        Some("--apply-update") => return update::apply_update_cli(&args.collect::<Vec<_>>()),
+        #[cfg(windows)]
+        Some("--finish-update") => {
+            if let Err(error) = update::finish_update_cli(&args.collect::<Vec<_>>()) {
+                show_error(&format!("volty: update cleanup failed: {error}"));
+            }
+        }
         _ => {}
     }
 
