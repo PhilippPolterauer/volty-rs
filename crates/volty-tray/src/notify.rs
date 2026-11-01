@@ -214,6 +214,20 @@ pub(super) fn show_low_battery_notification(
         })
 }
 
+#[cfg(windows)]
+pub(super) fn show_update_available_notification(version: &str) -> Result<(), NotificationError> {
+    notify_rust::Notification::new()
+        .summary("Volty update available")
+        .body(&format!(
+            "Volty {version} is available. Select \"Update available!\" in the tray menu to install it."
+        ))
+        .show()
+        .map(|_| ())
+        .map_err(|error| {
+            NotificationError::new(format!("could not show update-available toast: {error}"))
+        })
+}
+
 /// Shows a toast whose body or Open Capture action can open the saved file.
 pub(crate) fn show_capture_saved_notification(
     path: &Path,

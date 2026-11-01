@@ -33,16 +33,18 @@ cooldown are configurable.
 ![Volty low-battery notification](notification.png)
 
 Right-click the icon for the compact menu: manage **Monitored Devices**, toggle
-**Start on Boot**, check for updates, open **About Volty**, or quit.
-**Check for Updates...** checks the latest stable GitHub release and asks before
-downloading. Volty verifies the executable against the release's SHA-256 file,
-then restarts through a temporary helper that replaces the executable at its
-current location. The existing **Start on Boot** entry keeps pointing to that
-same path. The destination folder must be writable by your Windows user; if an
-update cannot be installed, Volty restarts the previous version and reports the
-error. Checks and downloads run only when requested. Existing installations
-must install the first release that includes this updater manually; later
-releases can be installed from the tray menu.
+**Start on Boot**, check for updates, open **About Volty**, or quit. Volty checks
+for updates on startup and once per day while running. When a stable GitHub
+release is available, Windows shows a notification and the tray item changes to
+**Update available!**; selecting it asks before downloading. You can also select
+**Check for Updates...** to check manually. Volty verifies the executable
+against the release's SHA-256 file, then restarts through a temporary helper that
+replaces the executable at its current location. The existing **Start on Boot**
+entry keeps pointing to that same path. The destination folder must be writable
+by your Windows user; if an update cannot be installed, Volty restarts the
+previous version and reports the error. Existing installations must install the
+first release that includes this updater manually; later releases can be
+installed from the tray menu.
 
 **Show Advanced Options** reveals manual discovery, tray customization,
 configuration and log access, hardware capture, diagnostics, and reset. The

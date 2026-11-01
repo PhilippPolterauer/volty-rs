@@ -149,17 +149,37 @@ pub enum TrayAction {
     SaveHardwareCapture,
     Diagnose,
     ToggleStartOnBoot,
-    SetAdvancedOptionsVisible { visible: bool },
+    SetAdvancedOptionsVisible {
+        visible: bool,
+    },
     ResetVolty,
-    OpenSavedHardwareCapture { path: PathBuf },
-    SetDeviceMonitored { identity: String, monitored: bool },
-    SetTrayIconStyle { style: TrayIconStyle },
-    SetPinnedDevice { identity: Option<String> },
+    OpenSavedHardwareCapture {
+        path: PathBuf,
+    },
+    SetDeviceMonitored {
+        identity: String,
+        monitored: bool,
+    },
+    SetTrayIconStyle {
+        style: TrayIconStyle,
+    },
+    SetPinnedDevice {
+        identity: Option<String>,
+    },
     CheckForUpdates,
-    UpdateCheckResult(Result<Option<UpdateInfo>, String>),
+    UpdateCheckResult {
+        result: Result<Option<UpdateInfo>, String>,
+        origin: UpdateCheckOrigin,
+    },
     UpdateInstallResult(Result<(), String>),
     About,
     Quit,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UpdateCheckOrigin {
+    Automatic,
+    Manual,
 }
 
 /// Errors returned while creating or updating the tray UI.
@@ -927,6 +947,14 @@ impl TrayController {
 
     pub fn set_check_for_updates_enabled(&self, enabled: bool) {
         self.check_for_updates_item.set_enabled(enabled);
+    }
+
+    pub fn set_update_available(&self, available: bool) {
+        self.check_for_updates_item.set_text(if available {
+            "Update available!"
+        } else {
+            "Check for Updates..."
+        });
     }
 
     pub fn set_device_monitored_checked(&self, identity: &str, checked: bool) {

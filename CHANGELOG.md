@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-11-01
+
+### Added
+
+- Volty now checks for stable releases at startup and once per day while running. When an update is available, Windows shows a notification and the tray menu offers **Update available!**; installation still requires confirmation.
+- The log now records `Volty stopped` on every clean exit, warns at startup when the previous run ended without one (killed, crashed or power loss, with its last heartbeat), and warns when the tray loop did not run for over 2.5 minutes (system sleep, suspended process or hang).
+
 ## [0.8.0] - 2026-11-01
 
 ### Added
