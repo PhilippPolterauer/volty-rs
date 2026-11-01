@@ -267,7 +267,7 @@ pub fn run_message_loop<T>(
         }
     };
 
-    set_create_complete(&mut state, false);
+    set_create_complete_on_message_error(&message_error, state.as_mut(), set_create_complete);
     let state_pointer = ptr::from_ref(state.as_ref()).cast_mut();
     match cleanup_message_loop_window(
         state,
@@ -291,6 +291,16 @@ pub fn run_message_loop<T>(
                 None => Err(cleanup_error.error),
             }
         }
+    }
+}
+
+fn set_create_complete_on_message_error<T>(
+    message_error: &Option<io::Error>,
+    state: &mut T,
+    set_create_complete: impl Fn(&mut T, bool),
+) {
+    if message_error.is_some() {
+        set_create_complete(state, false);
     }
 }
 
@@ -370,7 +380,10 @@ pub fn quit_after_creation(create_complete: bool) {
 
 #[cfg(test)]
 mod tests {
-    use super::{cleanup_message_loop_window, is_terminated_wide, to_wide};
+    use super::{
+        cleanup_message_loop_window, is_terminated_wide, set_create_complete_on_message_error,
+        to_wide,
+    };
     use std::{cell::Cell, io, rc::Rc};
 
     struct DropProbe(Rc<Cell<bool>>);
@@ -387,6 +400,24 @@ mod tests {
         assert!(is_terminated_wide(&[b'a' as u16, 0]));
         assert!(!is_terminated_wide(&[]));
         assert!(!is_terminated_wide(&[b'a' as u16, 0, b'b' as u16, 0]));
+    }
+
+    #[test]
+    fn create_complete_is_reset_only_after_a_message_error() {
+        let mut create_complete = true;
+        let no_error = None;
+        set_create_complete_on_message_error(&no_error, &mut create_complete, |state, value| {
+            *state = value;
+        });
+        assert!(create_complete);
+
+        let message_error = Some(io::Error::other("GetMessageW failed"));
+        set_create_complete_on_message_error(
+            &message_error,
+            &mut create_complete,
+            |state, value| *state = value,
+        );
+        assert!(!create_complete);
     }
 
     #[test]
