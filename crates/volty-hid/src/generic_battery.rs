@@ -349,7 +349,7 @@ pub(crate) fn ratio_percent(remaining: u32, full: u32) -> Option<u8> {
         .ok()
 }
 
-fn level_bucket(percent: u8) -> BatteryLevel {
+pub(crate) fn level_bucket(percent: u8) -> BatteryLevel {
     match percent {
         0..=10 => BatteryLevel::Critical,
         11..=30 => BatteryLevel::Low,

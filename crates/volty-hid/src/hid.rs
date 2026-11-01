@@ -259,6 +259,37 @@ fn open_hidpp_session(info: &HidInterfaceInfo) -> Result<HidppSession, HidppErro
     })
 }
 
+const FLYDIGI_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// Sends the Flydigi info request and decodes the first matching reply.
+pub(crate) fn query_flydigi_interface(
+    info: &HidInterfaceInfo,
+) -> Result<BatteryStatus, HidppError> {
+    let mut device = with_shared_api(false, |api| {
+        api.open_path(&info.path).map_err(HidppError::HidApi)
+    })?;
+    let request = crate::flydigi::info_request();
+    if ReportIo::write_output(&mut device, &request)? != request.len() {
+        return Err(HidppError::ShortWrite {
+            expected: request.len(),
+            actual: 0,
+        });
+    }
+
+    let started = std::time::Instant::now();
+    let mut buffer = [0u8; 64];
+    loop {
+        let remaining = FLYDIGI_TIMEOUT.saturating_sub(started.elapsed());
+        let read = ReportIo::read_timeout(&mut device, &mut buffer, remaining)?;
+        if read == 0 {
+            return Err(HidppError::Timeout);
+        }
+        if let Ok(battery) = crate::flydigi::decode_flydigi_info(&buffer[..read]) {
+            return Ok(battery);
+        }
+    }
+}
+
 type FeatureKey = (CString, u8);
 
 static BATTERY_FEATURES: LazyLock<Mutex<HashMap<FeatureKey, BatteryFeature>>> =

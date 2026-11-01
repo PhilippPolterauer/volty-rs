@@ -11,11 +11,16 @@ verified until a reading and its capture replay are confirmed.
 | Logitech HID++ devices exposing only Battery Voltage (`0x1001`) | Any HID++ 2.0 transport | Battery Voltage fallback | Estimated percentage from millivolts; raw voltage retained and replayed | Experimental; synthetic tests only, not hardware-validated |
 | Baseus Bass BS2 Lite | Bluetooth Classic (HFP/A2DP) | Windows PnP battery property (`DEVPKEY_Device_BatteryLevel`) | Percentage, property capture and offline replay; charging state unavailable | Verified, opt-in Bluetooth build |
 | Keychron K8 Pro | USB cable or Bluetooth | None exposed to Windows | No standard HID battery, BLE GATT Battery Service, or usable vendor command | Not supported |
+| Flydigi controllers on the vendor protocol (VID `0x37d7`, e.g. Vader 5 Pro) | USB cable, vendor HID interface | Flydigi `5A A5 01` info report (state and 20 % level step in byte 11, per SDL's open-source driver) | Percentage in 20 % steps, charging/charged state | Experimental; synthetic tests only, not hardware-validated |
+| Flydigi Vader 4 Pro (wired USB) | USB HID / XInput | No standard HID battery usage; it uses the older `04b4:2412` protocol, whose battery field is undocumented, and XInput reports only wired/full | No battery percentage or charging state observed | Investigating; battery protocol unknown |
 | Generic HID battery devices | Any HID transport | Standard HID battery usages | Percentage, charging state when available, layout capture and offline replay | Experimental; no named device verified |
 
 **Verified** means a reading was observed on real hardware and reproduced from
 a hardware capture. **Experimental** means the code path is implemented and
 covered by synthetic fixtures, but no named hardware has been verified.
+**Investigating** means current host-readable interfaces did not expose a
+usable battery reading; it does not rule out an undocumented device-specific
+protocol.
 **Not supported** means testing found no non-invasive host-readable battery
 source.
 
