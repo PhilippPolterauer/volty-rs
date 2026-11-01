@@ -241,39 +241,93 @@ pub fn set_window_text(window: HWND, text: &[u16]) -> io::Result<()> {
     }
 }
 
-pub fn run_message_loop(
+/// Runs the thread queue and retains the boxed state until the window cannot access it.
+///
+/// If both window destruction and state detachment fail, the state is intentionally leaked.
+pub fn run_message_loop<T>(
     window: HWND,
     show_command: i32,
-    create_complete: &mut bool,
+    mut state: Box<T>,
+    set_create_complete: impl Fn(&mut T, bool),
 ) -> io::Result<()> {
     // SAFETY: window is the live HWND created by the caller on this thread.
     unsafe { ShowWindow(window, show_command) };
     // SAFETY: MSG is a plain Win32 output structure where every bit pattern is valid.
     let mut message: MSG = unsafe { mem::zeroed() };
-    loop {
+    let message_error = loop {
         // SAFETY: GetMessageW writes into the valid stack slot; a null HWND requests the thread queue.
         match unsafe { GetMessageW(ptr::addr_of_mut!(message), ptr::null_mut(), 0, 0) } {
-            -1 => {
-                let error = io::Error::last_os_error();
-                *create_complete = false;
-                if let Err(destroy_error) = destroy_window(window) {
-                    if let Err(clear_error) = clear_window_state(window) {
-                        eprintln!("Volty could not detach window state after destruction failed: {clear_error}");
-                    }
-                    return Err(io::Error::new(
-                        error.kind(),
-                        format!("{error}; could not destroy window: {destroy_error}"),
-                    ));
-                }
-                return Err(error);
-            }
-            0 => return Ok(()),
+            -1 => break Some(io::Error::last_os_error()),
+            0 => break None,
             // SAFETY: a positive GetMessageW result initialized message for these APIs.
             _ => unsafe {
                 TranslateMessage(ptr::addr_of!(message));
                 DispatchMessageW(ptr::addr_of!(message));
             },
         }
+    };
+
+    set_create_complete(&mut state, false);
+    let state_pointer = ptr::from_ref(state.as_ref()).cast_mut();
+    match cleanup_message_loop_window(
+        state,
+        || window_state::<T>(window) == state_pointer,
+        || destroy_window(window),
+        || clear_window_state(window),
+    ) {
+        Ok(()) => match message_error {
+            Some(error) => Err(error),
+            None => Ok(()),
+        },
+        Err(mut cleanup_error) => {
+            if let Some(state) = cleanup_error.state.take() {
+                mem::forget(state);
+            }
+            match message_error {
+                Some(error) => Err(io::Error::other(format!(
+                    "{error}; {}",
+                    cleanup_error.error
+                ))),
+                None => Err(cleanup_error.error),
+            }
+        }
+    }
+}
+
+struct MessageLoopCleanupError<T> {
+    error: io::Error,
+    state: Option<Box<T>>,
+}
+
+fn cleanup_message_loop_window<T>(
+    state: Box<T>,
+    mut state_is_attached: impl FnMut() -> bool,
+    destroy: impl FnOnce() -> io::Result<()>,
+    clear_state: impl FnOnce() -> io::Result<()>,
+) -> Result<(), MessageLoopCleanupError<T>> {
+    if !state_is_attached() {
+        return Ok(());
+    }
+
+    let Err(destroy_error) = destroy() else {
+        return Ok(());
+    };
+
+    if !state_is_attached() {
+        return Ok(());
+    }
+
+    match clear_state() {
+        Ok(()) => Err(MessageLoopCleanupError {
+            error: destroy_error,
+            state: None,
+        }),
+        Err(clear_error) => Err(MessageLoopCleanupError {
+            error: io::Error::other(format!(
+                "{destroy_error}; could not detach window state: {clear_error}"
+            )),
+            state: Some(state),
+        }),
     }
 }
 
@@ -316,7 +370,16 @@ pub fn quit_after_creation(create_complete: bool) {
 
 #[cfg(test)]
 mod tests {
-    use super::{is_terminated_wide, to_wide};
+    use super::{cleanup_message_loop_window, is_terminated_wide, to_wide};
+    use std::{cell::Cell, io, rc::Rc};
+
+    struct DropProbe(Rc<Cell<bool>>);
+
+    impl Drop for DropProbe {
+        fn drop(&mut self) {
+            self.0.set(true);
+        }
+    }
 
     #[test]
     fn wide_strings_replace_embedded_nuls_and_append_one_terminator() {
@@ -324,5 +387,54 @@ mod tests {
         assert!(is_terminated_wide(&[b'a' as u16, 0]));
         assert!(!is_terminated_wide(&[]));
         assert!(!is_terminated_wide(&[b'a' as u16, 0, b'b' as u16, 0]));
+    }
+
+    #[test]
+    fn failed_destroy_detaches_state_before_dropping_it() {
+        let dropped = Rc::new(Cell::new(false));
+        let detached = Rc::new(Cell::new(false));
+        let detached_in_cleanup = Rc::clone(&detached);
+        let result = cleanup_message_loop_window(
+            Box::new(DropProbe(Rc::clone(&dropped))),
+            || true,
+            || Err(io::Error::other("destroy failed")),
+            move || {
+                detached_in_cleanup.set(true);
+                Ok(())
+            },
+        );
+
+        assert!(result.is_err());
+        assert!(detached.get());
+        assert!(dropped.get());
+    }
+
+    #[test]
+    fn already_destroyed_window_does_not_require_a_second_detach() {
+        let dropped = Rc::new(Cell::new(false));
+        let result = cleanup_message_loop_window(
+            Box::new(DropProbe(Rc::clone(&dropped))),
+            || false,
+            || panic!("already-detached state should not destroy the window"),
+            || panic!("state is already detached"),
+        );
+
+        assert!(result.is_ok());
+        assert!(dropped.get());
+    }
+
+    #[test]
+    fn failed_destroy_preserves_state_if_detaching_also_fails() {
+        let dropped = Rc::new(Cell::new(false));
+        let result = cleanup_message_loop_window(
+            Box::new(DropProbe(Rc::clone(&dropped))),
+            || true,
+            || Err(io::Error::other("destroy failed")),
+            || Err(io::Error::other("detach failed")),
+        );
+
+        let failure = result.expect_err("both cleanup attempts should fail");
+        assert!(failure.state.is_some());
+        assert!(!dropped.get());
     }
 }
