@@ -1,8 +1,8 @@
 use std::{error::Error, fmt};
 
 use volty_battery::{
-    BatteryLevel, BatteryProvider, BatteryState, BatteryStatus, DeviceId, DeviceLabel,
-    ProviderEvent, ProviderPoll, ScanMode, SinkClosed, SourceReading,
+    BatteryLevel, BatteryPercentage, BatteryProvider, BatteryState, BatteryStatus, DeviceId,
+    DeviceLabel, ProviderEvent, ProviderPoll, ScanMode, SinkClosed, SourceReading,
 };
 
 const BATTERY_LEVEL_MIN: u8 = 0;
@@ -128,7 +128,7 @@ pub fn decode_battery_level(value: &[u8]) -> Result<u8, BluetoothError> {
 /// Builds the normalized reading for a Bluetooth battery percentage.
 pub fn battery_status(level_percent: u8, source: &'static str) -> BatteryStatus {
     BatteryStatus {
-        level_percent: Some(level_percent),
+        percentage: BatteryPercentage::Exact(level_percent),
         level: BatteryLevel::Unknown,
         raw_level: level_percent,
         state: BatteryState::Unknown,
@@ -305,7 +305,7 @@ mod tests {
     #[test]
     fn bluetooth_reading_does_not_infer_charge_state() {
         let reading = battery_status(42, SOURCE_GATT);
-        assert_eq!(reading.level_percent, Some(42));
+        assert_eq!(reading.percentage.exact(), Some(42));
         assert_eq!(reading.state, BatteryState::Unknown);
         assert_eq!(reading.raw_status, None);
         assert_eq!(reading.source, SOURCE_GATT);

@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 /// The capture file schema written by this crate.
-pub const SCHEMA: &str = "volty.capture/v1";
+pub const SCHEMA: &str = "volty.capture/v2";
 
 /// How much hardware activity a capture contains.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -343,7 +343,7 @@ pub struct CaptureReading {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct BatterySnapshot {
-    pub percent: Option<u8>,
+    pub percentage: CapturedBatteryPercentage,
     /// One of `unknown`, `critical`, `low`, `good`, or `full`.
     pub level: String,
     /// One of `unknown`, `discharging`, `charging`, `charging_nearly_full`,
@@ -356,6 +356,28 @@ pub struct BatterySnapshot {
     /// Raw battery voltage in millivolts when the backend measured one.
     #[serde(default)]
     pub voltage_mv: Option<u16>,
+}
+
+/// Percentage provenance retained in capture files.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum CapturedBatteryPercentage {
+    Unavailable,
+    Exact {
+        value: u8,
+    },
+    Estimated {
+        value: u8,
+        method: CapturedPercentageEstimateMethod,
+    },
+}
+
+/// The algorithm or native bucket mapping used for a captured estimate.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CapturedPercentageEstimateMethod {
+    VoltageCurve,
+    XInputBucketMapping,
 }
 
 /// Diagnostic message recorded during a capture.

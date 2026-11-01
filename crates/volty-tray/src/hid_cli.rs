@@ -2,6 +2,14 @@
 use std::collections::HashMap;
 use std::error::Error;
 use std::fmt;
+#[cfg(windows)]
+use std::{
+    collections::BTreeMap,
+    fs::OpenOptions,
+    time::{Duration, Instant},
+};
+#[cfg(windows)]
+use volty_hid::HidReportIo;
 
 #[derive(Debug)]
 pub struct CliError(String);
@@ -34,6 +42,9 @@ pub fn run(args: &[String]) -> Result<(), CliError> {
         println!("{HID_USAGE}");
         return Ok(());
     }
+    if command == "trace" {
+        return trace(&args[1..]);
+    }
 
     let options = parse_options(&args[1..])?;
     if options.help {
@@ -50,6 +61,7 @@ pub fn run(args: &[String]) -> Result<(), CliError> {
         "inspect" => inspect(&options),
         "features" => features(&options),
         "raw" => raw(&options),
+        "sniff" => sniff(&options),
         _ => Err(error(format!(
             "unknown HID command '{command}'\n{HID_USAGE}"
         ))),
@@ -57,7 +69,7 @@ pub fn run(args: &[String]) -> Result<(), CliError> {
 }
 
 #[cfg(windows)]
-const HID_USAGE: &str = "Usage: volty hid <inspect|features|raw> [options]\n\
+const HID_USAGE: &str = "Usage: volty hid <inspect|features|raw|sniff|trace> [options]\n\
 Run `volty hid <command> --help` for command options.";
 
 #[cfg(windows)]
@@ -101,6 +113,23 @@ Sends an arbitrary HID++ request. Raw operations are not assumed to be read-only
   --interface NUMBER           HID interface number\n\
   --path PATH                  Exact hidapi path",
         ),
+        "sniff" => Some(
+            "Usage: volty hid sniff --output PATH --include-input [--duration-seconds NUMBER] [interface selector]\n\
+Records raw input reports from exactly one selected HID interface. Captures are local and can contain button or keyboard input.\n\
+  --output PATH                New JSONL trace file; existing files are not overwritten\n\
+  --include-input              Acknowledge that raw reports can contain user input\n\
+  --duration-seconds NUMBER    Capture duration, 1..=120 (default 10)\n\
+  --vid, --vendor-id HEX       Vendor ID\n\
+  --pid, --product-id HEX      Product ID\n\
+  --usage-page HEX             HID usage page\n\
+  --usage HEX                  HID usage\n\
+  --interface NUMBER           HID interface number\n\
+  --path PATH                  Exact hidapi path",
+        ),
+        "trace" => Some(
+            "Usage: volty hid trace <trace-file>\n\
+Validates a raw HID trace and prints report counts by direction, ID, and length.",
+        ),
         _ => None,
     }
 }
@@ -110,6 +139,7 @@ Sends an arbitrary HID++ request. Raw operations are not assumed to be read-only
 struct Options {
     values: HashMap<String, String>,
     allow_state_changing: bool,
+    include_input: bool,
     help: bool,
 }
 
@@ -126,6 +156,12 @@ fn parse_options(args: &[String]) -> Result<Options, CliError> {
                     return Err(error("duplicate option --allow-state-changing"));
                 }
                 options.allow_state_changing = true;
+            }
+            "--include-input" => {
+                if options.include_input {
+                    return Err(error("duplicate option --include-input"));
+                }
+                options.include_input = true;
             }
             _ if option.starts_with("--") => {
                 let value = args
@@ -166,6 +202,15 @@ fn reject_state_flag(options: &Options) -> Result<(), CliError> {
         Err(error(
             "--allow-state-changing is only valid for the raw command",
         ))
+    } else {
+        Ok(())
+    }
+}
+
+#[cfg(windows)]
+fn reject_input_flag(options: &Options) -> Result<(), CliError> {
+    if options.include_input {
+        Err(error("--include-input is only valid for the sniff command"))
     } else {
         Ok(())
     }
@@ -287,6 +332,7 @@ fn format_interface(info: &volty_hid::HidInterfaceInfo) -> String {
 #[cfg(windows)]
 fn inspect(options: &Options) -> Result<(), CliError> {
     reject_state_flag(options)?;
+    reject_input_flag(options)?;
     check_options(
         options,
         &[
@@ -362,6 +408,7 @@ fn device_index(options: &Options) -> Result<u8, CliError> {
 #[cfg(windows)]
 fn features(options: &Options) -> Result<(), CliError> {
     reject_state_flag(options)?;
+    reject_input_flag(options)?;
     check_options(
         options,
         &[
@@ -403,7 +450,194 @@ fn features(options: &Options) -> Result<(), CliError> {
 }
 
 #[cfg(windows)]
+fn sniff(options: &Options) -> Result<(), CliError> {
+    reject_state_flag(options)?;
+    if !options.include_input {
+        return Err(error(
+            "raw HID reports can contain button or keyboard input; pass --include-input to acknowledge recording it",
+        ));
+    }
+    check_options(
+        options,
+        &[
+            "--output",
+            "--duration-seconds",
+            "--vid",
+            "--vendor-id",
+            "--pid",
+            "--product-id",
+            "--usage-page",
+            "--usage",
+            "--interface",
+            "--interface-number",
+            "--path",
+        ],
+    )?;
+
+    let output = std::path::PathBuf::from(required(options, "--output")?);
+    let duration_seconds = option(options, &["--duration-seconds"])
+        .map(|value| parse_number(value, "--duration-seconds"))
+        .transpose()?
+        .unwrap_or(10);
+    if !(1..=120).contains(&duration_seconds) {
+        return Err(error("--duration-seconds must be in 1..=120"));
+    }
+
+    let selector = selector(options)?;
+    let interface = select_interface(&selector)?;
+    let session = volty_hid::HidReportSession::open_for_interface(&interface)
+        .map_err(|error| error.to_string())?;
+    let (seconds, nanos) = crate::capture::unix_now().map_err(|error| error.to_string())?;
+    let file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&output)
+        .map_err(|io_error| {
+            error(format!(
+                "could not create trace file {} without overwriting an existing file: {io_error}",
+                output.display()
+            ))
+        })?;
+    let header = volty_capture::HidTraceHeader {
+        schema: volty_capture::HID_TRACE_SCHEMA.to_owned(),
+        trace_id: format!("{seconds}-{nanos:09}"),
+        created_at: crate::capture::unix_to_rfc3339(seconds),
+        app_version: env!("CARGO_PKG_VERSION").to_owned(),
+        interface: volty_capture::HidTraceInterface {
+            bus: interface.bus_type.clone(),
+            vendor_id: interface.vendor_id,
+            product_id: interface.product_id,
+            release_number: interface.release_number,
+            usage_page: interface.usage_page,
+            usage: interface.usage,
+            interface_number: interface.interface_number,
+        },
+    };
+    let mut trace =
+        volty_capture::HidTraceWriter::new(file, header).map_err(|error| error.to_string())?;
+    let mut recorder = volty_hid::RecordingHidIo::new(session);
+    let capture_result = capture_input_reports(
+        &mut recorder,
+        &mut trace,
+        Duration::from_secs(u64::from(duration_seconds)),
+    );
+    let finish_result = trace
+        .finish(capture_result.is_ok())
+        .map_err(|error| error.to_string());
+
+    match (capture_result, finish_result) {
+        (Ok((reports, bytes)), Ok(())) => {
+            println!(
+                "Captured {reports} input reports ({bytes} bytes) from {:04x}:{:04x} interface {} to {}.",
+                interface.vendor_id,
+                interface.product_id,
+                interface.interface_number,
+                output.display()
+            );
+            println!("The trace contains raw input and is local only; review it before sharing.");
+            Ok(())
+        }
+        (Err(capture_error), Ok(())) => Err(capture_error),
+        (Ok(_), Err(finish_error)) => Err(error(finish_error)),
+        (Err(capture_error), Err(finish_error)) => Err(error(format!(
+            "{capture_error}; could not finalize the partial trace: {finish_error}"
+        ))),
+    }
+}
+
+#[cfg(windows)]
+fn capture_input_reports<W: std::io::Write>(
+    recorder: &mut volty_hid::RecordingHidIo<volty_hid::HidReportSession>,
+    trace: &mut volty_capture::HidTraceWriter<W>,
+    duration: Duration,
+) -> Result<(u64, u64), CliError> {
+    let started = Instant::now();
+    let mut buffer = [0u8; volty_capture::MAX_HID_TRACE_REPORT_BYTES];
+    let mut report_count = 0u64;
+    let mut byte_count = 0u64;
+
+    while started.elapsed() < duration {
+        let timeout = duration
+            .saturating_sub(started.elapsed())
+            .min(Duration::from_millis(100));
+        recorder
+            .read_input(&mut buffer, timeout)
+            .map_err(|io_error| error(io_error.to_string()))?;
+        for event in recorder.take_events() {
+            let direction = match event.direction {
+                volty_hid::HidReportDirection::Input => volty_capture::HidTraceDirection::Input,
+                volty_hid::HidReportDirection::Output => volty_capture::HidTraceDirection::Output,
+                volty_hid::HidReportDirection::FeatureRead => {
+                    volty_capture::HidTraceDirection::FeatureRead
+                }
+                volty_hid::HidReportDirection::FeatureWrite => {
+                    volty_capture::HidTraceDirection::FeatureWrite
+                }
+            };
+            let report = volty_capture::hid_trace_report(event.t_ms, direction, &event.bytes)
+                .map_err(|trace_error| error(trace_error.to_string()))?;
+            trace
+                .write_report(&report)
+                .map_err(|trace_error| error(trace_error.to_string()))?;
+            report_count += 1;
+            byte_count = byte_count
+                .checked_add(event.bytes.len() as u64)
+                .ok_or_else(|| error("captured HID byte count overflowed"))?;
+        }
+    }
+
+    Ok((report_count, byte_count))
+}
+
+#[cfg(windows)]
+fn trace(args: &[String]) -> Result<(), CliError> {
+    if args
+        .iter()
+        .any(|arg| matches!(arg.as_str(), "-h" | "--help" | "help"))
+    {
+        println!("{}", command_usage("trace").unwrap_or(HID_USAGE));
+        return Ok(());
+    }
+    let [path] = args else {
+        return Err(error(
+            command_usage("trace").unwrap_or(HID_USAGE).to_owned(),
+        ));
+    };
+    let trace = volty_capture::HidTraceFile::read(path).map_err(|error| error.to_string())?;
+    let report_timing = trace.reports.last().map_or_else(
+        || "no reports".to_owned(),
+        |report| format!("last report at {} ms", report.t_ms),
+    );
+    println!(
+        "HID trace {:04x}:{:04x} interface {}: {} reports, {report_timing}, {} bytes, {}.",
+        trace.header.interface.vendor_id,
+        trace.header.interface.product_id,
+        trace.header.interface.interface_number,
+        trace.footer.reports,
+        trace.footer.bytes,
+        if trace.footer.complete {
+            "complete"
+        } else {
+            "incomplete"
+        }
+    );
+
+    let mut counts = BTreeMap::new();
+    for report in &trace.reports {
+        *counts
+            .entry((report.direction, report.report_id, report.data.len() / 2))
+            .or_insert(0u64) += 1;
+    }
+    for ((direction, report_id, length), count) in counts {
+        println!("{direction:?} report_id=0x{report_id:02x} length={length} count={count}");
+    }
+    println!("Raw report bytes remain in the trace file; treat them as user input.");
+    Ok(())
+}
+
+#[cfg(windows)]
 fn raw(options: &Options) -> Result<(), CliError> {
+    reject_input_flag(options)?;
     check_options(
         options,
         &[

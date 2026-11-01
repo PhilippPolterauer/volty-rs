@@ -6,7 +6,7 @@
 mod native;
 
 use crate::protocol::{BatteryProtocol, HidBatteryDevice, ProtocolError};
-use crate::{BatteryLevel, BatteryState, BatteryStatus, HidInterfaceInfo};
+use crate::{BatteryLevel, BatteryPercentage, BatteryState, BatteryStatus, HidInterfaceInfo};
 
 pub const SOURCE_HID_BATTERY: &str = "HID Battery";
 
@@ -349,7 +349,7 @@ pub(crate) fn ratio_percent(remaining: u32, full: u32) -> Option<u8> {
         .ok()
 }
 
-fn level_bucket(percent: u8) -> BatteryLevel {
+pub(crate) fn level_bucket(percent: u8) -> BatteryLevel {
     match percent {
         0..=10 => BatteryLevel::Critical,
         11..=30 => BatteryLevel::Low,
@@ -370,7 +370,7 @@ pub(crate) fn battery_status(
         _ => BatteryState::Unknown,
     };
     BatteryStatus {
-        level_percent: Some(percent),
+        percentage: BatteryPercentage::Exact(percent),
         level: level_bucket(percent),
         raw_level: percent,
         state,
@@ -696,7 +696,7 @@ mod tests {
     #[test]
     fn status_maps_percent_and_state() {
         let charging = battery_status(40, Some(true), Some(false));
-        assert_eq!(charging.level_percent, Some(40));
+        assert_eq!(charging.percentage.exact(), Some(40));
         assert_eq!(charging.state, BatteryState::Charging);
         assert_eq!(charging.level, BatteryLevel::Good);
         assert_eq!(charging.source, SOURCE_HID_BATTERY);
@@ -740,7 +740,7 @@ mod tests {
             &[charging.reading(true), discharging.reading(false)],
         )
         .unwrap();
-        assert_eq!(battery.level_percent, Some(64));
+        assert_eq!(battery.percentage.exact(), Some(64));
         assert_eq!(battery.level, BatteryLevel::Good);
         assert_eq!(battery.state, BatteryState::Charging);
         assert_eq!(battery.raw_level, 64);
@@ -795,7 +795,7 @@ mod tests {
         let battery =
             decode_generic_battery(&layout, &[remaining.reading(1250), full.reading(5000)], &[])
                 .unwrap();
-        assert_eq!(battery.level_percent, Some(25));
+        assert_eq!(battery.percentage.exact(), Some(25));
         assert_eq!(battery.level, BatteryLevel::Low);
         assert_eq!(battery.state, BatteryState::Unknown);
     }

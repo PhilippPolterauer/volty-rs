@@ -32,12 +32,53 @@ pub enum BatteryLevel {
     Full,
 }
 
-/// Normalized battery reading. Unreported values remain unavailable.
+/// A percentage estimate's method. Estimates are never interchangeable with a
+/// percentage reported directly by the battery source.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum BatteryPercentageEstimateMethod {
+    /// Approximation from a measured voltage and an assumed cell discharge curve.
+    VoltageCurve,
+    /// Representative percentage mapped from an XInput qualitative bucket.
+    XInputBucketMapping,
+}
+
+/// Percentage information with its provenance kept explicit.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum BatteryPercentage {
+    Unavailable,
+    Exact(u8),
+    Estimated {
+        value: u8,
+        method: BatteryPercentageEstimateMethod,
+    },
+}
+
+impl BatteryPercentage {
+    /// Returns a display/aggregation value when available. Callers that make
+    /// percentage-sensitive decisions must use [`Self::exact`].
+    pub const fn value(self) -> Option<u8> {
+        match self {
+            Self::Unavailable => None,
+            Self::Exact(value) | Self::Estimated { value, .. } => Some(value),
+        }
+    }
+
+    /// Returns only percentages reported directly by the source.
+    pub const fn exact(self) -> Option<u8> {
+        match self {
+            Self::Exact(value) => Some(value),
+            Self::Unavailable | Self::Estimated { .. } => None,
+        }
+    }
+}
+
+/// Normalized battery reading. Unreported values remain unavailable. Raw
+/// source fields and `source` retain the original value and its identity.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct BatteryStatus {
-    /// A percentage only when the device advertises percentage support.
-    pub level_percent: Option<u8>,
-    /// Coarse protocol level bucket, when available.
+    /// Percentage and provenance; use `level` for a native coarse bucket.
+    pub percentage: BatteryPercentage,
+    /// Coarse battery-level bucket, whether reported natively or derived.
     pub level: BatteryLevel,
     /// Raw level byte returned by the device protocol.
     pub raw_level: u8,

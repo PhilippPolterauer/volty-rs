@@ -422,7 +422,7 @@ fn unified_battery_info_is_normalized() {
         },
     )
     .unwrap();
-    assert_eq!(battery.level_percent, Some(87));
+    assert_eq!(battery.percentage.exact(), Some(87));
     assert_eq!(battery.level, BatteryLevel::Good);
     assert_eq!(battery.state, BatteryState::Charging);
     assert_eq!(battery.source, SOURCE_UNIFIED_BATTERY);
@@ -432,7 +432,7 @@ fn unified_battery_info_is_normalized() {
 fn legacy_battery_status_is_normalized() {
     let response = HidppFrame::short(1, 0x03, 0, 0x01, [42, 40, 3]);
     let battery = parse_legacy_battery_status(&response).unwrap();
-    assert_eq!(battery.level_percent, None);
+    assert_eq!(battery.percentage.exact(), None);
     assert_eq!(battery.raw_level, 42);
     assert_eq!(battery.state, BatteryState::Charged);
     assert_eq!(battery.voltage_mv, None);
@@ -444,7 +444,14 @@ fn battery_voltage_response_is_big_endian_and_estimated() {
     let response = HidppFrame::short(1, 0x05, FUNCTION_GET_BATTERY_VOLTAGE, 0x01, [0x0e, 0x74, 0]);
     let battery = parse_battery_voltage(&response).unwrap();
     assert_eq!(battery.voltage_mv, Some(3700));
-    assert_eq!(battery.level_percent, Some(60));
+    assert_eq!(
+        battery.percentage,
+        BatteryPercentage::Estimated {
+            value: 60,
+            method: BatteryPercentageEstimateMethod::VoltageCurve,
+        }
+    );
+    assert_eq!(battery.percentage.exact(), None);
     assert_eq!(battery.level, BatteryLevel::Good);
     assert_eq!(battery.raw_level, 0);
     assert_eq!(battery.state, BatteryState::Unknown);
@@ -560,7 +567,7 @@ fn unified_battery_handles_no_percentage_support_and_invalid_levels() {
         },
     )
     .unwrap();
-    assert_eq!(parsed.level_percent, None);
+    assert_eq!(parsed.percentage.exact(), None);
     assert_eq!(parsed.level, BatteryLevel::Full);
     assert_eq!(parsed.state, BatteryState::Charged);
 

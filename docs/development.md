@@ -47,5 +47,8 @@ real reading and offline replay are confirmed.
 
 Use read-only diagnostics when inspecting hardware. Avoid arbitrary
 `volty hid raw` requests and state-changing commands when validating battery
-support. For implementation details, start with the
+support. For passive report-level protocol discovery, use the finite,
+explicitly opted-in `volty hid sniff` trace; it records raw input data and
+cannot observe traffic sent by another process. For implementation details,
+start with the
 [architecture guide](architecture.md) and the relevant HID or Bluetooth page.

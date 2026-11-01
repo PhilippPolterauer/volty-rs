@@ -292,7 +292,7 @@ mod tests {
         });
 
         let battery = query_battery_with_transport(&mut transport, 1).unwrap();
-        assert_eq!(battery.level_percent, Some(87));
+        assert_eq!(battery.percentage.exact(), Some(87));
         assert_eq!(battery.state, crate::BatteryState::Charging);
         assert_eq!(battery.source, SOURCE_UNIFIED_BATTERY);
         assert_eq!(transport.requests.len(), 3);
@@ -330,7 +330,7 @@ mod tests {
         });
 
         let battery = query_battery_with_transport(&mut transport, 1).unwrap();
-        assert_eq!(battery.level_percent, None);
+        assert_eq!(battery.percentage.exact(), None);
         assert_eq!(battery.raw_level, 42);
         assert_eq!(battery.state, crate::BatteryState::Charged);
         assert_eq!(battery.source, SOURCE_BATTERY_STATUS);
@@ -363,7 +363,14 @@ mod tests {
         });
 
         let battery = query_battery_with_transport(&mut transport, 1).unwrap();
-        assert_eq!(battery.level_percent, Some(60));
+        assert_eq!(battery.percentage.value(), Some(60));
+        assert!(matches!(
+            battery.percentage,
+            crate::BatteryPercentage::Estimated {
+                method: crate::BatteryPercentageEstimateMethod::VoltageCurve,
+                ..
+            }
+        ));
         assert_eq!(battery.level, crate::BatteryLevel::Good);
         assert_eq!(battery.raw_level, 0);
         assert_eq!(battery.state, crate::BatteryState::Unknown);
@@ -435,7 +442,7 @@ mod tests {
 
         let (name, battery) = query_device_with_transport(&mut transport, 1).unwrap();
         assert_eq!(name.unwrap().as_deref(), Some("G502 X Plus"));
-        assert_eq!(battery.level_percent, Some(87));
+        assert_eq!(battery.percentage.exact(), Some(87));
         let functions: Vec<_> = transport
             .requests
             .iter()

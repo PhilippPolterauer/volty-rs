@@ -1,4 +1,7 @@
-use super::{append_config_error, record_event, DeviceId, DeviceReading, FileLogger, LogLevel};
+use super::{
+    append_config_error, battery_status_label, record_event, DeviceId, DeviceReading, FileLogger,
+    LogLevel,
+};
 use super::{battery_eta::battery_eta_label, poll::PollResult};
 use crate::tray::{DeviceMonitorEntry, TrayController};
 use std::{
@@ -94,7 +97,8 @@ pub(super) fn tray_icon_driver<'a>(
         .filter_map(|reading| {
             reading
                 .battery
-                .level_percent
+                .percentage
+                .value()
                 .map(|percentage| (percentage, reading))
         })
         .min_by_key(|(percentage, _)| *percentage)
@@ -120,7 +124,7 @@ pub(super) fn update_tray_devices(
     let driver = tray_icon_driver(readings, pinned_device);
     let icon_percentage = driver
         .reading
-        .and_then(|reading| reading.battery.level_percent);
+        .and_then(|reading| reading.battery.percentage.value());
     let pinned_index = pinned_device.and_then(|identity| {
         readings
             .iter()
@@ -228,12 +232,19 @@ fn prioritized_tooltip_statuses(
 
 fn compact_device_status(reading: &DeviceReading, last_seen: Option<&str>) -> String {
     let name = reading.label.display();
-    let mut status = match reading.battery.level_percent {
-        Some(percentage) => match battery_eta_label(reading) {
-            Some(eta) => format!("{name}: {percentage}% · {eta}"),
-            None => format!("{name}: {percentage}%"),
-        },
-        None => format!("{name}: battery unknown"),
+    let mut status = match reading.battery.percentage.value() {
+        Some(percentage) => {
+            let estimate_marker = match reading.battery.percentage {
+                volty_battery::BatteryPercentage::Estimated { .. } => "~",
+                volty_battery::BatteryPercentage::Unavailable
+                | volty_battery::BatteryPercentage::Exact(_) => "",
+            };
+            match battery_eta_label(reading) {
+                Some(eta) => format!("{name}: {estimate_marker}{percentage}% · {eta}"),
+                None => format!("{name}: {estimate_marker}{percentage}%"),
+            }
+        }
+        None => format!("{name}: {}", battery_status_label(&reading.battery)),
     };
     if reading.notification_error.is_some() {
         status.push_str(" · notification failed");
@@ -367,13 +378,15 @@ mod tests {
     use super::*;
     use std::collections::{BTreeMap, HashMap};
     use std::time::Duration;
-    use volty_battery::{BatteryLevel, BatteryState, BatteryStatus, DeviceLabel};
+    use volty_battery::{
+        BatteryLevel, BatteryPercentage, BatteryState, BatteryStatus, DeviceLabel,
+    };
     fn test_reading() -> DeviceReading {
         DeviceReading {
             id: DeviceId::new("hid:test#1"),
             label: DeviceLabel::new("Test device").with_qualifier("slot 1"),
             battery: BatteryStatus {
-                level_percent: Some(20),
+                percentage: BatteryPercentage::Exact(20),
                 level: BatteryLevel::Low,
                 raw_level: 2,
                 state: BatteryState::Discharging,
@@ -430,9 +443,24 @@ mod tests {
     }
 
     #[test]
+    fn compact_device_status_marks_estimated_percentages_and_omits_eta() {
+        let mut reading = test_reading();
+        reading.battery.percentage = BatteryPercentage::Estimated {
+            value: 50,
+            method: volty_battery::BatteryPercentageEstimateMethod::XInputBucketMapping,
+        };
+        reading.estimated_time_remaining = Some(Duration::from_secs(90 * 60));
+
+        assert_eq!(
+            compact_device_status(&reading, None),
+            "Test device (slot 1): ~50%"
+        );
+    }
+
+    #[test]
     fn compact_device_status_omits_charge_state_without_an_eta() {
         let mut reading = test_reading();
-        reading.battery.level_percent = Some(87);
+        reading.battery.percentage = BatteryPercentage::Exact(87);
         reading.battery.level = BatteryLevel::Good;
         reading.battery.state = BatteryState::Charging;
 
@@ -443,21 +471,34 @@ mod tests {
     }
 
     #[test]
-    fn compact_device_status_reports_unknown_percentages() {
+    fn compact_device_status_uses_coarse_level_without_percentage() {
         let mut reading = test_reading();
-        reading.battery.level_percent = None;
-        reading.battery.state = BatteryState::Charged;
+        reading.battery.percentage = BatteryPercentage::Unavailable;
+        reading.battery.state = BatteryState::Unknown;
 
         assert_eq!(
             compact_device_status(&reading, None),
-            "Test device (slot 1): battery unknown"
+            "Test device (slot 1): low level"
+        );
+    }
+
+    #[test]
+    fn compact_device_status_reports_unknown_when_no_level_or_state_is_available() {
+        let mut reading = test_reading();
+        reading.battery.percentage = BatteryPercentage::Unavailable;
+        reading.battery.level = BatteryLevel::Unknown;
+        reading.battery.state = BatteryState::Unknown;
+
+        assert_eq!(
+            compact_device_status(&reading, None),
+            "Test device (slot 1): Unknown charge state"
         );
     }
 
     #[test]
     fn compact_device_status_omits_the_eta_when_full() {
         let mut reading = test_reading();
-        reading.battery.level_percent = Some(100);
+        reading.battery.percentage = BatteryPercentage::Exact(100);
         reading.battery.level = BatteryLevel::Unknown;
         reading.battery.state = BatteryState::Unknown;
 
@@ -550,7 +591,8 @@ mod tests {
     fn reading_with(id: &str, percentage: Option<u8>) -> DeviceReading {
         let mut reading = test_reading();
         reading.id = DeviceId::new(id);
-        reading.battery.level_percent = percentage;
+        reading.battery.percentage =
+            percentage.map_or(BatteryPercentage::Unavailable, BatteryPercentage::Exact);
         reading
     }
 
@@ -632,7 +674,7 @@ mod tests {
         assert_eq!(
             driver
                 .reading
-                .and_then(|reading| reading.battery.level_percent),
+                .and_then(|reading| reading.battery.percentage.value()),
             None
         );
     }
