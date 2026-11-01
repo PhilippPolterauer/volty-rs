@@ -65,18 +65,18 @@ fn render_battery(percentage: u8, size: u32, battery_color_map: BatteryColorMap)
     downsample_icon(image, size)
 }
 
-/// 3×5 bitmap glyphs for the digits 0-9. Bit 2 is the leftmost column.
-const DIGIT_GLYPHS: [[u8; 5]; 10] = [
-    [0b111, 0b101, 0b101, 0b101, 0b111],
-    [0b010, 0b110, 0b010, 0b010, 0b111],
-    [0b111, 0b001, 0b111, 0b100, 0b111],
-    [0b111, 0b001, 0b111, 0b001, 0b111],
-    [0b101, 0b101, 0b111, 0b001, 0b001],
-    [0b111, 0b100, 0b111, 0b001, 0b111],
-    [0b111, 0b100, 0b111, 0b101, 0b111],
-    [0b111, 0b001, 0b010, 0b010, 0b010],
-    [0b111, 0b101, 0b111, 0b101, 0b111],
-    [0b111, 0b101, 0b111, 0b001, 0b111],
+/// 4×7 bitmap glyphs for the digits 0-9. Bit 3 is the leftmost column.
+const DIGIT_GLYPHS: [[u8; 7]; 10] = [
+    [0b0110, 0b1001, 0b1001, 0b1001, 0b1001, 0b1001, 0b0110],
+    [0b0010, 0b0110, 0b0010, 0b0010, 0b0010, 0b0010, 0b0111],
+    [0b0110, 0b1001, 0b0001, 0b0010, 0b0100, 0b1000, 0b1111],
+    [0b1110, 0b0001, 0b0001, 0b0110, 0b0001, 0b0001, 0b1110],
+    [0b0010, 0b0110, 0b1010, 0b1010, 0b1111, 0b0010, 0b0010],
+    [0b1111, 0b1000, 0b1110, 0b0001, 0b0001, 0b1001, 0b0110],
+    [0b0110, 0b1000, 0b1000, 0b1110, 0b1001, 0b1001, 0b0110],
+    [0b1111, 0b0001, 0b0010, 0b0010, 0b0100, 0b0100, 0b0100],
+    [0b0110, 0b1001, 0b1001, 0b0110, 0b1001, 0b1001, 0b0110],
+    [0b0110, 0b1001, 0b1001, 0b0111, 0b0001, 0b0001, 0b0110],
 ];
 
 pub(super) fn percentage_icon_at_size_with_color_map(
@@ -101,11 +101,11 @@ fn render_percentage(percentage: u8, size: u32, battery_color_map: BatteryColorM
 
     let text = percentage.to_string();
     let scale = size / ICON_SIZE;
-    let glyph_width = 3 * scale;
+    let glyph_width = 4 * scale;
     let gap = scale;
     let digit_count = text.len() as u32;
     let text_width = digit_count * glyph_width + (digit_count - 1) * gap;
-    let text_height = 5 * scale;
+    let text_height = 7 * scale;
     let origin_x = (size - text_width) / 2;
     let origin_y = (size - text_height) / 2;
 
@@ -113,8 +113,8 @@ fn render_percentage(percentage: u8, size: u32, battery_color_map: BatteryColorM
         let glyph = DIGIT_GLYPHS[usize::from(digit - b'0')];
         let digit_x = origin_x + index as u32 * (glyph_width + gap);
         for (row, bits) in glyph.iter().enumerate() {
-            for column in 0..3 {
-                if bits & (0b100 >> column) == 0 {
+            for column in 0..4 {
+                if bits & (0b1000 >> column) == 0 {
                     continue;
                 }
                 let pixel_x = digit_x + column * scale;
@@ -485,8 +485,8 @@ mod tests {
         for (digit, glyph) in DIGIT_GLYPHS.iter().enumerate() {
             assert!(glyph.iter().any(|row| *row != 0), "digit {digit} is blank");
             assert!(
-                glyph.iter().all(|row| row & !0b111 == 0),
-                "digit {digit} exceeds three columns"
+                glyph.iter().all(|row| row & !0b1111 == 0),
+                "digit {digit} exceeds four columns"
             );
             assert!(
                 glyph.iter().map(|row| row.count_ones()).sum::<u32>() >= 7,
@@ -542,6 +542,26 @@ mod tests {
             assert!(!opaque_pixels(&hundred).is_empty());
             assert_ne!(zero, hundred);
         }
+    }
+
+    #[test]
+    fn percentage_digits_fill_more_of_the_icon() {
+        let rgba = percentage_rgba(100, ICON_SIZE).unwrap();
+        let mut bounds = [ICON_SIZE, ICON_SIZE, 0, 0];
+
+        for y in 0..ICON_SIZE {
+            for x in 0..ICON_SIZE {
+                let alpha_index = ((y * ICON_SIZE + x) * 4 + 3) as usize;
+                if rgba[alpha_index] > 0 {
+                    bounds[0] = bounds[0].min(x);
+                    bounds[1] = bounds[1].min(y);
+                    bounds[2] = bounds[2].max(x);
+                    bounds[3] = bounds[3].max(y);
+                }
+            }
+        }
+
+        assert_eq!(bounds, [2, 4, 14, 10]);
     }
 
     #[test]

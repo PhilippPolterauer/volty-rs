@@ -49,6 +49,11 @@ and development guides.
 - **Low-battery alerts:** native Windows notifications before you run dry.
 - **Left-click dashboard:** local battery history and estimated remaining time
   in a native WebView2 window (browser fallback). Nothing is uploaded.
+
+<p align="center">
+  <img src="docs/dashboard.png" alt="Volty dashboard showing 47% battery, 5d 13h remaining, drain rate and history chart" width="720">
+</p>
+
 - **Customizable:** per-device controls and tray display options.
 - **Diagnostics:** read-only hardware captures with local inspection and
   replay; nothing is uploaded automatically.
