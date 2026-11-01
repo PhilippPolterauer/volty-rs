@@ -109,7 +109,9 @@ pub fn show_about_window() -> Result<(), Box<dyn Error>> {
         return Err(error);
     }
     state.create_complete = true;
-    win32::run_message_loop(window, SW_SHOWNORMAL, &mut state.create_complete)?;
+    win32::run_message_loop(window, SW_SHOWNORMAL, state, |state, value| {
+        state.create_complete = value;
+    })?;
     Ok(())
 }
 

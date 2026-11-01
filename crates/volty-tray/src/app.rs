@@ -509,13 +509,45 @@ impl App {
                         &format!("Update {} is available", update.version),
                     )?;
                     if is_new_version {
-                        if let Err(error) =
-                            crate::notify::show_update_available_notification(&update.version)
-                        {
-                            self.record_event(
-                                LogLevel::Warn,
-                                &format!("Update notification failed: {error}"),
-                            )?;
+                        match crate::notify::show_update_available_notification(&update.version) {
+                            Ok(notification) => {
+                                let action_sender = self.tray.action_sender();
+                                let result = thread::Builder::new()
+                                    .name("volty-update-notification".to_owned())
+                                    .spawn(move || {
+                                        let wait_result = notification.wait_for_response(
+                                            move |response: &notify_rust::NotificationResponse| {
+                                                if crate::notify::update_notification_opens_prompt(
+                                                    response,
+                                                ) && action_sender
+                                                    .send(TrayAction::CheckForUpdates)
+                                                    .is_ok()
+                                                {
+                                                    wake::signal();
+                                                }
+                                            },
+                                        );
+                                        if let Err(error) = wait_result {
+                                            eprintln!(
+                                                "Volty update notification handler failed: {error}"
+                                            );
+                                        }
+                                    });
+                                if let Err(error) = result {
+                                    self.record_event(
+                                        LogLevel::Warn,
+                                        &format!(
+                                            "Could not start update notification handler: {error}"
+                                        ),
+                                    )?;
+                                }
+                            }
+                            Err(error) => {
+                                self.record_event(
+                                    LogLevel::Warn,
+                                    &format!("Update notification failed: {error}"),
+                                )?;
+                            }
                         }
                     }
                 } else {
@@ -607,9 +639,7 @@ impl App {
     }
 
     fn show_update_message(&mut self, title: &str, message: &str, style: u32) -> i32 {
-        let text = crate::win32::to_wide(message);
-        let title = crate::win32::to_wide(title);
-        let response = crate::app_icon::show_message_box(&text, &title, style);
+        let response = crate::app_icon::show_message_box(message, title, style);
         if response == 0 {
             let error = io::Error::last_os_error();
             if let Err(report_error) = self.report_error("Update dialog error", &error.to_string())
