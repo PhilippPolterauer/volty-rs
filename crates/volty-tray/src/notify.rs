@@ -215,17 +215,24 @@ pub(super) fn show_low_battery_notification(
 }
 
 #[cfg(windows)]
-pub(super) fn show_update_available_notification(version: &str) -> Result<(), NotificationError> {
+pub(super) fn show_update_available_notification(
+    version: &str,
+) -> Result<notify_rust::NotificationHandle, NotificationError> {
     notify_rust::Notification::new()
         .summary("Volty update available")
         .body(&format!(
-            "Volty {version} is available. Select \"Update available!\" in the tray menu to install it."
+            "Volty {version} is available. Click to review the update."
         ))
         .show()
-        .map(|_| ())
         .map_err(|error| {
             NotificationError::new(format!("could not show update-available toast: {error}"))
         })
+}
+
+pub(crate) fn update_notification_opens_prompt(
+    response: &notify_rust::NotificationResponse,
+) -> bool {
+    matches!(response, notify_rust::NotificationResponse::Default)
 }
 
 /// Shows a toast whose body or Open Capture action can open the saved file.
@@ -290,6 +297,21 @@ mod tests {
         ));
         assert!(!capture_notification_opens_file(
             &NotificationResponse::Reply("not used".to_owned())
+        ));
+    }
+
+    #[test]
+    fn update_notification_opens_prompt_only_when_clicked() {
+        use notify_rust::{CloseReason, NotificationResponse};
+
+        assert!(update_notification_opens_prompt(
+            &NotificationResponse::Default
+        ));
+        assert!(!update_notification_opens_prompt(
+            &NotificationResponse::Action("other".to_owned())
+        ));
+        assert!(!update_notification_opens_prompt(
+            &NotificationResponse::Closed(CloseReason::Dismissed)
         ));
     }
 

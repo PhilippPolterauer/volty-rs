@@ -509,13 +509,45 @@ impl App {
                         &format!("Update {} is available", update.version),
                     )?;
                     if is_new_version {
-                        if let Err(error) =
-                            crate::notify::show_update_available_notification(&update.version)
-                        {
-                            self.record_event(
-                                LogLevel::Warn,
-                                &format!("Update notification failed: {error}"),
-                            )?;
+                        match crate::notify::show_update_available_notification(&update.version) {
+                            Ok(notification) => {
+                                let action_sender = self.tray.action_sender();
+                                let result = thread::Builder::new()
+                                    .name("volty-update-notification".to_owned())
+                                    .spawn(move || {
+                                        let wait_result = notification.wait_for_response(
+                                            move |response: &notify_rust::NotificationResponse| {
+                                                if crate::notify::update_notification_opens_prompt(
+                                                    response,
+                                                ) && action_sender
+                                                    .send(TrayAction::CheckForUpdates)
+                                                    .is_ok()
+                                                {
+                                                    wake::signal();
+                                                }
+                                            },
+                                        );
+                                        if let Err(error) = wait_result {
+                                            eprintln!(
+                                                "Volty update notification handler failed: {error}"
+                                            );
+                                        }
+                                    });
+                                if let Err(error) = result {
+                                    self.record_event(
+                                        LogLevel::Warn,
+                                        &format!(
+                                            "Could not start update notification handler: {error}"
+                                        ),
+                                    )?;
+                                }
+                            }
+                            Err(error) => {
+                                self.record_event(
+                                    LogLevel::Warn,
+                                    &format!("Update notification failed: {error}"),
+                                )?;
+                            }
                         }
                     }
                 } else {
