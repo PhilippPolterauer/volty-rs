@@ -2,7 +2,7 @@
 
 [Welcome to Volty](index.md)
 
-# Using Volty
+# User guide
 
 - [Install and run](installation.md)
 - [Configuration and data](configuration.md)
@@ -10,9 +10,10 @@
 - [Device support](device-support.md)
 - [Hardware captures](hardware-capture.md)
 
-# Hardware and development
+# Technical reference
 
 - [Architecture](architecture.md)
+- [Capture format and replay](capture-format.md)
 - [Generic HID battery support](hid-battery-support.md)
 - [Adding a Logitech HID++ device](adding-mice.md)
 - [Bluetooth headphone support](bluetooth-headphone-battery-support.md)

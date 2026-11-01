@@ -15,9 +15,18 @@
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="MIT license"></a>
 </p>
 
-Volty monitors battery levels from supported Logitech HID++ and standard HID
-battery reports on Windows 10/11. Bluetooth battery monitoring is experimental
-and available only in opt-in builds.
+Your mouse battery, always one glance away. Volty sits in the Windows
+notification area, shows the live charge level on the tray icon, and warns you
+before your device dies. It reads supported Logitech HID++ and standard HID
+battery reports on Windows 10/11. Bluetooth is experimental and opt-in.
+
+<p align="center">
+  <img src="docs/tray.png" alt="Tray icon with battery tooltip: G502 X PLUS 76%, discharging" height="70">
+  &nbsp;&nbsp;
+  <img src="docs/context.png" alt="Tray context menu" height="220">
+  &nbsp;&nbsp;
+  <img src="docs/notification.png" alt="Low-battery notification" height="110">
+</p>
 
 > **Project status:** Volty is a hobby project with limited hardware testing. It
 > is not production-ready or affiliated with Logitech. Device support and
@@ -37,15 +46,17 @@ and development guides.
 
 ## Highlights
 
-- Windows notification-area battery monitor with per-device controls.
-- Low-battery alerts, estimated remaining time, tray display customization, and
-  local battery history.
-- Left-click the tray icon to open the on-demand local battery-history
-  dashboard in a native window using WebView2, with a browser fallback;
-  nothing is uploaded.
-- Read-only hardware captures with local inspection and replay; nothing is
-  uploaded automatically.
-- Modular Rust workspace with separate battery, HID, Bluetooth, capture, and
+- **Live tray icon:** battery level and charging state at a glance; hover for
+  device name, percentage, and status.
+- **Right-click menu:** per-device status, refresh, configuration, log file,
+  diagnostics, and start on boot.
+- **Low-battery alerts:** native Windows notifications before you run dry.
+- **Left-click dashboard:** local battery history and estimated remaining time
+  in a native WebView2 window (browser fallback). Nothing is uploaded.
+- **Customizable:** per-device controls and tray display options.
+- **Diagnostics:** read-only hardware captures with local inspection and
+  replay; nothing is uploaded automatically.
+- **Modular Rust workspace:** separate battery, HID, Bluetooth, capture, and
   tray crates.
 
 Device support is best-effort beyond the hardware listed in the

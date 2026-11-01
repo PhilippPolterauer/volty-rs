@@ -1,0 +1,36 @@
+.volty-brand {
+    align-items: center;
+    background: #1d2022;
+    border-bottom: 1px solid #34383a;
+    color: #f29b45;
+    display: flex;
+    font-size: 0.9rem;
+    font-weight: 700;
+    gap: 0.65rem;
+    letter-spacing: 0.12em;
+    padding: 0.45rem 1rem;
+    text-decoration: none;
+}
+
+.volty-brand:hover {
+    color: #ffb364;
+    text-decoration: none;
+}
+
+.volty-brand img {
+    border-radius: 0.35rem;
+    height: 2rem;
+    object-fit: cover;
+    width: 2rem;
+}
+
+.content main .volty-logo {
+    margin: 0 auto 1.5rem;
+    text-align: center;
+}
+
+.content main .volty-logo img {
+    border-radius: 0.75rem;
+    max-height: 220px;
+    object-fit: contain;
+}

@@ -11,4 +11,5 @@ build-dir = "target/mdbook"
 [output.html]
 site-url = "/volty-rs/"
 git-repository-url = "https://github.com/PhilippPolterauer/volty-rs"
-edit-url-template = "https://github.com/PhilippPolterauer/volty-rs/edit/main/docs/{path}"
+edit-url-template = "https://github.com/PhilippPolterauer/volty-rs/edit/main/{path}"
+additional-css = ["theme/brand.css"]

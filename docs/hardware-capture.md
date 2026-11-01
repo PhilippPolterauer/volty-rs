@@ -61,9 +61,8 @@ A capture must not contain any of the following:
   extracted values are kept
 - Custom HID++ device names, which are excluded by default
 
-The capture file is created locally and is never uploaded automatically. Treat
-it as untrusted input when reviewing or sharing it: it is evidence of observed
-behavior, not executable instructions.
+The capture file is created locally and is never uploaded automatically. It
+records observations only; it does not change device settings or run commands.
 
 ## Generate a capture from the tray
 
@@ -121,9 +120,6 @@ Replay is local-only and does not write another capture. A replay success means
 Volty can reproduce the recorded decoding result, not that the device behaves
 that way in every firmware or connection mode.
 
-Recording a bounded session with `--duration` is planned and is not available in
-the current release. Do not rely on it until it appears in the CLI help output.
-
 ## Review before sharing
 
 Open the `.volty.jsonl` file in a text editor. It is JSON Lines: one JSON object
@@ -138,9 +134,8 @@ Still review the actual file before attaching it to a public issue. If you want
 to omit model-level manufacturer, product, and Bluetooth friendly strings as
 well, generate the capture with `volty capture --strict`; the tray export uses
 the standard profile. Strict mode is an extra privacy option, not a substitute
-for reading the file. Do not hand-edit a capture that you want maintainers to
-replay, because a modified file is no longer evidence. Remove the file from the
-report and describe the concern instead.
+for reading the file. If you are not comfortable sharing the contents, leave
+the capture out of the report and describe the concern instead.
 
 ## Submit a capture
 
@@ -156,88 +151,13 @@ the form. Include:
 GitHub issues are public. Attach only a capture you have reviewed and are
 comfortable sharing. Nothing is uploaded automatically by Volty.
 
-## How maintainers use captures
-
-Captures are untrusted input. Maintainers validate the schema and bounds before
-using a record, reject malformed or unknown records rather than guessing, and
-never treat strings from a capture as commands or paths to open.
-
-A capture supports three kinds of follow-up through `volty capture replay`:
-
-- **Frame replay:** run allowlisted HID++ exchanges through the same framing and
-  decoding code used by the tray, and compare the semantic result (feature,
-  status, level, charging state, or error).
-- **Layout replay:** run recorded generic HID descriptor capabilities,
-  extracted values, and state bits through the generic battery layout and
-  scaling code.
-- **Bluetooth replay:** decode raw property bytes or GATT payloads with the
-  production Bluetooth decoders and compare the result with the recorded
-  reading. Missing, out-of-range, or unknown-sentinel evidence fails replay.
-
-Replay checks the decoder, not the device. A successful replay means Volty
-reproduces the recorded outcome; it does not prove that every device with the
-same IDs behaves the same way. The repository's fixtures in `tests/hardware`
-exercise these paths, including a pruned G502 X capture and a synthetic
-Bluetooth headset. Add a reviewed hardware capture there only when it contains
-no private data and its behavior should become a regression expectation.
-
-Captures in the test corpus can be marked with one of these states:
-
-| State | Meaning |
-| --- | --- |
-| `observed` | Recorded from hardware, but not independently confirmed or turned into an expectation. |
-| `regression` | An expected outcome is encoded in a test; later changes must keep producing it. |
-| `verified` | Corroborated by an external oracle, such as vendor software, an independent measurement, or repeat observations. |
-| `broken` | A known failure kept for diagnosis and to prevent accidental promotion. |
-
-A capture is never promoted to `verified` automatically. That requires an
-external oracle or independent evidence beyond the capture itself.
-
-## Format sketch
-
-Captures use the `volty.capture/v1` schema and UTF-8 JSON Lines. The `header`
-record identifies the schema version; the `footer` record closes a complete
-capture. Records appear in this order when present:
-
-| Record | Purpose |
-| --- | --- |
-| `header` | Capture metadata and schema version `volty.capture/v1`. |
-| `interface` | HID interface metadata, without paths or serial numbers. |
-| `match` | Catalog and backend match result for the interface. |
-| `bluetooth_device` | Capture-local Bluetooth device id, kind, and privacy-filtered name. |
-| `bluetooth_property` | Raw Windows battery property value for a Bluetooth device. |
-| `bluetooth_gatt` | Raw GATT Battery Level payload for a Bluetooth device. |
-| `hidpp_features` | HID++ feature table. |
-| `hid_layout` | Generic HID battery descriptor capabilities. |
-| `hidpp_exchange` | One allowlisted read-only HID++ request/response exchange. |
-| `hid_sample` | One extracted generic HID battery sample, including state bits. |
-| `reading` | One normalized device reading. |
-| `event` | Capture lifecycle, discovery, or read error. |
-| `marker` | Annotation or phase marker. |
-| `footer` | End-of-capture summary and completion status. |
-
-Not every capture contains every record. HID++ devices produce
-`hidpp_features` and `hidpp_exchange`; generic HID devices produce `hid_layout`
-and `hid_sample`; Bluetooth sources produce `bluetooth_device` plus
-`bluetooth_property` or `bluetooth_gatt`. Bluetooth readings use a capture-local
-`bt-N` id and `null` `device_index`, while HID readings carry their transport
-index. `reading`, `event`, and `marker` can appear more than once. A parser must
-reject a different schema version and must not guess at records it does not
-understand.
-
 ## Limitations
 
-A capture records observed behavior on one system, with one firmware and one
-connection path. It is not a certification that a device model is supported,
-and it does not override the limited hardware validation described in the
-README. Firmware updates, receiver slots, USB versus Bluetooth connections, and
-Windows HID parsing can all change what a device exposes. Bluetooth recording
-is limited to Windows surfaces validated so far: one Bluetooth Classic headset
-through its PnP battery property. The BLE GATT capture path is implemented and
-unit-tested but has not been exercised on real hardware.
+A capture records one system's observed behavior. It is not a guarantee that
+every device of the same model behaves identically. Firmware, connection type,
+and Windows support can affect the reading. Bluetooth capture is available only
+in opt-in builds; only one Bluetooth Classic headset has been validated so far.
+The BLE GATT capture path has not yet been tested on real hardware.
 
-Capture and replay currently work on snapshots only. A bounded `--duration`
-session recorder and a larger replay corpus are future work. Snapshot capture
-uses the HID++ slots Volty has already seen when discovery state is available,
-which keeps the common case fast; delete Volty's local state or wait for a tray
-scan if a device moved to a different receiver slot.
+For the record layout and replay details, see the
+[capture format reference](capture-format.md).
