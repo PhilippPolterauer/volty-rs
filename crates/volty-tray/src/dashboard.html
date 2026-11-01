@@ -7,158 +7,170 @@
   <title>Volty — Battery dashboard</title>
   <link rel="icon" href="__VOLTY_FAVICON__">
   <style>
-:root{color-scheme: dark;--bg: #0c1118;--surface: #121a24;--surface-raised: #182230;--surface-soft: #1b2938;--line: #293747;--text: #edf4fa;--muted: #91a1b2;--faint: #647587;--green: #53d59a;--yellow: #f2c46d;--red: #f07878;--blue: #70b7ff;--purple: #b7a3ff;--shadow: 0 18px 48px rgb(0 0 0 / 18%);font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;font-synthesis: none;text-rendering: optimizeLegibility;}
-@media (prefers-color-scheme: light){:root{color-scheme: light;--bg: #f3f6f9;--surface: #ffffff;--surface-raised: #f7f9fb;--surface-soft: #edf3f7;--line: #dce5ec;--text: #16222e;--muted: #5e7081;--faint: #8091a0;--green: #16875b;--yellow: #a56b08;--red: #c34646;--blue: #247bc2;--purple: #7259c4;--shadow: 0 14px 36px rgb(30 55 75 / 8%);}
+:root{color-scheme: dark;--bg: #111315;--surface: #111315;--hover: #1a1d20;--line: #25292e;--text: #e6e8ea;--muted: #8b9299;--faint: #5f666d;--green: #6fae8a;--yellow: #c4a463;--red: #cc7a7a;--blue: #7d9cc0;--accent: #7d9cc0;font-family: Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;font-synthesis: none;text-rendering: optimizeLegibility;}
+@media (prefers-color-scheme: light){:root{color-scheme: light;--bg: #fafafa;--surface: #fafafa;--hover: #f0f1f2;--line: #e3e5e8;--text: #1d2125;--muted: #666e76;--faint: #98a0a7;--green: #3f7f5c;--yellow: #8f6f26;--red: #b04a4a;--blue: #43648a;--accent: #43648a;}
 }
 *{box-sizing: border-box;}
-body{margin: 0;min-width: 320px;color: var(--text);background: radial-gradient(ellipse at 12% -8%, color-mix(in srgb, var(--blue) 10%, transparent), transparent 34rem), var(--bg);font-size: 14px;line-height: 1.5;}
+body{margin: 0;min-width: 320px;color: var(--text);background: var(--bg);font-size: 14px;line-height: 1.5;}
 button{font: inherit;}
-.shell{width: min(1180px, calc(100% - 44px));margin: 0 auto;padding: 38px 0 56px;}
-.topbar{display: flex;align-items: flex-start;justify-content: space-between;gap: 24px;margin-bottom: 30px;}
-.brand{display: flex;gap: 14px;align-items: center;}
-.brand-mark{display: grid;place-items: center;width: 46px;height: 46px;border: 1px solid color-mix(in srgb, var(--green) 36%, var(--line));border-radius: 15px;color: var(--green);background: color-mix(in srgb, var(--green) 9%, var(--surface));}
-.brand-mark svg{width: 25px;height: 25px;}
-h1{margin: 0;font-size: 23px;letter-spacing: -.045em;line-height: 1.15;}
-.subtitle{margin: 5px 0 0;color: var(--muted);font-size: 13px;}
-.generated{text-align: right;color: var(--muted);font-size: 12px;padding-top: 5px;}
-.generated strong{display: block;color: var(--text);font-weight: 550;font-size: 13px;margin-bottom: 3px;}
-.summary{display: grid;grid-template-columns: repeat(3, minmax(0, 1fr));gap: 14px;margin-bottom: 24px;}
-.summary-card{display: flex;align-items: center;gap: 14px;min-height: 94px;padding: 17px 20px;border: 1px solid var(--line);border-radius: 16px;background: var(--surface);box-shadow: var(--shadow);}
-.summary-icon{display: grid;place-items: center;flex: 0 0 42px;height: 42px;border-radius: 13px;color: var(--blue);background: color-mix(in srgb, var(--blue) 10%, var(--surface-raised));}
-.summary-icon.green{color: var(--green);background: color-mix(in srgb, var(--green) 10%, var(--surface-raised));}
-.summary-icon.purple{color: var(--purple);background: color-mix(in srgb, var(--purple) 10%, var(--surface-raised));}
-.summary-icon svg{width: 20px;height: 20px;}
-.summary-value{font-size: 22px;line-height: 1.15;font-weight: 680;letter-spacing: -.04em;font-variant-numeric: tabular-nums;}
-.summary-label{margin-top: 4px;color: var(--muted);font-size: 12px;}
-.devices{display: grid;gap: 18px;}
-.device-card{overflow: hidden;border: 1px solid var(--line);border-radius: 19px;background: var(--surface);box-shadow: var(--shadow);}
-.device-head{display: flex;align-items: center;justify-content: space-between;gap: 18px;padding: 21px 24px 18px;border-bottom: 1px solid var(--line);}
+.shell{width: min(1040px, calc(100% - 44px));margin: 0 auto;padding: 32px 0 48px;}
+.topbar{display: flex;align-items: center;justify-content: space-between;gap: 24px;padding-bottom: 20px;border-bottom: 1px solid var(--line);}
+.brand{display: flex;gap: 12px;align-items: center;}
+.brand-mark{display: grid;place-items: center;width: 28px;height: 28px;color: var(--text);}
+.brand-mark svg{width: 22px;height: 22px;}
+h1{margin: 0;font-size: 18px;font-weight: 600;letter-spacing: -.02em;line-height: 1.2;}
+.subtitle{margin: 0;color: var(--muted);font-size: 12px;}
+.generated{text-align: right;color: var(--muted);font-size: 12px;}
+.generated strong{display: block;color: var(--text);font-weight: 500;font-size: 12px;}
+.controls{display: grid;grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);gap: 16px;padding: 16px 0;border-bottom: 1px solid var(--line);}
+.control-card{min-width: 0;}
+.control-card label,.field-label{display: block;margin-bottom: 6px;color: var(--muted);font-size: 11px;font-weight: 500;}
+.control-row{display: flex;gap: 8px;align-items: center;}
+.control-row select,.control-row input,.manage-panel select,.manage-panel input{width: 100%;min-width: 0;min-height: 34px;padding: 6px 10px;border: 1px solid var(--line);border-radius: 6px;color: var(--text);background: transparent;font: inherit;font-size: 13px;}
+.control-row select:focus-visible,.control-row input:focus-visible,.manage-panel select:focus-visible,.manage-panel input:focus-visible{outline: 1px solid var(--accent);outline-offset: 1px;}
+.readonly-note,.status-message{margin: 6px 0 0;color: var(--muted);font-size: 11px;}
+.control-card .readonly-note{display: none;}
+.status-message{min-height: 1.5em;}
+.summary{display: flex;flex-wrap: wrap;gap: 8px 40px;padding: 18px 0;border-bottom: 1px solid var(--line);}
+.summary-card{display: flex;align-items: baseline;gap: 8px;}
+.summary-icon{display: none;}
+.summary-value{font-size: 20px;line-height: 1.2;font-weight: 600;letter-spacing: -.02em;font-variant-numeric: tabular-nums;}
+.summary-label{color: var(--muted);font-size: 12px;}
+.devices{display: grid;}
+.device-card{padding: 24px 0;border-bottom: 1px solid var(--line);}
+.device-head{display: flex;align-items: center;justify-content: space-between;gap: 16px;margin-bottom: 16px;}
 .device-title-wrap{min-width: 0;}
-.device-title{overflow-wrap: anywhere;margin: 0;font-size: 18px;letter-spacing: -.025em;}
-.identity{color: var(--muted);margin-top: 3px;font-size: 12px;overflow-wrap: anywhere;}
+.device-title{overflow-wrap: anywhere;margin: 0;font-size: 16px;font-weight: 600;letter-spacing: -.01em;}
+.identity{color: var(--muted);margin-top: 2px;font-size: 11px;overflow-wrap: anywhere;}
 .head-actions{display: flex;align-items: center;gap: 10px;flex-shrink: 0;}
-.pill{display: inline-flex;align-items: center;gap: 7px;border: 1px solid var(--line);border-radius: 999px;padding: 6px 10px;color: var(--muted);background: var(--surface-raised);font-size: 11px;font-weight: 650;letter-spacing: .035em;text-transform: uppercase;white-space: nowrap;}
-.pill::before{content: "";width: 7px;height: 7px;border-radius: 50%;background: var(--faint);}
-.pill.online{color: var(--green);border-color: color-mix(in srgb, var(--green) 30%, var(--line));}
-.pill.online::before{background: var(--green);box-shadow: 0 0 10px color-mix(in srgb, var(--green) 55%, transparent);}
-.button{display: inline-flex;align-items: center;justify-content: center;gap: 7px;min-height: 34px;padding: 7px 11px;border: 1px solid var(--line);border-radius: 9px;color: var(--text);background: var(--surface-raised);cursor: pointer;font-size: 12px;font-weight: 600;transition: border-color .15s, background .15s, transform .15s;}
-.button:hover{border-color: color-mix(in srgb, var(--blue) 48%, var(--line));background: var(--surface-soft);}
-.button:active{transform: translateY(1px);}
-.button:focus-visible, summary:focus-visible{outline: 2px solid var(--blue);outline-offset: 3px;}
-.button svg{width: 15px;height: 15px;}
-.device-overview{display: grid;grid-template-columns: 220px minmax(0, 1fr);gap: 26px;padding: 23px 24px 21px;}
-.battery-panel{display: flex;align-items: center;gap: 18px;min-width: 0;padding: 17px;border: 1px solid var(--line);border-radius: 14px;background: var(--surface-raised);}
-.gauge{--level: 0%;--gauge-color: var(--green);display: grid;place-items: center;position: relative;flex: 0 0 86px;width: 86px;height: 86px;border-radius: 50%;background: conic-gradient(var(--gauge-color) var(--level), var(--surface-soft) var(--level));}
-.gauge::before{content: "";position: absolute;inset: 6px;border-radius: 50%;background: var(--surface);}
-.gauge-content{position: relative;z-index: 1;text-align: center;}
-.gauge-value{font-size: 22px;font-weight: 720;line-height: 1;letter-spacing: -.05em;font-variant-numeric: tabular-nums;}
-.gauge-bolt{width: 13px;height: 13px;color: var(--yellow);vertical-align: -1px;margin-left: 1px;}
-.gauge-caption{margin-top: 5px;color: var(--muted);font-size: 9px;text-transform: uppercase;letter-spacing: .08em;}
+.pill{display: inline-flex;align-items: center;gap: 6px;color: var(--muted);font-size: 12px;white-space: nowrap;}
+.pill::before{content: "";width: 6px;height: 6px;border-radius: 50%;background: var(--faint);}
+.pill.online{color: var(--text);}
+.pill.online::before{background: var(--green);}
+.button{display: inline-flex;align-items: center;justify-content: center;gap: 6px;min-height: 30px;padding: 4px 10px;border: 1px solid var(--line);border-radius: 6px;color: var(--text);background: transparent;cursor: pointer;font-size: 12px;font-weight: 500;transition: background .12s;}
+.button:hover{background: var(--hover);}
+.button:focus-visible,summary:focus-visible{outline: 1px solid var(--accent);outline-offset: 2px;}
+.button svg{width: 14px;height: 14px;}
+.button:disabled,.control-row :disabled,.manage-panel :disabled{opacity: .45;cursor: not-allowed;}
+.button:disabled:hover{background: transparent;}
+.danger-button{color: var(--red);}
+.section{padding: 0;margin-top: 20px;}
+.section-heading{display: flex;align-items: baseline;justify-content: space-between;gap: 12px;margin-bottom: 8px;}
+.section-title{margin: 0;font-size: 12px;font-weight: 600;color: var(--muted);}
+.section-note{color: var(--faint);font-size: 11px;}
+.chart-wrap{position: relative;min-height: 210px;}
+.chart{display: block;width: 100%;height: 200px;overflow: visible;}
+.chart text{fill: var(--muted);font: 10px ui-sans-serif, system-ui, sans-serif;}
+.chart .grid-line{stroke: var(--line);stroke-width: 1;}
+.chart .charge-band{fill: color-mix(in srgb, var(--yellow) 12%, transparent);}
+.chart .area{fill: color-mix(in srgb, var(--blue) 10%, transparent);}
+.chart .line{fill: none;stroke: var(--blue);stroke-width: 1.8;stroke-linecap: round;stroke-linejoin: round;}
+.chart .point{fill: var(--bg);stroke: var(--blue);stroke-width: 1.5;}
+.chart .hit{fill: transparent;stroke: transparent;cursor: crosshair;}
+.chart-tooltip{position: absolute;z-index: 2;display: none;min-width: 128px;padding: 6px 10px;border: 1px solid var(--line);border-radius: 6px;color: var(--text);background: var(--bg);pointer-events: none;font-size: 11px;line-height: 1.5;}
+.chart-tooltip strong{display: block;font-size: 10px;font-weight: 500;color: var(--muted);}
+.legend{display: flex;flex-wrap: wrap;gap: 16px;margin-top: 6px;color: var(--muted);font-size: 11px;}
+.legend-item{display: inline-flex;align-items: center;gap: 6px;}
+.legend-mark{width: 12px;height: 2px;background: var(--blue);}
+.legend-mark.charge{height: 8px;background: color-mix(in srgb, var(--yellow) 30%, transparent);}
+.device-overview{display: flex;flex-wrap: wrap;align-items: center;gap: 16px 40px;margin-top: 20px;}
+.battery-panel{display: flex;align-items: center;gap: 12px;min-width: 0;}
+.gauge{position: relative;display: block;flex: 0 0 auto;min-width: 64px;padding-bottom: 8px;}
+.gauge::after,.gauge::before{content: "";position: absolute;left: 0;bottom: 0;height: 3px;}
+.gauge::after{width: 100%;background: var(--line);}
+.gauge::before{z-index: 1;width: var(--level);background: var(--gauge-color);}
+.gauge-content{text-align: left;}
+.gauge-value{font-size: 28px;font-weight: 600;line-height: 1.1;letter-spacing: -.03em;font-variant-numeric: tabular-nums;}
+.gauge-bolt{width: 14px;height: 14px;color: var(--yellow);vertical-align: -1px;margin-left: 2px;}
+.gauge-caption{display: none;}
 .battery-info{min-width: 0;}
 .battery-info-label{color: var(--muted);font-size: 11px;}
-.battery-info-value{margin-top: 4px;font-size: 15px;font-weight: 650;}
-.battery-info-sub{margin-top: 3px;color: var(--muted);font-size: 11px;}
-.metric-grid{display: grid;grid-template-columns: repeat(3, minmax(0, 1fr));gap: 11px;}
-.metric{min-width: 0;padding: 14px 15px;border: 1px solid var(--line);border-radius: 13px;background: var(--surface-raised);}
+.battery-info-value{font-size: 13px;font-weight: 500;}
+.battery-info-sub{color: var(--faint);font-size: 11px;}
+.metric-grid{display: flex;flex-wrap: wrap;gap: 12px 40px;}
+.metric{min-width: 0;}
 .metric-label{color: var(--muted);font-size: 11px;}
-.metric-value{margin-top: 8px;overflow-wrap: anywhere;font-size: 17px;font-weight: 660;letter-spacing: -.03em;font-variant-numeric: tabular-nums;}
-.metric-note{margin-top: 2px;color: var(--faint);font-size: 10px;}
-.section{padding: 0 24px 21px;}
-.section-heading{display: flex;align-items: baseline;justify-content: space-between;gap: 12px;margin-bottom: 12px;}
-.section-title{margin: 0;font-size: 13px;font-weight: 670;letter-spacing: -.01em;}
-.section-note{color: var(--muted);font-size: 11px;}
-.chart-wrap{position: relative;min-height: 210px;padding: 8px 8px 2px;border: 1px solid var(--line);border-radius: 13px;background: var(--surface-raised);}
-.chart{display: block;width: 100%;height: 194px;overflow: visible;}
-.chart text{fill: var(--muted);font: 10px ui-sans-serif, system-ui, sans-serif;}
-.chart .grid-line{stroke: var(--line);stroke-width: 1;stroke-dasharray: 3 5;}
-.chart .charge-band{fill: color-mix(in srgb, var(--yellow) 11%, transparent);}
-.chart .area{fill: color-mix(in srgb, var(--blue) 15%, transparent);}
-.chart .line{fill: none;stroke: var(--blue);stroke-width: 2.4;stroke-linecap: round;stroke-linejoin: round;}
-.chart .point{fill: var(--surface);stroke: var(--blue);stroke-width: 2;}
-.chart .hit{fill: transparent;stroke: transparent;cursor: crosshair;}
-.chart-tooltip{position: absolute;z-index: 2;display: none;min-width: 132px;padding: 8px 10px;border: 1px solid var(--line);border-radius: 9px;color: var(--text);background: var(--surface);box-shadow: var(--shadow);pointer-events: none;font-size: 11px;line-height: 1.55;}
-.chart-tooltip strong{display: block;margin-bottom: 2px;font-size: 10px;font-weight: 600;color: var(--muted);}
-.legend{display: flex;flex-wrap: wrap;gap: 16px;margin-top: 9px;color: var(--muted);font-size: 10px;}
-.legend-item{display: inline-flex;align-items: center;gap: 6px;}
-.legend-mark{width: 12px;height: 3px;border-radius: 3px;background: var(--blue);}
-.legend-mark.charge{height: 9px;background: color-mix(in srgb, var(--yellow) 25%, var(--surface-soft));border: 1px solid color-mix(in srgb, var(--yellow) 35%, var(--line));}
-.timeline{display: flex;overflow: hidden;height: 18px;border: 1px solid var(--line);border-radius: 6px;background: var(--surface-soft);}
+.metric-value{overflow-wrap: anywhere;font-size: 15px;font-weight: 600;font-variant-numeric: tabular-nums;}
+.metric-note{color: var(--faint);font-size: 11px;}
+.timeline{display: flex;overflow: hidden;height: 6px;border-radius: 3px;background: var(--line);}
 .segment{min-width: 2px;height: 100%;}
 .segment.online{background: var(--green);}
-.segment.offline{background: color-mix(in srgb, var(--faint) 36%, var(--surface-soft));}
-.timeline-legend{display: flex;flex-wrap: wrap;gap: 16px;margin-top: 10px;color: var(--muted);font-size: 11px;}
-.timeline-item{display: inline-flex;align-items: center;gap: 7px;}
-.timeline-dot{width: 8px;height: 8px;border-radius: 2px;background: var(--green);}
+.segment.offline{background: var(--faint);opacity: .5;}
+.timeline-legend{display: flex;flex-wrap: wrap;gap: 16px;margin-top: 8px;color: var(--muted);font-size: 11px;}
+.timeline-item{display: inline-flex;align-items: center;gap: 6px;}
+.timeline-dot{width: 6px;height: 6px;border-radius: 50%;background: var(--green);}
 .timeline-dot.offline{background: var(--faint);}
-.timeline-item strong{color: var(--text);font-weight: 650;font-variant-numeric: tabular-nums;}
-details.data-details{border-top: 1px solid var(--line);}
-details.data-details summary{display: flex;align-items: center;justify-content: space-between;gap: 12px;padding: 16px 24px;color: var(--text);cursor: pointer;list-style: none;font-size: 12px;font-weight: 620;}
+.timeline-item strong{color: var(--text);font-weight: 500;font-variant-numeric: tabular-nums;}
+details.data-details{margin-top: 20px;}
+details.data-details summary{display: flex;align-items: center;gap: 12px;padding: 8px 0;color: var(--muted);cursor: pointer;list-style: none;font-size: 12px;font-weight: 500;}
 details.data-details summary::-webkit-details-marker{display: none;}
-details.data-details summary::after{content: "+";color: var(--muted);font-size: 18px;font-weight: 400;}
-details.data-details[open] summary::after{content: "−";}
-.details-count{margin-left: auto;color: var(--muted);font-size: 11px;font-weight: 450;}
-.table-wrap{overflow-x: auto;border-top: 1px solid var(--line);}
-table{width: 100%;min-width: 510px;border-collapse: collapse;text-align: left;}
-th{padding: 10px 24px;color: var(--muted);background: var(--surface-raised);font-size: 10px;font-weight: 650;text-transform: uppercase;letter-spacing: .07em;}
-td{padding: 10px 24px;border-top: 1px solid var(--line);color: var(--text);font-size: 12px;font-variant-numeric: tabular-nums;}
-tbody tr:hover{background: var(--surface-raised);}
+details.data-details summary::before{content: "›";display: inline-block;width: 10px;transition: transform .12s;}
+details.data-details[open] summary::before{transform: rotate(90deg);}
+.details-count{margin-left: auto;color: var(--faint);font-size: 11px;font-weight: 400;}
+.table-wrap{overflow-x: auto;max-height: 360px;overflow-y: auto;}
+table{width: 100%;min-width: 480px;border-collapse: collapse;text-align: left;}
+th{padding: 6px 0;color: var(--muted);font-size: 11px;font-weight: 500;border-bottom: 1px solid var(--line);}
+td{padding: 6px 0;border-bottom: 1px solid var(--line);color: var(--text);font-size: 12px;font-variant-numeric: tabular-nums;}
+tbody tr:hover{background: var(--hover);}
 .charge-label{display: inline-flex;align-items: center;gap: 5px;color: var(--yellow);}
 .charge-label svg{width: 12px;height: 12px;}
-.empty{padding: 58px 24px;border: 1px dashed var(--line);border-radius: 18px;text-align: center;background: var(--surface);}
-.empty-icon{display: grid;place-items: center;width: 48px;height: 48px;margin: 0 auto 13px;border-radius: 15px;color: var(--muted);background: var(--surface-raised);}
-.empty-icon svg{width: 22px;height: 22px;}
-.empty h2{margin: 0;font-size: 16px;}
-.empty p{margin: 6px 0 0;color: var(--muted);font-size: 12px;}
+.empty{padding: 48px 0;text-align: center;border-bottom: 1px solid var(--line);}
+.empty-icon{display: grid;place-items: center;width: 36px;height: 36px;margin: 0 auto 10px;color: var(--faint);}
+.empty-icon svg{width: 24px;height: 24px;}
+.empty h2{margin: 0;font-size: 15px;font-weight: 600;}
+.empty p{margin: 4px 0 0;color: var(--muted);font-size: 12px;}
 .chart-empty{display: grid;place-items: center;height: 190px;color: var(--muted);font-size: 12px;}
-.footer{margin-top: 22px;color: var(--faint);text-align: center;font-size: 10px;}
-@media (max-width: 760px){.shell{width: min(100% - 28px, 600px);padding-top: 24px;}
-.topbar{margin-bottom: 22px;}
-.summary{gap: 9px;}
-.summary-card{min-height: 80px;gap: 10px;padding: 13px;}
-.summary-icon{flex-basis: 34px;height: 34px;border-radius: 10px;}
-.summary-icon svg{width: 17px;height: 17px;}
-.summary-value{font-size: 19px;}
-.summary-label{font-size: 10px;}
-.device-overview{grid-template-columns: 1fr;gap: 12px;}
-.battery-panel{min-height: 118px;}
-.section{padding-right: 18px;padding-left: 18px;}
-.device-head{padding-right: 18px;padding-left: 18px;}
-details.data-details summary{padding-right: 18px;padding-left: 18px;}
-th, td{padding-right: 18px;padding-left: 18px;}
+.manage-panel,.artifacts-panel{border-bottom: 1px solid var(--line);}
+.manage-panel>summary,.artifacts-panel>summary{display: flex;align-items: center;justify-content: space-between;gap: 12px;padding: 14px 0;cursor: pointer;list-style: none;}
+.manage-panel>summary::-webkit-details-marker,.artifacts-panel>summary::-webkit-details-marker{display: none;}
+.manage-panel>summary::after,.artifacts-panel>summary::after{content: "+";margin-left: 8px;color: var(--muted);font-size: 16px;line-height: 1;}
+.manage-panel[open]>summary::after,.artifacts-panel[open]>summary::after{content: "−";}
+.manage-heading,.artifacts-heading{margin: 0;}
+.manage-heading>div,.artifacts-heading>div{flex: 1;}
+.manage-heading h2,.artifacts-heading h2{margin: 0;font-size: 13px;font-weight: 600;}
+.manage-heading p,.artifacts-heading p{margin: 0;color: var(--muted);font-size: 11px;}
+.readonly-badge,.artifact-count{flex: 0 0 auto;color: var(--muted);font-size: 11px;}
+.manage-panel>:not(summary),.artifacts-panel>:not(summary){margin-left: 0;}
+.manage-panel[open],.artifacts-panel[open]{padding-bottom: 16px;}
+.manage-grid{display: grid;grid-template-columns: repeat(2,minmax(0,1fr));gap: 24px;margin-top: 8px;}
+.manage-box h3{margin: 0 0 8px;font-size: 12px;font-weight: 600;}
+.manage-fields{display: grid;grid-template-columns: minmax(0,1fr) auto;gap: 8px;align-items: end;}
+.inventory-management{margin-top: 20px;}
+.inventory-management h3{margin: 0;font-size: 12px;font-weight: 600;}
+.inventory-management>p{margin: 2px 0 8px;color: var(--muted);font-size: 11px;}
+.inventory-list{display: grid;}
+.inventory-row{display: flex;align-items: center;justify-content: space-between;gap: 12px;padding: 10px 0;border-top: 1px solid var(--line);}
+.inventory-device{min-width: 0;}
+.inventory-device-name{font-size: 13px;font-weight: 500;overflow-wrap: anywhere;}
+.inventory-identity{color: var(--faint);font-size: 11px;overflow-wrap: anywhere;}
+.inventory-meta{margin-top: 2px;color: var(--muted);font-size: 11px;overflow-wrap: anywhere;}
+.inventory-actions{display: flex;flex: 0 0 auto;flex-wrap: wrap;justify-content: flex-end;gap: 6px;max-width: 440px;}
+.artifact-actions{display: flex;align-items: center;justify-content: space-between;gap: 12px;}
+.artifact-actions .status-message{flex: 1;margin: 0;}
+.artifact-list{display: grid;margin-top: 8px;}
+.artifact-row{display: flex;align-items: center;justify-content: space-between;gap: 12px;padding: 10px 0;border-top: 1px solid var(--line);}
+.artifact-info{min-width: 0;overflow-wrap: anywhere;}
+.artifact-name{font-size: 13px;font-weight: 500;}
+.artifact-meta{margin-top: 2px;color: var(--muted);font-size: 11px;}
+.sensitive-warning{color: var(--yellow);}
+.footer{margin-top: 20px;color: var(--faint);text-align: center;font-size: 11px;}
+@media (max-width: 760px){.shell{width: min(100% - 28px, 600px);padding-top: 20px;}
+.controls,.manage-grid{grid-template-columns: 1fr;}
+.summary{gap: 8px 24px;}
+.device-overview{gap: 12px 24px;}
+.metric-grid{gap: 12px 24px;}
 }
-@media (max-width: 480px){.shell{width: calc(100% - 22px);padding-top: 18px;}
+@media (max-width: 480px){.shell{width: calc(100% - 22px);}
 .topbar{align-items: flex-start;gap: 10px;}
-.brand{gap: 10px;}
-.brand-mark{width: 39px;height: 39px;border-radius: 12px;}
-.brand-mark svg{width: 21px;height: 21px;}
-h1{font-size: 20px;}
-.subtitle{max-width: 175px;font-size: 11px;}
-.generated{max-width: 120px;font-size: 10px;}
-.generated strong{font-size: 11px;}
-.summary{grid-template-columns: repeat(3, minmax(0, 1fr));gap: 6px;}
-.summary-card{display: block;min-height: 83px;padding: 10px;}
-.summary-icon{width: 28px;height: 28px;margin-bottom: 7px;}
-.summary-value{font-size: 18px;}
-.summary-label{margin-top: 2px;font-size: 9px;line-height: 1.25;}
-.device-head{align-items: flex-start;gap: 8px;padding-top: 16px;}
-.device-title{font-size: 16px;}
+.generated{max-width: 130px;}
+.device-head{align-items: flex-start;gap: 8px;}
 .head-actions{flex-direction: column-reverse;align-items: flex-end;gap: 6px;}
-.pill{padding: 5px 8px;font-size: 9px;}
-.button{min-height: 30px;padding: 5px 8px;font-size: 10px;}
-.device-overview{padding: 15px 14px 18px;}
-.battery-panel{gap: 13px;padding: 13px;}
-.gauge{flex-basis: 78px;width: 78px;height: 78px;}
-.metric-grid{gap: 7px;}
-.metric{padding: 10px;}
-.metric-label{font-size: 10px;}
-.metric-value{font-size: 14px;}
-.metric-note{font-size: 9px;}
-.section{padding-right: 14px;padding-left: 14px;}
-.chart-wrap{min-height: 190px;padding-right: 4px;padding-left: 4px;}
+.inventory-row,.artifact-row{align-items: flex-start;flex-direction: column;}
+.inventory-actions{max-width: none;justify-content: flex-start;}
+.manage-fields{grid-template-columns: 1fr;}
+.artifact-actions{align-items: flex-start;flex-direction: column;}
 .chart{height: 174px;}
-details.data-details summary{padding-right: 14px;padding-left: 14px;}
 }
-
   </style>
 </head>
 <body>
@@ -174,6 +186,19 @@ details.data-details summary{padding-right: 14px;padding-left: 14px;}
       </div>
       <div class="generated"><strong id="generated-at">—</strong><span id="window-label">Local device dashboard</span></div>
     </header>
+    <section class="controls" aria-label="Dashboard filters">
+      <div class="control-card">
+        <label for="device-select">Device</label>
+        <div class="control-row"><select id="device-select" aria-label="Select a device"></select></div>
+        <p class="readonly-note">Choose All devices or a device identified by its unique identity.</p>
+      </div>
+      <div class="control-card">
+        <label for="device-search">Search devices</label>
+        <div class="control-row"><input id="device-search" type="search" autocomplete="off" placeholder="Search name or identity" aria-label="Search devices by name or identity"></div>
+        <p class="readonly-note">Search narrows current-window cards and tracked inventory without changing identities.</p>
+      </div>
+    </section>
+    <section class="devices" id="devices" aria-label="Devices"></section>
     <section class="summary" aria-label="Fleet summary">
       <div class="summary-card">
         <div class="summary-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M7 9h4M7 13h10M7 16h6"/></svg></div>
@@ -188,17 +213,117 @@ details.data-details summary{padding-right: 14px;padding-left: 14px;}
         <div><div class="summary-value" id="summary-online">0</div><div class="summary-label">Devices online</div></div>
       </div>
     </section>
-    <section class="devices" id="devices" aria-label="Devices"></section>
+    <details class="manage-panel" aria-labelledby="manage-title">
+      <summary class="manage-heading">
+        <div><h2 id="manage-title">Manage data</h2><p>Preview cleanup impact before confirming any deletion.</p></div>
+        <span class="readonly-badge" id="mode-badge">Read-only</span>
+      </summary>
+      <p class="readonly-note" id="readonly-note" role="status">Static export is read-only. Open the native Volty window to manage stored data.</p>
+      <div class="manage-grid">
+        <div class="manage-box">
+          <h3>Clean up by age</h3>
+          <div class="manage-fields">
+            <label><span class="field-label">Remove older than</span><select id="age-days" aria-label="Remove data older than"><option value="7">7 days</option><option value="14">14 days</option><option value="21">21 days</option></select></label>
+            <button class="button" type="button" id="cleanup-age">Preview cleanup</button>
+          </div>
+        </div>
+        <div class="manage-box">
+          <h3>Clean up inactive devices</h3>
+          <div class="manage-fields">
+            <label><span class="field-label">Inactive for</span><select id="inactive-days" aria-label="Inactive for"><option value="7">7 days</option><option value="14">14 days</option><option value="21">21 days</option></select></label>
+            <button class="button" type="button" id="cleanup-inactive">Preview cleanup</button>
+          </div>
+        </div>
+      </div>
+      <div class="inventory-management">
+        <h3>Tracked device history</h3>
+        <p>All-history sample totals, last sample dates, and recording state for the matching inventory.</p>
+        <div class="inventory-list" id="inventory-list"></div>
+      </div>
+      <p class="status-message" id="manage-status" role="status" aria-live="polite"></p>
+    </details>
+    <details class="artifacts-panel">
+      <summary class="artifacts-heading">
+        <div><h2 id="artifacts-title">Artifacts</h2><p>Managed captures and reports. Raw HID traces are not included.</p></div>
+        <span class="artifact-count" id="artifact-count">0 artifacts</span>
+      </summary>
+      <div class="artifact-actions">
+        <p class="status-message" id="artifact-status" role="status" aria-live="polite">Artifact listing is available in the native Volty window.</p>
+        <button class="button danger-button" type="button" id="delete-all-artifacts" disabled>Delete all</button>
+      </div>
+      <div class="artifact-list" id="artifact-list"></div>
+    </details>
     <div class="footer">All measurements are collected locally by Volty.</div>
   </main>
   <script>
-    const DATA = __VOLTY_DATA__;
+    let dashboardData = __VOLTY_DATA__;
 
     const $ = (selector, root = document) => root.querySelector(selector);
     const SVG_NS = "http://www.w3.org/2000/svg";
     const numberFormat = new Intl.NumberFormat();
     const dateFormat = new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" });
     const shortDateFormat = new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric" });
+    const selectionStorageKey = "volty-dashboard-identity";
+    const pendingRequests = new Map();
+    let requestSequence = 0;
+    let selectedIdentity = readStoredSelection();
+    let deviceSearch = "";
+    let artifacts = [];
+    let artifactMutationBusy = false;
+
+    function hasNativeBridge() {
+      return typeof window.ipc === "object" && window.ipc !== null && typeof window.ipc.postMessage === "function";
+    }
+
+    function canMutate() {
+      return hasNativeBridge() && dashboardData && dashboardData.management_allowed !== false;
+    }
+
+    function readStoredSelection() {
+      try { return window.localStorage.getItem(selectionStorageKey) || "all"; }
+      catch { return "all"; }
+    }
+
+    function storeSelection(identity) {
+      selectedIdentity = identity;
+      try { window.localStorage.setItem(selectionStorageKey, identity); } catch { /* Storage may be disabled. */ }
+    }
+
+    function request(command, payload = {}) {
+      if (!hasNativeBridge()) return Promise.reject(new Error("Native data management is unavailable in this read-only export."));
+      const id = typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
+        ? crypto.randomUUID()
+        : `volty-${Date.now()}-${++requestSequence}`;
+      return new Promise((resolve, reject) => {
+        const timeout = window.setTimeout(() => {
+          pendingRequests.delete(id);
+          reject(new Error("The native dashboard did not respond in time."));
+        }, 15000);
+        pendingRequests.set(id, { resolve, reject, timeout });
+        try {
+          window.ipc.postMessage(JSON.stringify({ id, command, payload }));
+        } catch (error) {
+          window.clearTimeout(timeout);
+          pendingRequests.delete(id);
+          reject(error instanceof Error ? error : new Error(String(error)));
+        }
+      });
+    }
+
+    function normalizeArtifacts(result) {
+      const items = Array.isArray(result) ? result : Array.isArray(result && result.artifacts) ? result.artifacts : [];
+      return items.filter(artifact => artifact && typeof artifact.id === "string");
+    }
+
+    window.__voltyDashboardResponse = response => {
+      if (!response || typeof response.id !== "string") return;
+      const pending = pendingRequests.get(response.id);
+      if (!pending) return;
+      pendingRequests.delete(response.id);
+      window.clearTimeout(pending.timeout);
+      if (response.ok) pending.resolve(response.result);
+      else pending.reject(new Error(typeof response.error === "string" ? response.error : "The native dashboard request failed."));
+    };
 
     function element(tag, className, text) {
       const node = document.createElement(tag);
@@ -486,6 +611,85 @@ details.data-details summary{padding-right: 14px;padding-left: 14px;}
       return details;
     }
 
+    function recordingStateLabel(item) {
+      if (typeof item.history_recording_enabled !== "boolean") return "Recording state unavailable";
+      return item.history_recording_enabled ? "Recording enabled" : "Recording paused";
+    }
+
+    function makeInventoryRow(item) {
+      const row = element("article", "inventory-row");
+      const identity = typeof item.identity === "string" ? item.identity : "";
+      const info = element("div", "inventory-device");
+      info.append(
+        element("div", "inventory-device-name", item.name || "Unnamed device"),
+        element("div", "inventory-identity", identity || "Identity unavailable")
+      );
+      const sampleCount = Number(item.samples);
+      const samples = item.samples != null && Number.isFinite(sampleCount) && sampleCount >= 0 ? numberFormat.format(sampleCount) : "—";
+      const lastSample = item.last_sample_at == null ? "No samples recorded" : `Last sample ${formatArtifactDate(item.last_sample_at)}`;
+      const monitored = item.monitored == null ? "Monitoring state unavailable" : item.monitored ? "Monitored" : "Not monitored";
+      const pinned = item.pinned == null ? null : item.pinned ? "Pinned" : "Not pinned";
+      info.append(element("div", "inventory-meta", [
+        `${samples} all-history samples`,
+        lastSample,
+        recordingStateLabel(item),
+        monitored,
+        pinned
+      ].filter(Boolean).join(" · ")));
+
+      const actions = element("div", "inventory-actions");
+      const canManage = Boolean(identity) && canMutate();
+      const forgetHistory = element("button", "button danger-button", "Forget history");
+      forgetHistory.type = "button";
+      forgetHistory.disabled = !canManage;
+      forgetHistory.title = canManage ? "Preview and forget this device's stored history" : "Available only in the native Volty window";
+      forgetHistory.addEventListener("click", () => forgetDevice(item, false));
+      const forgetAll = element("button", "button danger-button", "Forget all Volty data");
+      forgetAll.type = "button";
+      forgetAll.disabled = !canManage;
+      forgetAll.title = canManage ? "Preview and forget this device's history and saved preferences" : "Available only in the native Volty window";
+      forgetAll.addEventListener("click", () => forgetDevice(item, true));
+      const hasRecordingState = typeof item.history_recording_enabled === "boolean";
+      const recording = element("button", "button", hasRecordingState
+        ? item.history_recording_enabled ? "Pause history" : "Resume history"
+        : "Recording state unavailable");
+      recording.type = "button";
+      recording.disabled = !canManage || !hasRecordingState;
+      recording.title = !canManage
+        ? "Available only in the native Volty window"
+        : hasRecordingState ? `${item.history_recording_enabled ? "Pause" : "Resume"} future history recording` : "Recording state unavailable";
+      recording.addEventListener("click", () => setRecording(identity, !item.history_recording_enabled));
+      actions.append(forgetHistory, forgetAll, recording);
+      row.append(info, actions);
+      return row;
+    }
+
+    function makeNoHistoryState(item) {
+      const empty = element("article", "empty");
+      const windowDays = Math.max(0, Number(dashboardData.window_days) || 0);
+      const sampleCount = Number(item.samples);
+      const allHistorySamples = item.samples != null && Number.isFinite(sampleCount) && sampleCount >= 0
+        ? numberFormat.format(sampleCount)
+        : "unavailable";
+      const lastSample = item.last_sample_at == null ? "No samples recorded" : `Last sample: ${formatArtifactDate(item.last_sample_at)}`;
+      empty.append(
+        element("h2", "", "No history in this dashboard window"),
+        element("p", "", `${item.name || "This device"} (${item.identity || "identity unavailable"}) has no samples in the last ${windowDays} days.`),
+        element("p", "", `All-history inventory: ${allHistorySamples} samples · ${lastSample} · ${recordingStateLabel(item)}.`),
+        element("p", "", "Its history and recording controls are available under Tracked device history.")
+      );
+      return empty;
+    }
+
+    function makeDashboardEmpty(title, message) {
+      const empty = element("div", "empty");
+      const icon = element("div", "empty-icon");
+      icon.append(svg("svg", { viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", "stroke-width": "1.7", "stroke-linecap": "round", "stroke-linejoin": "round" }));
+      icon.firstChild.append(svg("rect", { x: "3", y: "7", width: "17", height: "10", rx: "2" }), svg("path", { d: "M22 10v4" }));
+      empty.append(icon, element("h2", "", title), element("p", "", message));
+      return empty;
+    }
+
     function makeDeviceCard(device, index) {
       const card = element("article", "device-card");
       const head = element("header", "device-head");
@@ -539,38 +743,466 @@ details.data-details summary{padding-right: 14px;padding-left: 14px;}
       statGrid.append(
         metric("First seen", formatDate(device.first_at), "Recorded locally"),
         metric("Last seen", formatDate(device.last_at), "Most recent activity"),
-        metric("Window", `${Math.max(0, Number(DATA.window_days) || 0)} days`, "Selected range")
+        metric("Window", `${Math.max(0, Number(dashboardData.window_days) || 0)} days`, "Selected range")
       );
       stats.append(statHeading, statGrid);
 
-      card.append(head, overview, chartSection, makeTimeline(device), stats, makeTable(device));
+      card.append(head, chartSection, overview, makeTimeline(device), stats, makeTable(device));
       return card;
     }
 
     function render() {
-      const data = DATA && typeof DATA === "object" ? DATA : {};
+      const data = dashboardData && typeof dashboardData === "object" ? dashboardData : {};
       const devices = Array.isArray(data.devices) ? data.devices : [];
+      const inventory = Array.isArray(data.inventory) && (data.inventory.length > 0 || !devices.length)
+        ? data.inventory
+        : devices;
       $("#generated-at").textContent = data.generated_at == null ? "Generated time unavailable" : `Updated ${formatDate(data.generated_at)}`;
       const windowDays = Number(data.window_days);
       $("#window-label").textContent = Number.isFinite(windowDays) ? `Last ${windowDays} day${windowDays === 1 ? "" : "s"}` : "Local device dashboard";
-      $("#summary-devices").textContent = numberFormat.format(devices.length);
-      $("#summary-points").textContent = numberFormat.format(devices.reduce((sum, device) => sum + (Array.isArray(device.points) ? device.points.length : 0), 0));
-      $("#summary-online").textContent = numberFormat.format(devices.filter(device => device.online).length);
+
+      const selector = $("#device-select");
+      const validIdentities = new Set(inventory.filter(item => typeof item.identity === "string" && item.identity).map(item => item.identity));
+      if (selectedIdentity !== "all" && !validIdentities.has(selectedIdentity)) storeSelection("all");
+      selector.replaceChildren();
+      const allOption = element("option", "", "All devices");
+      allOption.value = "all";
+      selector.append(allOption);
+      inventory.forEach((item, index) => {
+        if (typeof item.identity !== "string" || !item.identity) return;
+        const option = element("option", "", `${item.name || `Device ${index + 1}`} — ${item.identity}`);
+        option.value = item.identity;
+        selector.append(option);
+      });
+      selector.value = selectedIdentity;
+
+      const query = deviceSearch.trim().toLocaleLowerCase();
+      const visibleInventory = inventory.filter(item => {
+        if (selectedIdentity !== "all" && item.identity !== selectedIdentity) return false;
+        return !query || `${item.name || ""} ${item.identity || ""}`.toLocaleLowerCase().includes(query);
+      });
+      const inventoryByIdentity = new Map(inventory.filter(item => typeof item.identity === "string").map(item => [item.identity, item]));
+      let visibleDevices = devices.filter(device => {
+        if (selectedIdentity !== "all" && device.identity !== selectedIdentity) return false;
+        if (!query) return true;
+        const item = inventoryByIdentity.get(device.identity);
+        return `${item && item.name || ""} ${device.name || ""} ${device.identity || ""}`.toLocaleLowerCase().includes(query);
+      });
+
+      const inventoryList = $("#inventory-list");
+      inventoryList.replaceChildren();
+      if (visibleInventory.length) {
+        visibleInventory.forEach(item => inventoryList.append(makeInventoryRow(item)));
+      } else {
+        inventoryList.append(element("p", "readonly-note", inventory.length ? "No tracked devices match this filter." : "No tracked device inventory is available."));
+      }
+
+      const selectedItem = selectedIdentity === "all" ? null : visibleInventory.find(item => item.identity === selectedIdentity);
+      const selectedDevice = selectedItem && visibleDevices.find(device => device.identity === selectedIdentity);
+      const selectedHasWindowSamples = selectedDevice && Array.isArray(selectedDevice.points) && selectedDevice.points.length > 0;
+      const showSelectedNoHistory = Boolean(selectedItem) && !selectedHasWindowSamples;
+      if (showSelectedNoHistory) {
+        visibleDevices = visibleDevices.filter(device => device.identity !== selectedIdentity);
+      }
+      $("#summary-devices").textContent = numberFormat.format(visibleInventory.length);
+      $("#summary-points").textContent = numberFormat.format(visibleDevices.reduce((sum, device) => sum + (Array.isArray(device.points) ? device.points.length : 0), 0));
+      $("#summary-online").textContent = numberFormat.format(visibleDevices.filter(device => device.online).length);
 
       const container = $("#devices");
-      if (!devices.length) {
-        const empty = element("div", "empty");
-        const icon = element("div", "empty-icon");
-        icon.append(svg("svg", { viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", "stroke-width": "1.7", "stroke-linecap": "round", "stroke-linejoin": "round" }));
-        icon.firstChild.append(svg("rect", { x: "3", y: "7", width: "17", height: "10", rx: "2" }), svg("path", { d: "M22 10v4" }));
-        empty.append(icon, element("h2", "", "No devices yet"), element("p", "", "Battery readings will appear here once Volty starts collecting data."));
-        container.append(empty);
+      container.replaceChildren();
+      if (showSelectedNoHistory) {
+        container.append(makeNoHistoryState(selectedItem));
         return;
       }
-      devices.forEach((device, index) => container.append(makeDeviceCard(device, index)));
+      if (!visibleDevices.length) {
+        if (visibleInventory.length && query) {
+          container.append(makeDashboardEmpty("No history in this dashboard window", "The matching tracked devices have no samples in the selected window. Their all-history totals and management controls are shown above."));
+        } else if (visibleInventory.length) {
+          container.append(makeDashboardEmpty("No history in this dashboard window", "Tracked devices exist, but none have samples in the selected window. Select a device to see its all-history details and controls."));
+        } else {
+          const title = inventory.length || devices.length ? "No matching devices" : "No devices yet";
+          const message = inventory.length || devices.length
+            ? "Try a different search or select All devices."
+            : "Battery readings will appear here once Volty starts collecting data.";
+          container.append(makeDashboardEmpty(title, message));
+        }
+        return;
+      }
+      visibleDevices.forEach((device, index) => container.append(makeDeviceCard(device, index)));
     }
 
+    function setStatus(selector, message, isError = false) {
+      const node = $(selector);
+      node.textContent = message;
+      node.style.color = isError ? "var(--red)" : "";
+    }
+
+    function formatBytes(value) {
+      const bytes = Number(value);
+      if (!Number.isFinite(bytes) || bytes < 0) return null;
+      if (bytes < 1024) return `${numberFormat.format(bytes)} B`;
+      const units = ["KB", "MB", "GB", "TB"];
+      let size = bytes / 1024;
+      let unit = 0;
+      while (size >= 1024 && unit < units.length - 1) { size /= 1024; unit += 1; }
+      return `${size.toFixed(1)} ${units[unit]}`;
+    }
+
+    function formatArtifactDate(value) {
+      if (value == null) return "Date unavailable";
+      const numeric = Number(value);
+      if (Number.isFinite(numeric)) return formatDate(numeric);
+      const date = new Date(String(value));
+      return Number.isNaN(date.getTime()) ? String(value) : dateFormat.format(date);
+    }
+
+    function artifactIsSensitive(artifact) {
+      return /raw[\s_-]*hid|hid[\s_-]*trace/i.test(`${artifact.kind || ""} ${artifact.name || ""}`);
+    }
+
+    function renderArtifacts() {
+      const list = $("#artifact-list");
+      list.replaceChildren();
+      const count = artifacts.length;
+      $("#artifact-count").textContent = `${numberFormat.format(count)} artifact${count === 1 ? "" : "s"}`;
+      $("#delete-all-artifacts").disabled = !canMutate() || count === 0 || artifactMutationBusy;
+      artifacts.forEach(artifact => {
+        if (!artifact || typeof artifact.id !== "string") return;
+        const row = element("div", "artifact-row");
+        const info = element("div", "artifact-info");
+        const name = element("div", "artifact-name", artifact.name || "Unnamed artifact");
+        const metaParts = [artifact.kind || "Artifact", formatArtifactDate(artifact.created_at)];
+        const size = formatBytes(artifact.bytes);
+        if (size) metaParts.push(size);
+        if (artifact.device_identity) metaParts.push(`Device ${artifact.device_identity}`);
+        const meta = element("div", "artifact-meta", metaParts.join(" · "));
+        info.append(name, meta);
+        if (artifactIsSensitive(artifact)) {
+          info.append(element("div", "artifact-meta sensitive-warning", "Raw HID trace — may contain input data."));
+        }
+        const remove = element("button", "button danger-button", "Delete");
+        remove.type = "button";
+        remove.disabled = !canMutate() || artifactMutationBusy;
+        remove.setAttribute("aria-label", `Delete artifact ${artifact.name || "unnamed artifact"}`);
+        remove.addEventListener("click", () => deleteArtifact(artifact));
+        row.append(info, remove);
+        list.append(row);
+      });
+    }
+
+    function previewDescription(preview) {
+      if (!preview || typeof preview !== "object") return "The native service did not provide impact counts.";
+      const lines = [];
+      for (const [keys, label] of [
+        [["devices", "device_count"], "Devices"],
+        [["samples", "sample_count"], "Samples"],
+        [["files", "file_count"], "Files"]
+      ]) {
+        const key = keys.find(candidate => preview[candidate] != null);
+        if (key) lines.push(`${label}: ${numberFormat.format(Number(preview[key]) || 0)}`);
+      }
+      const size = formatBytes(preview.bytes ?? preview.byte_count);
+      if (size) lines.push(`Storage: ${size}`);
+      const from = preview.from ?? preview.from_at ?? preview.oldest_at ?? preview.first_at ?? preview.start ?? preview.range_start;
+      const to = preview.to ?? preview.to_at ?? preview.newest_at ?? preview.last_at ?? preview.end ?? preview.range_end;
+      if (from != null || to != null) lines.push(`Date range: ${from == null ? "—" : formatArtifactDate(from)} – ${to == null ? "—" : formatArtifactDate(to)}`);
+      const cutoff = preview.cutoff ?? preview.cutoff_at ?? preview.cutoff_date;
+      if (cutoff != null) lines.push(`Cutoff: ${formatArtifactDate(cutoff)}`);
+      if (preview.date_range != null && typeof preview.date_range === "string") lines.push(`Date range: ${preview.date_range}`);
+      return lines.length ? lines.join("\n") : "The native service did not provide impact counts.";
+    }
+
+    function hasPreviewCounts(preview) {
+      return preview && ["devices", "device_count", "samples", "sample_count", "files", "file_count", "bytes", "byte_count"]
+        .some(key => preview[key] != null);
+    }
+
+    function hasPreviewRange(preview) {
+      return preview && [
+        "from", "from_at", "oldest_at", "first_at", "start", "range_start", "to", "to_at",
+        "newest_at", "last_at", "end", "range_end", "cutoff", "cutoff_at", "cutoff_date", "date_range"
+      ].some(key => preview[key] != null);
+    }
+
+    function deviceHistoryPreviewDescription(preview) {
+      if (!preview || typeof preview !== "object") return null;
+      const devices = preview.devices ?? preview.device_count;
+      const samples = preview.samples ?? preview.sample_count;
+      const from = preview.from ?? preview.from_at ?? preview.oldest_at ?? preview.first_at ?? preview.start ?? preview.range_start;
+      const to = preview.to ?? preview.to_at ?? preview.newest_at ?? preview.last_at ?? preview.end ?? preview.range_end;
+      let range = preview.date_range;
+      if (typeof range !== "string" && (from != null || to != null)) {
+        range = `${from == null ? "—" : formatArtifactDate(from)} – ${to == null ? "—" : formatArtifactDate(to)}`;
+      }
+      if (devices == null || samples == null || typeof range !== "string") return null;
+      return `Devices: ${numberFormat.format(Number(devices) || 0)}\nSamples: ${numberFormat.format(Number(samples) || 0)}\nDate range: ${range}`;
+    }
+
+    function confirmedForgetDescription(result) {
+      if (!result || typeof result !== "object") return null;
+      const counts = result.deleted_counts ?? result.counts ?? result;
+      const devices = counts.deleted_devices ?? counts.devices ?? counts.device_count;
+      const samples = counts.deleted_samples ?? counts.samples ?? counts.sample_count;
+      const lines = [];
+      if (devices != null) lines.push(`Devices: ${numberFormat.format(Number(devices) || 0)}`);
+      if (samples != null) lines.push(`Samples: ${numberFormat.format(Number(samples) || 0)}`);
+      const range = result.deleted_range ?? result.date_range;
+      if (typeof range === "string") lines.push(`Date range: ${range}`);
+      return lines.length ? lines.join("\n") : null;
+    }
+
+    async function refreshDataAndArtifacts() {
+      const days = Math.max(1, Number(dashboardData && dashboardData.window_days) || 90);
+      const [dataResult, artifactResult] = await Promise.all([
+        request("get_dashboard_data", { days }),
+        request("list_artifacts", {})
+      ]);
+      if (dataResult && typeof dataResult === "object") dashboardData = dataResult;
+      artifacts = normalizeArtifacts(artifactResult);
+      render();
+      updateManagementMode();
+      renderArtifacts();
+      setStatus("#artifact-status", artifacts.length
+        ? `Loaded ${numberFormat.format(artifacts.length)} artifact${artifacts.length === 1 ? "" : "s"}.`
+        : "No artifacts found.");
+    }
+
+    async function runCleanup(kind) {
+      if (!canMutate()) {
+        setStatus("#manage-status", managementReadOnlyMessage(), true);
+        return;
+      }
+      const days = Number($(kind === "older_than" ? "#age-days" : "#inactive-days").value);
+      const payload = { kind, days };
+      if (selectedIdentity !== "all") payload.identity = selectedIdentity;
+      setStatus("#manage-status", "Preparing cleanup preview…");
+      try {
+        const preview = await request("preview_cleanup", payload);
+        if (!hasPreviewCounts(preview) || !hasPreviewRange(preview)) {
+          throw new Error("The cleanup preview did not include both affected counts and a date range. Nothing was deleted.");
+        }
+        const description = previewDescription(preview);
+        const label = kind === "older_than" ? `older than ${days} days` : `inactive for ${days} days`;
+        if (!window.confirm(`Cleanup ${label}?\n\n${description}\n\nThis permanently deletes the listed data. Continue?`)) {
+          setStatus("#manage-status", "Cleanup canceled. No data was changed.");
+          return;
+        }
+        setStatus("#manage-status", "Cleaning up…");
+        const result = await request("execute_cleanup", payload);
+        const deleted = previewDescription(result);
+        setStatus("#manage-status", `Cleanup completed. ${deleted}`);
+        try {
+          await refreshDataAndArtifacts();
+        } catch (error) {
+          setStatus("#manage-status", `Cleanup completed, but refreshing the dashboard failed: ${error.message}`, true);
+        }
+      } catch (error) {
+        setStatus("#manage-status", `Cleanup failed: ${error.message}`, true);
+      }
+    }
+
+    async function forgetDevice(device, includePreferences) {
+      if (!canMutate()) {
+        setStatus("#manage-status", managementReadOnlyMessage(), true);
+        return;
+      }
+      const identity = typeof device.identity === "string" ? device.identity : "";
+      if (!identity) return;
+      const action = includePreferences ? "Forget all Volty data" : "Forget history";
+      setStatus("#manage-status", `Preparing ${action.toLocaleLowerCase()} preview…`);
+      try {
+        const preview = await request("preview_cleanup", { kind: "device_history", identity });
+        const previewDetails = deviceHistoryPreviewDescription(preview);
+        if (!previewDetails) {
+          throw new Error("The device-history preview did not include device, sample, and date-range counts. Nothing was changed.");
+        }
+        const preferences = includePreferences ? " Saved preferences are included in this request." : " Saved preferences are not included.";
+        const confirmed = window.confirm(`${action} for ${device.name || "this device"}?\nIdentity: ${identity}\n\nBackend-reported history preview:\n${previewDetails}${preferences}\n\nConfirm the forget request. Final deleted counts will be reported only if returned by the backend.`);
+        if (!confirmed) {
+          setStatus("#manage-status", `${action} canceled. No data was changed.`);
+          return;
+        }
+        setStatus("#manage-status", `${action}…`);
+        const result = await request("forget_device", { identity, include_preferences: includePreferences });
+        const confirmedDetails = confirmedForgetDescription(result);
+        setStatus("#manage-status", confirmedDetails
+          ? `Backend confirmed ${action.toLocaleLowerCase()} for ${identity}:\n${confirmedDetails}`
+          : `Backend confirmed the ${action.toLocaleLowerCase()} request for ${identity}; it did not return deleted counts.`);
+        try { await refreshDataAndArtifacts(); }
+        catch (error) { setStatus("#manage-status", `Change completed, but refreshing the dashboard failed: ${error.message}`, true); }
+      } catch (error) {
+        setStatus("#manage-status", `${action} failed: ${error.message}`, true);
+      }
+    }
+
+    async function setRecording(identity, enabled) {
+      if (!canMutate()) {
+        setStatus("#manage-status", managementReadOnlyMessage(), true);
+        return;
+      }
+      if (!identity) return;
+      const action = enabled ? "Resume" : "Pause";
+      setStatus("#manage-status", `${action} future history…`);
+      try {
+        await request("set_history_recording", { identity, enabled });
+        setStatus("#manage-status", `${action}d future history for ${identity}.`);
+        try { await refreshDataAndArtifacts(); }
+        catch (error) { setStatus("#manage-status", `Recording setting changed, but refreshing the dashboard failed: ${error.message}`, true); }
+      } catch (error) {
+        setStatus("#manage-status", `${action} failed: ${error.message}`, true);
+      }
+    }
+
+    async function deleteArtifact(artifact) {
+      if (!canMutate()) {
+        setStatus("#artifact-status", managementReadOnlyMessage(), true);
+        return;
+      }
+      if (artifactMutationBusy) return;
+      const size = formatBytes(artifact.bytes);
+      const details = [artifact.kind || "Artifact", formatArtifactDate(artifact.created_at), size].filter(Boolean).join(" · ");
+      const warning = artifactIsSensitive(artifact) ? "\n\nWarning: raw HID traces may contain input data." : "";
+      if (!window.confirm(`Delete artifact “${artifact.name || "Unnamed artifact"}”?\n${details}${warning}\n\nThis cannot be undone.`)) return;
+      artifactMutationBusy = true;
+      renderArtifacts();
+      setStatus("#artifact-status", "Deleting artifact…");
+      try {
+        await request("delete_artifact", { id: artifact.id });
+        setStatus("#artifact-status", `Deleted ${artifact.name || "artifact"}.`);
+        artifacts = artifacts.filter(item => item.id !== artifact.id);
+        renderArtifacts();
+        try { await refreshDataAndArtifacts(); }
+        catch (error) { setStatus("#artifact-status", `Artifact deleted, but refreshing the listing failed: ${error.message}`, true); }
+      } catch (error) {
+        setStatus("#artifact-status", `Could not delete artifact: ${error.message}`, true);
+      } finally {
+        artifactMutationBusy = false;
+        renderArtifacts();
+      }
+    }
+
+    async function deleteAllArtifacts() {
+      if (!canMutate()) {
+        setStatus("#artifact-status", managementReadOnlyMessage(), true);
+        return;
+      }
+      if (artifactMutationBusy) return;
+      artifactMutationBusy = true;
+      renderArtifacts();
+      try {
+        setStatus("#artifact-status", "Refreshing the managed artifact list…");
+        const listed = normalizeArtifacts(await request("list_artifacts", {}));
+        artifacts = listed;
+        renderArtifacts();
+        if (!listed.length) {
+          setStatus("#artifact-status", "No managed artifacts to delete.");
+          return;
+        }
+
+        const totalBytes = listed.reduce((total, artifact) => {
+          const bytes = Number(artifact.bytes);
+          return total + (Number.isFinite(bytes) && bytes > 0 ? bytes : 0);
+        }, 0);
+        const size = formatBytes(totalBytes) || "unknown size";
+        const names = listed.slice(0, 5).map(artifact => `- ${artifact.name || "Unnamed artifact"}`).join("\n");
+        const remainingNames = listed.length > 5 ? `\n- and ${listed.length - 5} more` : "";
+        const sensitiveCount = listed.filter(artifactIsSensitive).length;
+        const warning = sensitiveCount
+          ? `\n\nWarning: ${sensitiveCount} raw HID trace${sensitiveCount === 1 ? "" : "s"} may contain input data.`
+          : "";
+        if (!window.confirm(`Delete all ${numberFormat.format(listed.length)} managed artifacts (${size})?\n\n${names}${remainingNames}${warning}\n\nOnly files in the current managed-artifact inventory are included. This cannot be undone.`)) {
+          setStatus("#artifact-status", "Bulk deletion canceled. No artifacts were changed.");
+          return;
+        }
+
+        setStatus("#artifact-status", `Deleting ${numberFormat.format(listed.length)} managed artifacts…`);
+        const failures = [];
+        for (const [index, artifact] of listed.entries()) {
+          setStatus("#artifact-status", `Deleting artifact ${numberFormat.format(index + 1)} of ${numberFormat.format(listed.length)}…`);
+          try {
+            await request("delete_artifact", { id: artifact.id });
+          } catch (error) {
+            failures.push({ artifact, message: error.message });
+          }
+        }
+
+        let refreshError = null;
+        try {
+          artifacts = normalizeArtifacts(await request("list_artifacts", {}));
+        } catch (error) {
+          refreshError = error;
+          const failedIds = new Set(failures.map(failure => failure.artifact.id));
+          artifacts = listed.filter(artifact => failedIds.has(artifact.id));
+        }
+        renderArtifacts();
+
+        const remainingIds = new Set(artifacts.map(artifact => artifact.id));
+        const remainingListed = listed.filter(artifact => remainingIds.has(artifact.id));
+        const deletedCount = listed.length - remainingListed.length;
+        const failureDetails = failures
+          .filter(failure => remainingIds.has(failure.artifact.id))
+          .slice(0, 3)
+          .map(failure => `${failure.artifact.name || "Unnamed artifact"}: ${failure.message}`);
+        const moreFailures = Math.max(0, remainingListed.length - failureDetails.length);
+        const outcome = remainingListed.length
+          ? `Deleted ${numberFormat.format(deletedCount)} of ${numberFormat.format(listed.length)} artifacts. ${numberFormat.format(remainingListed.length)} remain${failureDetails.length ? `: ${failureDetails.join("; ")}` : "."}${moreFailures ? ` ${numberFormat.format(moreFailures)} additional failure(s).` : ""}`
+          : failures.length
+            ? `All ${numberFormat.format(listed.length)} artifacts are absent from the current inventory, though ${numberFormat.format(failures.length)} deletion response(s) were inconclusive.`
+            : `Deleted all ${numberFormat.format(listed.length)} managed artifacts (${size}).`;
+        setStatus("#artifact-status", refreshError
+          ? `${outcome} The final listing could not be refreshed: ${refreshError.message}`
+          : outcome, Boolean(refreshError || remainingListed.length || failures.length));
+      } catch (error) {
+        setStatus("#artifact-status", `Could not delete all managed artifacts: ${error.message}`, true);
+      } finally {
+        artifactMutationBusy = false;
+        renderArtifacts();
+      }
+    }
+
+    function managementReadOnlyMessage() {
+      return hasNativeBridge()
+        ? "Read-only: custom --database mode does not allow data changes. Dashboard data and artifact listings remain available."
+        : "Static export is read-only. Open the native Volty window to manage stored data.";
+    }
+
+    function updateManagementMode() {
+      const native = hasNativeBridge();
+      const allowed = canMutate();
+      $("#mode-badge").textContent = allowed ? "Native controls" : "Read-only";
+      $("#readonly-note").textContent = allowed
+        ? "Changes are sent to the native Volty service. Cleanup is previewed before execution."
+        : managementReadOnlyMessage();
+      $("#readonly-note").hidden = allowed;
+      document.querySelectorAll(".manage-panel button, .manage-panel select").forEach(control => { control.disabled = !allowed; });
+    }
+
+    function setNativeMode() {
+      const native = hasNativeBridge();
+      updateManagementMode();
+      $("#artifact-status").textContent = native ? "Loading artifacts…" : "Artifact listing is available in the native Volty window.";
+      renderArtifacts();
+    }
+
+    $("#device-select").addEventListener("change", event => {
+      storeSelection(event.currentTarget.value || "all");
+      render();
+    });
+    $("#device-search").addEventListener("input", event => {
+      deviceSearch = event.currentTarget.value;
+      render();
+    });
+    $("#cleanup-age").addEventListener("click", () => runCleanup("older_than"));
+    $("#cleanup-inactive").addEventListener("click", () => runCleanup("inactive_devices"));
+    $("#delete-all-artifacts").addEventListener("click", deleteAllArtifacts);
     render();
+    setNativeMode();
+    if (hasNativeBridge()) {
+      refreshDataAndArtifacts().catch(error => {
+        setStatus("#manage-status", `Could not refresh dashboard data: ${error.message}`, true);
+        setStatus("#artifact-status", `Could not load artifacts: ${error.message}`, true);
+      });
+    }
   </script>
 </body>
 </html>

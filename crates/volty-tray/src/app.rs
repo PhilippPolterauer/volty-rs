@@ -1381,6 +1381,26 @@ impl App {
         if self.history.is_none() {
             return Ok(());
         }
+        let history_enabled = match self.monitor_state.as_ref() {
+            Some(state) => match state.history_recording_enabled(reading.id.as_str()) {
+                Ok(enabled) => enabled,
+                Err(error) => {
+                    return self.report_history_error(format!(
+                        "Could not read history recording preference for {}: {error}",
+                        reading.label.display()
+                    ));
+                }
+            },
+            None => {
+                return self.report_history_error(format!(
+                    "Could not read history recording preference for {}: local device state is unavailable",
+                    reading.label.display()
+                ));
+            }
+        };
+        if !history_enabled {
+            return Ok(());
+        }
         let recorded_at = match unix_now() {
             Ok(recorded_at) => recorded_at,
             Err(error) => {

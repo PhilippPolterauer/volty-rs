@@ -6,10 +6,10 @@ use std::{
 };
 
 use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
+use serde::Serialize;
 
-/// Version 4 adds persisted tray display preferences next to the per-device
-/// monitoring and notification state from version 3.
-const SCHEMA_VERSION: i64 = 4;
+/// Version 5 adds a per-device preference for recording battery history.
+const SCHEMA_VERSION: i64 = 5;
 
 const TRAY_ICON_STYLE_KEY: &str = "tray_icon_style";
 const PINNED_DEVICE_KEY: &str = "pinned_device";
@@ -60,6 +60,16 @@ pub struct DischargeRate {
     pub alive_seconds: f64,
 }
 
+/// App-owned per-device state removed by a dashboard "forget all" operation.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
+pub(crate) struct ForgottenDevicePreferences {
+    pub(crate) monitoring: bool,
+    pub(crate) history_recording: bool,
+    pub(crate) notified_thresholds: u64,
+    pub(crate) discharge_rate: bool,
+    pub(crate) pinned: bool,
+}
+
 pub struct DeviceState {
     connection: Connection,
 }
@@ -77,13 +87,12 @@ impl DeviceState {
     }
 
     fn open(path: &Path) -> Result<Self, Box<dyn std::error::Error>> {
-        let parent = path.parent().ok_or_else(|| {
-            io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "discovery state file has no parent directory",
-            )
-        })?;
-        fs::create_dir_all(parent)?;
+        if let Some(parent) = path
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+        {
+            fs::create_dir_all(parent)?;
+        }
         let connection = Connection::open(path)?;
         connection.busy_timeout(Duration::from_secs(1))?;
         let version: i64 = connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
@@ -106,6 +115,10 @@ impl DeviceState {
             CREATE TABLE IF NOT EXISTS monitored_devices (
                 identity TEXT PRIMARY KEY,
                 monitored INTEGER NOT NULL CHECK (monitored IN (0, 1))
+            ) WITHOUT ROWID;
+            CREATE TABLE IF NOT EXISTS history_recording (
+                identity TEXT PRIMARY KEY,
+                enabled INTEGER NOT NULL CHECK (enabled IN (0, 1))
             ) WITHOUT ROWID;
             CREATE TABLE IF NOT EXISTS notified_thresholds (
                 identity TEXT NOT NULL,
@@ -237,6 +250,64 @@ impl DeviceState {
              ON CONFLICT (identity)
              DO UPDATE SET monitored = excluded.monitored",
             params![identity, monitored],
+        )?;
+        Ok(())
+    }
+
+    /// Returns whether history recording is enabled for an exact identity.
+    /// Devices without an explicit preference keep the default enabled state.
+    pub fn history_recording_enabled(
+        &self,
+        identity: &str,
+    ) -> Result<bool, Box<dyn std::error::Error>> {
+        if identity.is_empty() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "device identity must not be empty",
+            )
+            .into());
+        }
+        Ok(self
+            .connection
+            .query_row(
+                "SELECT enabled FROM history_recording WHERE identity = ?1",
+                [identity],
+                |row| row.get::<_, bool>(0),
+            )
+            .optional()?
+            .unwrap_or(true))
+    }
+
+    pub fn history_recording_preferences(
+        &self,
+    ) -> Result<BTreeMap<String, bool>, Box<dyn std::error::Error>> {
+        let mut statement = self
+            .connection
+            .prepare("SELECT identity, enabled FROM history_recording ORDER BY identity")?;
+        let rows = statement.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, bool>(1)?))
+        })?;
+        Ok(rows.collect::<Result<BTreeMap<_, _>, _>>()?)
+    }
+
+    pub fn set_history_recording_enabled(
+        &mut self,
+        identity: &str,
+        enabled: bool,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        if identity.is_empty() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "device identity must not be empty",
+            )
+            .into());
+        }
+        self.connection.execute(
+            "INSERT INTO history_recording (identity, enabled)
+             VALUES (?1, ?2)
+             ON CONFLICT (identity)
+             DO UPDATE SET enabled = excluded.enabled",
+            params![identity, enabled],
         )?;
         Ok(())
     }
@@ -405,6 +476,56 @@ impl DeviceState {
         Ok(())
     }
 
+    /// Removes only Volty-owned per-device preferences and metrics. Device
+    /// discovery indices and all physical/OS device state are left untouched.
+    pub(crate) fn forget_device_preferences(
+        &mut self,
+        identity: &str,
+    ) -> Result<ForgottenDevicePreferences, Box<dyn std::error::Error>> {
+        if identity.is_empty() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "device identity must not be empty",
+            )
+            .into());
+        }
+        let transaction = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let monitoring = transaction.execute(
+            "DELETE FROM monitored_devices WHERE identity = ?1",
+            [identity],
+        )? != 0;
+        let history_recording = transaction.execute(
+            "DELETE FROM history_recording WHERE identity = ?1",
+            [identity],
+        )? != 0;
+        let notified_thresholds = transaction.execute(
+            "DELETE FROM notified_thresholds WHERE identity = ?1",
+            [identity],
+        )?;
+        let discharge_rate = transaction.execute(
+            "DELETE FROM discharge_rates WHERE identity = ?1",
+            [identity],
+        )? != 0;
+        let pinned = transaction.execute(
+            "DELETE FROM settings WHERE key = ?1 AND value = ?2",
+            params![PINNED_DEVICE_KEY, identity],
+        )? != 0;
+        transaction.commit()?;
+        Ok(ForgottenDevicePreferences {
+            monitoring,
+            history_recording,
+            notified_thresholds: u64::try_from(notified_thresholds).map_err(|error| {
+                io::Error::other(format!(
+                    "notified threshold count cannot be represented: {error}"
+                ))
+            })?,
+            discharge_rate,
+            pinned,
+        })
+    }
+
     pub fn advanced_options_visible(&self) -> Result<bool, Box<dyn std::error::Error>> {
         let value = self
             .connection
@@ -472,6 +593,63 @@ pub fn local_state_path() -> Result<PathBuf, io::Error> {
 mod tests {
     use super::*;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn history_recording_is_independent_and_forget_clears_only_exact_app_state() {
+        let mut state = DeviceState::open(Path::new(":memory:")).unwrap();
+        let identity = "hid:keyboard#1";
+        assert!(state.history_recording_enabled(identity).unwrap());
+        state.set_device_monitored(identity, true).unwrap();
+        state
+            .set_history_recording_enabled(identity, false)
+            .unwrap();
+        state
+            .set_history_recording_enabled("hid:keyboard#10", false)
+            .unwrap();
+        state.mark_threshold_notified(identity, 20).unwrap();
+        state
+            .mark_threshold_notified("hid:keyboard#10", 15)
+            .unwrap();
+        state
+            .save_discharge_rates([(
+                identity,
+                DischargeRate {
+                    lost_percent: 5.0,
+                    alive_seconds: 900.0,
+                },
+            )])
+            .unwrap();
+        state.set_pinned_device(identity).unwrap();
+        state.record("hid:keyboard-interface", 3).unwrap();
+
+        assert!(!state.history_recording_enabled(identity).unwrap());
+        let cleared = state.forget_device_preferences(identity).unwrap();
+        assert_eq!(
+            cleared,
+            ForgottenDevicePreferences {
+                monitoring: true,
+                history_recording: true,
+                notified_thresholds: 1,
+                discharge_rate: true,
+                pinned: true,
+            }
+        );
+        assert!(state.history_recording_enabled(identity).unwrap());
+        assert_eq!(state.monitored_devices().unwrap().get(identity), None);
+        assert!(!state.history_recording_preferences().unwrap()["hid:keyboard#10"]);
+        assert_eq!(
+            state.notified_thresholds().unwrap()["hid:keyboard#10"],
+            [15].into_iter().collect()
+        );
+        assert_eq!(state.discharge_rates().unwrap().len(), 0);
+        assert_eq!(state.tray_display().unwrap().pinned_device, None);
+        assert_eq!(
+            state
+                .known_device_indices("hid:keyboard-interface", &[3])
+                .unwrap(),
+            [3]
+        );
+    }
 
     #[test]
     fn recent_devices_are_prioritized_and_persisted() {
@@ -827,7 +1005,7 @@ mod tests {
             .connection
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 4);
+        assert_eq!(version, 5);
         drop(state);
         fs::remove_file(path).unwrap();
     }
@@ -982,7 +1160,7 @@ mod tests {
                 .connection
                 .pragma_query_value(None, "user_version", |row| row.get(0))
                 .unwrap();
-            assert_eq!(version, 4);
+            assert_eq!(version, 5);
             state
                 .set_tray_icon_style(TrayIconStyle::Percentage)
                 .unwrap();

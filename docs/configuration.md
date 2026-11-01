@@ -66,6 +66,11 @@ reading changes or at least five minutes have passed since its previous sample.
 Entries older than 30 days are pruned automatically. Recording failures are
 logged and do not interrupt polling. The database is never uploaded.
 
+The native dashboard can pause or resume history recording for one device
+without changing whether Volty monitors it. Its per-device history cleanup
+removes stored samples; **Forget all Volty data** also clears that device's
+Volty-owned monitoring, notification, rate, and pinned-device preferences.
+
 Run `volty history` while the tray app is running to summarize the database; it
 does not open devices.
 

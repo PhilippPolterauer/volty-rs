@@ -14,11 +14,11 @@ pub(super) fn render_dashboard(
     generated_at: i64,
 ) -> Result<String, Box<dyn Error>> {
     let window_start = generated_at.saturating_sub(i64::from(days).saturating_mul(SECONDS_PER_DAY));
-    let data = build_data(samples, days, generated_at, window_start)?;
-    render_html(&data)
+    let data = build_data(samples, days, generated_at, window_start, false, Vec::new())?;
+    render_dashboard_data(&data)
 }
 
-fn render_html(data: &DashboardData) -> Result<String, Box<dyn Error>> {
+pub(super) fn render_dashboard_data(data: &DashboardData) -> Result<String, Box<dyn Error>> {
     let serialized = serde_json::to_string(data)?;
     let serialized = escape_script_end_tags(&serialized);
     let template = include_str!("../dashboard.html");
@@ -45,15 +45,18 @@ mod tests {
 
     #[test]
     fn generated_html_embeds_the_favicon_and_data() {
-        let html = render_html(&DashboardData {
+        let html = render_dashboard_data(&DashboardData {
             generated_at: 1,
             window_days: 7,
+            management_allowed: false,
             devices: Vec::new(),
+            inventory: Vec::new(),
         })
         .unwrap();
 
         assert!(html.contains("href=\"data:image/png;base64,"));
         assert!(html.contains("\"generated_at\":1"));
+        assert!(html.contains("\"management_allowed\":false"));
         assert!(!html.contains("__VOLTY_FAVICON__"));
         assert!(!html.contains("__VOLTY_DATA__"));
     }

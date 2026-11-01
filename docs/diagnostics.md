@@ -37,7 +37,15 @@ By default, the dashboard covers the last seven days, writes
 WebView2 window. The Microsoft WebView2 Runtime is required for the native
 window; if it is unavailable, Volty writes the HTML file and opens it in the
 default browser. Left-click the Volty tray icon to open the same native window.
-All data stays local; nothing is uploaded.
+The native window supports filtering by device, previewing age- and inactivity-
+based history cleanup, forgetting one device's history or Volty preferences,
+and pausing or resuming future history recording without changing monitoring.
+It can also list and delete managed capture and diagnostic report files.
+
+The generated HTML file and any browser fallback are read-only. Raw HID traces
+created with `volty hid sniff --output <path>` are stored at the selected path,
+may contain button or keyboard input, and are not scanned or deleted by the
+dashboard. All data stays local; nothing is uploaded.
 
 ## Command-line capture
 
