@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.2] - 2026-11-01
+
+### Fixed
+
+- Improved Bluetooth battery discovery by correlating connected Classic Bluetooth devices with their PnP battery endpoints.
+- Reopening the dashboard now focuses and refreshes its existing window.
+
 ## [0.10.1] - 2026-11-01
 
 ### Fixed

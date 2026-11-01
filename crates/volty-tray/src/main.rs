@@ -303,6 +303,7 @@ impl DashboardActivationEvent {
             let mut process_id = 0;
             // SAFETY: window is the valid HWND returned by FindWindowW.
             unsafe { GetWindowThreadProcessId(window, &mut process_id) };
+            // SAFETY: process_id belongs to the dashboard process identified by its valid HWND.
             if process_id != 0 && unsafe { AllowSetForegroundWindow(process_id) } == 0 {
                 eprintln!("Windows did not grant foreground permission to the existing dashboard");
             }
