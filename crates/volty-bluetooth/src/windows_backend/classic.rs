@@ -14,7 +14,7 @@ use super::{
     budget::{push_scan_budget_warning, ScanBudget},
     merge_scan,
     winrt::{await_operation, windows_error},
-    WINDOWS_BATTERY_LIFE_PROPERTY,
+    ConnectedClassicDevice, WINDOWS_BATTERY_LIFE_PROPERTY,
 };
 use crate::{
     battery_status, decode_windows_battery_life, normalize_device_name, BluetoothBatteryReading,
@@ -25,6 +25,7 @@ use crate::{
 const HFP_HANDSFREE_SERVICE_ID: u32 = 0x111e;
 pub(super) fn scan_windows_battery_property(
     budget: &ScanBudget,
+    connected_devices: &mut Vec<ConnectedClassicDevice>,
 ) -> Result<BluetoothScan, BluetoothError> {
     let selector = BluetoothDevice::GetDeviceSelectorFromConnectionStatus(
         BluetoothConnectionStatus::Connected,
@@ -84,14 +85,8 @@ pub(super) fn scan_windows_battery_property(
                 continue;
             }
         };
-        match bluetooth_device_is_connected(&device_id, budget) {
-            Ok(true) => {}
-            Ok(false) => {
-                scan.discovery_events.push(format!(
-                    "{name:?}: skipped because Windows reports the Bluetooth device as not connected"
-                ));
-                continue;
-            }
+        let device = match bluetooth_device(&device_id, budget) {
+            Ok(device) => device,
             Err(error) => {
                 scan.warnings.push(format!("{name}: {error}"));
                 if budget.is_exhausted() {
@@ -100,6 +95,56 @@ pub(super) fn scan_windows_battery_property(
                 }
                 continue;
             }
+        };
+        let connection_status = match device.ConnectionStatus() {
+            Ok(status) => status,
+            Err(error) => {
+                scan.warnings.push(format!(
+                    "{name}: {}",
+                    windows_error("could not read Bluetooth connection status", error)
+                ));
+                if budget.is_exhausted() {
+                    push_scan_budget_warning(&mut scan, "Bluetooth connection-state lookup");
+                    break;
+                }
+                continue;
+            }
+        };
+        if connection_status != BluetoothConnectionStatus::Connected {
+            scan.discovery_events.push(format!(
+                "{name:?}: skipped because Windows reports the Bluetooth device as not connected"
+            ));
+            continue;
+        }
+        let address = match device.BluetoothAddress() {
+            Ok(address) if address != 0 => Some(address),
+            Ok(_) => {
+                scan.warnings.push(format!(
+                    "{name}: Windows returned an empty Bluetooth device address"
+                ));
+                None
+            }
+            Err(error) => {
+                scan.warnings.push(format!(
+                    "{name}: {}",
+                    windows_error("could not read connected Bluetooth device address", error)
+                ));
+                None
+            }
+        };
+        if let Some(address) = address {
+            connected_devices.push(ConnectedClassicDevice {
+                address,
+                device_id: device_id.to_string_lossy(),
+                name: name.clone(),
+            });
+            scan.discovery_events.push(format!(
+                "{name:?}: registered the connected Classic device for PnP aggregation"
+            ));
+        }
+        if budget.is_exhausted() {
+            push_scan_budget_warning(&mut scan, "Bluetooth device address lookup");
+            break;
         }
         let battery_level = match read_windows_battery_life(&info) {
             Ok(Some(level)) => {
@@ -137,7 +182,7 @@ pub(super) fn scan_windows_battery_property(
             }
         };
         if battery_level.is_none() {
-            match scan_hfp_service_battery_property(&device_id, &name, budget) {
+            match scan_hfp_service_battery_property(&device, &device_id, &name, budget) {
                 Ok(hfp_scan) => merge_scan(&mut scan, hfp_scan),
                 Err(error) => scan.warnings.push(format!(
                     "{name}: Windows HFP service-property scan: {error}"
@@ -152,37 +197,28 @@ pub(super) fn scan_windows_battery_property(
     Ok(scan)
 }
 
-fn bluetooth_device_is_connected(
+fn bluetooth_device(
     device_id: &HSTRING,
     budget: &ScanBudget,
-) -> Result<bool, BluetoothError> {
-    let device = await_operation(
+) -> Result<BluetoothDevice, BluetoothError> {
+    await_operation(
         BluetoothDevice::FromIdAsync(device_id)
             .map_err(|error| windows_error("could not open the Bluetooth device", error))?,
         "Bluetooth connection-state lookup",
         budget,
-    )?;
-    let status = device
-        .ConnectionStatus()
-        .map_err(|error| windows_error("could not read Bluetooth connection status", error))?;
-    Ok(status == BluetoothConnectionStatus::Connected)
+    )
 }
 
 fn scan_hfp_service_battery_property(
+    device: &BluetoothDevice,
     device_id: &HSTRING,
     name: &str,
     budget: &ScanBudget,
 ) -> Result<BluetoothScan, BluetoothError> {
-    let device = await_operation(
-        BluetoothDevice::FromIdAsync(device_id)
-            .map_err(|error| windows_error("could not open the Bluetooth device", error))?,
-        "Bluetooth device lookup for HFP battery property",
-        budget,
-    )?;
     let service_id = RfcommServiceId::FromShortId(HFP_HANDSFREE_SERVICE_ID)
         .map_err(|error| windows_error("could not resolve the HFP service ID", error))?;
     let selector =
-        RfcommDeviceService::GetDeviceSelectorForBluetoothDeviceAndServiceId(&device, &service_id)
+        RfcommDeviceService::GetDeviceSelectorForBluetoothDeviceAndServiceId(device, &service_id)
             .map_err(|error| windows_error("could not create an HFP service selector", error))?;
     let properties =
         windows_collections::IVectorView::from(vec![HSTRING::from(WINDOWS_BATTERY_LIFE_PROPERTY)]);

@@ -19,8 +19,8 @@ Your mouse battery, always one glance away. Volty sits in the Windows
 notification area, shows the live charge level on the tray icon, and warns you
 before your device dies. It reads supported Logitech HID++ and standard HID
 battery reports on Windows 10/11, and includes experimental Bluetooth battery
-monitoring by default. The Baseus Bass BS2 Lite is validated; other Bluetooth
-device coverage remains limited.
+monitoring by default. The Baseus Bass BS2 Lite and Xiaomi J18 are validated;
+other Bluetooth device coverage remains limited.
 
 <p align="center">
   <img src="docs/hero.png" alt="Volty tray icon with battery tooltip, right-click menu, and low-battery notification" width="100%">

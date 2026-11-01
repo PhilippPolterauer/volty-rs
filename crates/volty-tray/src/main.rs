@@ -221,7 +221,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         #[cfg(windows)]
         Some("history") => return history::run_cli(&args.collect::<Vec<_>>()),
         #[cfg(windows)]
-        Some("dashboard") => return dashboard::run_cli(&args.collect::<Vec<_>>()),
+        Some("dashboard") => return run_dashboard_cli(&args.collect::<Vec<_>>()),
         #[cfg(windows)]
         Some("--apply-update") => return update::apply_update_cli(&args.collect::<Vec<_>>()),
         #[cfg(windows)]
@@ -247,6 +247,90 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     eprintln!("volty-tray is a Windows application.");
 
     Ok(())
+}
+
+#[cfg(windows)]
+fn run_dashboard_cli(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
+    if args.iter().any(|argument| argument == "--window") {
+        let activation_event = DashboardActivationEvent::create()?;
+        let _single_instance = SingleInstance::acquire_named(DASHBOARD_INSTANCE_MUTEX)?;
+        if !_single_instance.is_first() {
+            activation_event.signal()?;
+            return Ok(());
+        }
+        return dashboard::run_cli(args);
+    }
+
+    dashboard::run_cli(args)
+}
+
+#[cfg(windows)]
+const DASHBOARD_INSTANCE_MUTEX: &str = "Local\\VoltyDashboard";
+
+#[cfg(windows)]
+const DASHBOARD_ACTIVATION_EVENT: &str = "Local\\VoltyDashboardActivate";
+
+#[cfg(windows)]
+struct DashboardActivationEvent(windows_sys::Win32::Foundation::HANDLE);
+
+#[cfg(windows)]
+impl DashboardActivationEvent {
+    fn create() -> std::io::Result<Self> {
+        use windows_sys::Win32::System::Threading::CreateEventW;
+
+        let name = crate::win32::to_wide(DASHBOARD_ACTIVATION_EVENT);
+        // SAFETY: name is NUL-terminated and the null security attributes request default access.
+        let handle = unsafe { CreateEventW(std::ptr::null(), 0, 0, name.as_ptr()) };
+        if handle.is_null() {
+            return Err(std::io::Error::last_os_error());
+        }
+        Ok(Self(handle))
+    }
+
+    fn signal(&self) -> std::io::Result<()> {
+        use windows_sys::Win32::System::Threading::SetEvent;
+        use windows_sys::Win32::UI::WindowsAndMessaging::{
+            AllowSetForegroundWindow, FindWindowW, GetWindowThreadProcessId, SetForegroundWindow,
+            ShowWindow, SW_RESTORE,
+        };
+
+        let title = crate::win32::to_wide("Volty Dashboard");
+        // SAFETY: title is a NUL-terminated string; a null class name searches by title.
+        let window = unsafe { FindWindowW(std::ptr::null(), title.as_ptr()) };
+        if !window.is_null() {
+            // SAFETY: window is the valid HWND returned by FindWindowW.
+            unsafe { ShowWindow(window, SW_RESTORE) };
+            let mut process_id = 0;
+            // SAFETY: window is the valid HWND returned by FindWindowW.
+            unsafe { GetWindowThreadProcessId(window, &mut process_id) };
+            if process_id != 0 && unsafe { AllowSetForegroundWindow(process_id) } == 0 {
+                eprintln!("Windows did not grant foreground permission to the existing dashboard");
+            }
+            // SAFETY: window is the valid HWND returned by FindWindowW.
+            if unsafe { SetForegroundWindow(window) } == 0 {
+                eprintln!("Windows did not allow the dashboard to become the foreground window");
+            }
+        }
+
+        // SAFETY: this handle refers to the named auto-reset event shared with the dashboard.
+        if unsafe { SetEvent(self.0) } == 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        Ok(())
+    }
+}
+
+#[cfg(windows)]
+impl Drop for DashboardActivationEvent {
+    fn drop(&mut self) {
+        // SAFETY: this guard uniquely owns the valid event handle returned by CreateEventW.
+        if unsafe { windows_sys::Win32::Foundation::CloseHandle(self.0) } == 0 {
+            eprintln!(
+                "Volty could not close its dashboard activation event: {}",
+                std::io::Error::last_os_error()
+            );
+        }
+    }
 }
 
 #[cfg(windows)]

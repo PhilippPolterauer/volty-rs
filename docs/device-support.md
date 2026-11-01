@@ -9,8 +9,10 @@ best-effort basis but are not verified.
 | Device or family | Connection | Battery backend | Tested functionality | Status |
 | --- | --- | --- | --- | --- |
 | Logitech G502 X Superlight RGB | USB cable or Lightspeed receiver | Logitech HID++ 2.0 Unified Battery (`0x1004`) | Percentage, charging/discharging state, HID++ capture and offline replay | Verified |
+| Logitech G502 X PLUS (slot 1) | Not recorded | HID battery provider (specific report not recorded) | 43%; estimated ETA of 1d 16h shown in tray | Verified; live tray observation |
 | Logitech HID++ devices exposing only Battery Voltage (`0x1001`) | Any HID++ 2.0 transport | Battery Voltage fallback | Estimated percentage from millivolts; raw voltage retained and replayed | Experimental; synthetic tests only, not hardware-validated |
 | Baseus Bass BS2 Lite | Bluetooth Classic (HFP/A2DP) | Windows PnP battery property (`DEVPKEY_Device_BatteryLevel`) | Percentage, property capture and offline replay; charging state unavailable | Verified; Bluetooth enabled by default |
+| Xiaomi J18 headphones | Bluetooth (profile not recorded) | Windows Bluetooth battery discovery (exact property not recorded) | Battery percentage observed; capture/replay not recorded | Verified; Bluetooth enabled by default |
 | Keychron K8 Pro | USB cable or Bluetooth | None exposed to Windows | No standard HID battery, BLE GATT Battery Service, or usable vendor command | Not supported |
 | Flydigi controllers on the vendor protocol (VID `0x37d7`, e.g. Vader 5 Pro) | USB cable, vendor HID interface | Flydigi `5A A5 01` info report (state and 20 % level step in byte 11, per SDL's open-source driver) | Percentage in 20 % steps, charging/charged state | Experimental; synthetic tests only, not hardware-validated |
 | Flydigi Vader 4 Pro (DInput mode) | USB cable or 2.4 GHz receiver | Candidate battery byte in the `05 EC` device-info reply on interface 2 (`0xffa0`) | Reply observed, but its battery byte was not correlated with charge state | Investigating; do not treat the field as a reading yet |
@@ -18,8 +20,8 @@ best-effort basis but are not verified.
 | Xbox One wireless controller | Xbox Wireless Adapter | Windows XInput `XInputGetBatteryInformation` | Alkaline/NiMH buckets mapped to marked percentage estimates (empty 0%, low 20%, medium 50%, full 90%); no charging state | Verified by XInput provider hardware smoke test; estimates drive the tray icon/color but not ETA, history, or numeric low-battery alerts |
 | Generic HID battery devices | Any HID transport | Standard HID battery usages | Percentage, charging state when available, layout capture and offline replay | Experimental; no named device verified |
 
-**Verified** means a reading was observed on real hardware and reproduced from
-a hardware capture when the backend provides a replayable capture. **Experimental**
+**Verified** means a reading was observed on real hardware. Capture/replay
+confirmation is listed separately when tested. **Experimental**
 means the code path is implemented and covered by synthetic fixtures, but no
 named hardware has been verified.
 **Investigating** means current host-readable interfaces did not expose a
@@ -32,8 +34,9 @@ Generic HID support covers interfaces whose report descriptor declares a
 standard battery level (Generic Device Controls *Battery Strength* or the
 Battery System page). A device exposing battery only through a vendor-defined
 report is not detected unless its protocol is implemented. Bluetooth support is
-enabled in default builds; only one Bluetooth Classic headset has been
-validated, and BLE GATT has not been tested on real hardware. See
+enabled in default builds; the Baseus Bass BS2 Lite and Xiaomi J18 have been
+validated for battery discovery, while BLE GATT has not been tested on real
+hardware. See
 [Bluetooth headphone battery support](bluetooth-headphone-battery-support.md).
 
 For a new device, collect and review a hardware capture, then open a

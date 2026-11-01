@@ -1,9 +1,9 @@
 # Bluetooth headphone battery support
 
-> **Status:** The tray Bluetooth integration is enabled by default. Hardware
-> validation is limited to one Bluetooth Classic headset; the BLE GATT path has
-> not been tested on real hardware. Do not treat Bluetooth support as
-> universal. To disable it in a local build, run
+> **Status:** The tray Bluetooth integration is enabled by default. Battery
+> discovery has been validated on the Baseus Bass BS2 Lite and Xiaomi J18; the
+> BLE GATT path has not been tested on real hardware. Do not treat Bluetooth
+> support as universal. To disable it in a local build, run
 > `cargo run --release --package volty-tray --no-default-features`.
 
 ## Bluetooth scope
@@ -28,16 +28,20 @@ unknown because neither source reports it.
 Volty does not initiate pairing, connect paired devices, or perform broad
 Bluetooth scans. A paired device whose Windows connection status is not
 `Connected` is skipped, even if Windows still exposes a stale battery
-property for its PnP device node. Each asynchronous Windows Runtime operation
-has a five-second timeout, and the paired-device pass has a conservative
-30-second overall budget. If that budget is exhausted, already collected
-readings are retained, remaining paired devices are skipped, and an explicit
-warning is recorded. A device without an available Windows battery property
-or GATT service is skipped; failures are logged without suppressing valid
-readings from other devices or the HID backend. If Windows reports multiple
-Battery Services or Battery Level characteristics for one device, Volty
-reports an ambiguity rather than inventing left/right/case labels or combining
-the values.
+property for its PnP device node. For PnP battery properties on child endpoints,
+Volty aggregates Bluetooth connection flags across the node and its Bluetooth
+ancestors, and correlates the node's Bluetooth address with connected WinRT
+Classic devices when Windows does not publish connection flags. This avoids
+treating a connected headset's Hands-Free endpoint as disconnected. Each
+asynchronous Windows Runtime operation has a five-second timeout, and the
+paired-device pass has a conservative 30-second overall budget. If that budget
+is exhausted, already collected readings are retained, remaining paired
+devices are skipped, and an explicit warning is recorded. A device without an
+available Windows battery property or GATT service is skipped; failures are
+logged without suppressing valid readings from other devices or the HID
+backend. If Windows reports multiple Battery Services or Battery Level
+characteristics for one device, Volty reports an ambiguity rather than
+inventing left/right/case labels or combining the values.
 
 Classic Bluetooth Hands-Free Profile (HFP) battery indications and
 manufacturer-specific protocols are separate follow-up work. They are not
@@ -53,6 +57,7 @@ service need a separately implemented protocol.
 | Device | Transport | Result |
 | --- | --- | --- |
 | Baseus Bass BS2 Lite | Bluetooth Classic (HFP/A2DP) | 100%, Windows PnP battery property |
+| Xiaomi J18 headphones | Bluetooth (profile not recorded) | 100%; exact Windows property source not recorded |
 
 The reading comes from the headset's Hands-Free AG PnP node through the
 `System.Devices.BatteryLife` property, exposed to SetupAPI as
@@ -64,10 +69,13 @@ the wrong property key
 (`{49cd1f76-5626-4B17-A4E8-18B4AA1A2213}, 10`), which silently produced no
 readings. The corrected key was verified on live hardware.
 
+After reconnecting, Windows may take some time to republish the headset's
+battery property. An initial scan can therefore find no reading; allow later
+polls to run before treating the device as unsupported.
+
 Windows reports no charging state for this source, so the headset is shown with
 a percentage and unknown charging state. This validation does not cover BLE
-GATT, disconnect/reconnect behavior, low-battery notifications, or a second
-headset model.
+GATT, disconnect/reconnect behavior, or low-battery notifications.
 
 ## Current architecture and integration boundary
 
@@ -102,8 +110,8 @@ Its three probes (battery-life property, SetupAPI, paired GATT) are merged by
 opaque device id under a shared budget; that is a discovery strategy, not a
 protocol. The validated PnP reading on the Baseus headset meets the criteria
 for a trustworthy Windows reading with a stable device id and motivates default
-enablement. Broader coverage remains limited, especially hardware validation of
-the BLE GATT path and a second headset model. Build with
+enablement. Two headset models are now hardware-confirmed; broader coverage
+remains limited, especially hardware validation of the BLE GATT path. Build with
 `--no-default-features` to omit Bluetooth.
 
 ## Runtime behavior
@@ -112,9 +120,9 @@ the BLE GATT path and a second headset model. Build with
 
 - Volty checks connected Bluetooth devices and present Bluetooth PnP nodes for
   the Windows battery-life property, and enumerates Windows-paired Bluetooth
-  LE devices. PnP nodes are ignored unless Windows reports the device as
-  connected. It does not pair devices or perform a broad Bluetooth discovery
-  scan.
+  LE devices. PnP nodes are accepted only when Windows reports a connected flag
+  or their Bluetooth address matches a connected Classic device. It does not
+  pair devices or perform a broad Bluetooth discovery scan.
 - A device must expose GATT Battery Service `0x180F` and Battery Level
   characteristic `0x2A19`; classic HFP and vendor-specific battery reports are
   not read.
@@ -208,9 +216,10 @@ rules, and the capture submission workflow.
 Validated so far:
 
 - The Baseus Bass BS2 Lite appears through the Windows PnP battery property
-  with a valid percentage.
-- The Bluetooth scan completes without warnings for that headset, and the
-  reading carries the stable PnP instance id as its device identity.
+  with a valid percentage and is aggregated under the connected Classic
+  device's canonical identity.
+- Xiaomi J18 headphones also report 100%. Their exact transport profile and
+  Windows property source were not recorded.
 - The default build records the headset as `bt-1` with a raw
   `bluetooth_property` value and a reading whose `device_index` is `null`.
   `volty capture replay` reproduces the 100% reading in default builds and

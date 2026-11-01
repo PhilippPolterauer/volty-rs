@@ -190,9 +190,10 @@ comfortable sharing. Nothing is uploaded automatically by Volty.
 
 A capture records one system's observed behavior. It is not a guarantee that
 every device of the same model behaves identically. Firmware, connection type,
-and Windows support can affect the reading. Bluetooth capture is available in
-default builds; only one Bluetooth Classic headset has been validated so far.
-The BLE GATT capture path has not yet been tested on real hardware.
+and Windows support can affect the reading. Bluetooth battery discovery is
+available in default builds and has been validated on the Baseus Bass BS2 Lite
+and Xiaomi J18. The BLE GATT capture path has not yet been tested on real
+hardware.
 
 For the record layout and replay details, see the
 [capture format reference](capture-format.md).

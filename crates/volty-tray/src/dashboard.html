@@ -1198,10 +1198,11 @@ tbody tr:hover{background: var(--hover);}
     render();
     setNativeMode();
     if (hasNativeBridge()) {
-      refreshDataAndArtifacts().catch(error => {
+      window.__voltyRefreshDashboard = () => refreshDataAndArtifacts().catch(error => {
         setStatus("#manage-status", `Could not refresh dashboard data: ${error.message}`, true);
         setStatus("#artifact-status", `Could not load artifacts: ${error.message}`, true);
       });
+      window.__voltyRefreshDashboard();
     }
   </script>
 </body>

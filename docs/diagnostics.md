@@ -37,6 +37,8 @@ By default, the dashboard covers the last seven days, writes
 WebView2 window. The Microsoft WebView2 Runtime is required for the native
 window; if it is unavailable, Volty writes the HTML file and opens it in the
 default browser. Left-click the Volty tray icon to open the same native window.
+Only one native dashboard window can be open at a time; opening it again brings
+the existing window to the foreground and refreshes its data.
 The native window supports filtering by device, previewing age- and inactivity-
 based history cleanup, forgetting one device's history or Volty preferences,
 and pausing or resuming future history recording without changing monitoring.

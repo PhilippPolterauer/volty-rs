@@ -19,7 +19,7 @@ use windows::{
 use super::{
     budget::{push_scan_budget_warning, ScanBudget},
     winrt::windows_error,
-    WINDOWS_BATTERY_LIFE_PROPERTY,
+    ConnectedClassicDevice, WINDOWS_BATTERY_LIFE_PROPERTY,
 };
 use crate::{
     battery_status, decode_windows_battery_life, error, BluetoothBatteryReading,
@@ -40,11 +40,18 @@ const BLUETOOTH_DEVICE_FLAGS_KEY: DEVPROPKEY = DEVPROPKEY {
     fmtid: GUID::from_u128(0x2bd67d8b_8beb_48d5_87e0_6cda3428040a),
     pid: 3,
 };
+// DEVPKEY_Bluetooth_DeviceAddress.
+// {2BD67D8B-8BEB-48D5-87E0-6CDA3428040A}, 1
+const BLUETOOTH_DEVICE_ADDRESS_KEY: DEVPROPKEY = DEVPROPKEY {
+    fmtid: GUID::from_u128(0x2bd67d8b_8beb_48d5_87e0_6cda3428040a),
+    pid: 1,
+};
 const BDIF_CONNECTED: u32 = 0x0000_0020;
 const BDIF_LE_CONNECTED: u32 = 0x0100_0000;
 const MAX_BLUETOOTH_PARENT_DEPTH: usize = 8;
 pub(super) fn scan_setupapi_battery_property(
     budget: &ScanBudget,
+    connected_classic_devices: &[ConnectedClassicDevice],
 ) -> Result<BluetoothScan, BluetoothError> {
     // SAFETY: null filters request all present devices; the returned set is owned by DeviceInfoSet below.
     let device_info_set = unsafe {
@@ -60,7 +67,12 @@ pub(super) fn scan_setupapi_battery_property(
         index = index
             .checked_add(1)
             .ok_or_else(|| error("PnP device index overflow"))?;
-        let outcome = inspect_device(device_info_set.0, &info, &mut scan);
+        let outcome = inspect_device(
+            device_info_set.0,
+            &info,
+            connected_classic_devices,
+            &mut scan,
+        );
         counts.bluetooth_nodes_examined += usize::from(outcome.bluetooth_node);
         counts.battery_properties_found += usize::from(outcome.battery_property_found);
         counts.disconnected_nodes_skipped += usize::from(outcome.disconnected_node);
@@ -89,6 +101,12 @@ struct DeviceScanOutcome {
     bluetooth_node: bool,
     battery_property_found: bool,
     disconnected_node: bool,
+}
+
+enum PnpConnectionMatch<'a> {
+    ConnectedByFlags,
+    ConnectedClassic(&'a ConnectedClassicDevice),
+    Disconnected,
 }
 
 fn next_device_info(
@@ -131,6 +149,7 @@ fn next_device_info(
 fn inspect_device(
     device_info_set: HDEVINFO,
     info: &SP_DEVINFO_DATA,
+    connected_classic_devices: &[ConnectedClassicDevice],
     scan: &mut BluetoothScan,
 ) -> DeviceScanOutcome {
     let instance_id = match read_device_instance_id(device_info_set, info) {
@@ -149,13 +168,20 @@ fn inspect_device(
         }
     }
     scan.devices_examined += 1;
-    inspect_bluetooth_device(device_info_set, info, instance_id, scan)
+    inspect_bluetooth_device(
+        device_info_set,
+        info,
+        instance_id,
+        connected_classic_devices,
+        scan,
+    )
 }
 
 fn inspect_bluetooth_device(
     device_info_set: HDEVINFO,
     info: &SP_DEVINFO_DATA,
     instance_id: String,
+    connected_classic_devices: &[ConnectedClassicDevice],
     scan: &mut BluetoothScan,
 ) -> DeviceScanOutcome {
     let battery_property = match read_device_property(
@@ -192,9 +218,25 @@ fn inspect_bluetooth_device(
         ));
         return outcome;
     }
-    match bluetooth_connection_state(device_info_set, info) {
-        Ok(true) => {}
-        Ok(false) => {
+    let name = read_device_name(device_info_set, info, scan);
+    let (device_id, name) = match bluetooth_connection_state(
+        device_info_set,
+        info,
+        &instance_id,
+        connected_classic_devices,
+    ) {
+        Ok(PnpConnectionMatch::ConnectedByFlags) => (instance_id.clone(), name),
+        Ok(PnpConnectionMatch::ConnectedClassic(device)) => {
+            scan.discovery_events.push(format!(
+                "{name:?}: matched connected Classic device {:?} by Bluetooth address; using its device identity",
+                device.name
+            ));
+            (device.device_id.clone(), device.name.clone())
+        }
+        Ok(PnpConnectionMatch::Disconnected) => {
+            scan.discovery_events.push(format!(
+                "{name:?}: found a Windows PnP battery property, but it did not match a connected Bluetooth address and no connected flag was present"
+            ));
             return DeviceScanOutcome {
                 disconnected_node: true,
                 ..outcome
@@ -207,10 +249,9 @@ fn inspect_bluetooth_device(
                 ..outcome
             };
         }
-    }
-    let name = read_device_name(device_info_set, info, scan);
+    };
     scan.evidence.push(BluetoothEvidence {
-        device_id: instance_id.clone(),
+        device_id: device_id.clone(),
         name: name.clone(),
         kind: BluetoothDeviceKind::Pnp,
         observation: BluetoothObservation::Property {
@@ -225,7 +266,7 @@ fn inspect_bluetooth_device(
                 "{name:?}: read battery level from the Windows PnP {WINDOWS_BATTERY_LIFE_PROPERTY} property"
             ));
             scan.readings.push(BluetoothBatteryReading {
-                device_id: instance_id,
+                device_id,
                 name,
                 kind: BluetoothDeviceKind::Pnp,
                 battery: battery_status(level, crate::SOURCE_DEVICE_PROPERTY),
@@ -261,27 +302,65 @@ fn read_device_name(
     }
 }
 
-/// Walks the device and its Bluetooth ancestors until it finds the connection
-/// flags Windows publishes for Bluetooth device nodes.
-fn bluetooth_connection_state(
+/// Matches the node or an ancestor to a connected device, preferring its
+/// canonical identity over per-profile PnP identities.
+fn bluetooth_connection_state<'a>(
     device_info_set: HDEVINFO,
     info: &SP_DEVINFO_DATA,
-) -> Result<bool, BluetoothError> {
+    instance_id: &str,
+    connected_classic_devices: &'a [ConnectedClassicDevice],
+) -> Result<PnpConnectionMatch<'a>, BluetoothError> {
     let mut current = *info;
+    let mut flags_connected = false;
+    if let Some(address) = bluetooth_address_from_instance_id(instance_id) {
+        if let Some(device) =
+            connected_classic_device_for_address(address, connected_classic_devices)
+        {
+            return Ok(PnpConnectionMatch::ConnectedClassic(device));
+        }
+    }
     for _ in 0..MAX_BLUETOOTH_PARENT_DEPTH {
+        if let Some((property_type, bytes)) = read_device_property(
+            device_info_set,
+            &current,
+            &BLUETOOTH_DEVICE_ADDRESS_KEY,
+            "could not read Bluetooth device address",
+        )? {
+            let address = decode_bluetooth_device_address(property_type, &bytes)?;
+            if let Some(device) =
+                connected_classic_device_for_address(address, connected_classic_devices)
+            {
+                return Ok(PnpConnectionMatch::ConnectedClassic(device));
+            }
+        }
         if let Some((property_type, bytes)) = read_device_property(
             device_info_set,
             &current,
             &BLUETOOTH_DEVICE_FLAGS_KEY,
             "could not read Bluetooth device flags",
         )? {
-            return decode_bluetooth_device_flags(property_type, &bytes);
+            flags_connected |= decode_bluetooth_device_flags(property_type, &bytes)?;
         }
         let Some(parent_id) = read_device_parent(device_info_set, &current)? else {
-            return Ok(false);
+            return Ok(if flags_connected {
+                PnpConnectionMatch::ConnectedByFlags
+            } else {
+                PnpConnectionMatch::Disconnected
+            });
         };
         if !has_bluetooth_enumerator(&parent_id) {
-            return Ok(false);
+            return Ok(if flags_connected {
+                PnpConnectionMatch::ConnectedByFlags
+            } else {
+                PnpConnectionMatch::Disconnected
+            });
+        }
+        if let Some(address) = bluetooth_address_from_instance_id(&parent_id) {
+            if let Some(device) =
+                connected_classic_device_for_address(address, connected_classic_devices)
+            {
+                return Ok(PnpConnectionMatch::ConnectedClassic(device));
+            }
         }
         let parent_id = windows::core::HSTRING::from(parent_id);
         let mut parent = SP_DEVINFO_DATA {
@@ -296,7 +375,20 @@ fn bluetooth_connection_state(
         .map_err(|error| windows_error("could not open Bluetooth parent device", error))?;
         current = parent;
     }
-    Ok(false)
+    Ok(if flags_connected {
+        PnpConnectionMatch::ConnectedByFlags
+    } else {
+        PnpConnectionMatch::Disconnected
+    })
+}
+
+fn connected_classic_device_for_address(
+    address: u64,
+    connected_devices: &[ConnectedClassicDevice],
+) -> Option<&ConnectedClassicDevice> {
+    connected_devices
+        .iter()
+        .find(|device| device.address == address)
 }
 
 fn decode_bluetooth_device_flags(
@@ -316,6 +408,45 @@ fn decode_bluetooth_device_flags(
 
 fn bluetooth_flags_are_connected(flags: u32) -> bool {
     flags & (BDIF_CONNECTED | BDIF_LE_CONNECTED) != 0
+}
+
+fn decode_bluetooth_device_address(
+    property_type: DEVPROPTYPE,
+    bytes: &[u8],
+) -> Result<u64, BluetoothError> {
+    if property_type != DEVPROP_TYPE_STRING {
+        return Err(error(format!(
+            "Bluetooth device address has an unexpected type (type={})",
+            property_type.0
+        )));
+    }
+    let address = decode_device_property_string(bytes);
+    let hex_digits: String = address.chars().filter(char::is_ascii_hexdigit).collect();
+    if hex_digits.len() != 12
+        || !address
+            .chars()
+            .all(|character| character.is_ascii_hexdigit() || matches!(character, ':' | '-' | ' '))
+    {
+        return Err(error("Bluetooth device address has an invalid format"));
+    }
+    u64::from_str_radix(&hex_digits, 16)
+        .map_err(|_| error("Bluetooth device address could not be decoded"))
+}
+
+fn bluetooth_address_from_instance_id(instance_id: &str) -> Option<u64> {
+    let mut parts = instance_id.split('\\');
+    let enumerator = parts.next()?;
+    let (device_prefix, address) = parts.next()?.split_once('_')?;
+    if !enumerator.eq_ignore_ascii_case("BTHENUM")
+        || !device_prefix.eq_ignore_ascii_case("DEV")
+        || address.len() != 12
+        || !address
+            .chars()
+            .all(|character| character.is_ascii_hexdigit())
+    {
+        return None;
+    }
+    u64::from_str_radix(address, 16).ok()
 }
 
 struct DeviceInfoSet(HDEVINFO);
@@ -496,10 +627,12 @@ fn is_software_device_id(instance_id: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        bluetooth_flags_are_connected, checked_written_size, decode_bluetooth_device_flags,
-        decode_device_property_string, has_bluetooth_enumerator, is_software_device_id,
-        BDIF_CONNECTED, BDIF_LE_CONNECTED,
+        bluetooth_address_from_instance_id, bluetooth_flags_are_connected, checked_written_size,
+        connected_classic_device_for_address, decode_bluetooth_device_address,
+        decode_bluetooth_device_flags, decode_device_property_string, has_bluetooth_enumerator,
+        is_software_device_id, BDIF_CONNECTED, BDIF_LE_CONNECTED,
     };
+    use crate::windows_backend::ConnectedClassicDevice;
     use windows::Win32::Devices::Properties::{DEVPROP_TYPE_STRING, DEVPROP_TYPE_UINT32};
 
     #[test]
@@ -537,6 +670,55 @@ mod tests {
         // A paired but disconnected device keeps the other BDIF_* flags.
         assert!(!bluetooth_flags_are_connected(0x0400_439f));
         assert!(!bluetooth_flags_are_connected(0));
+    }
+
+    #[test]
+    fn decodes_classic_bluetooth_addresses_from_device_instance_ids() {
+        assert_eq!(
+            bluetooth_address_from_instance_id("BTHENUM\\DEV_001122AABBCC\\8&123"),
+            Some(0x001122aabbcc)
+        );
+        assert_eq!(
+            bluetooth_address_from_instance_id("bthenum\\dev_001122AABBCC\\8&123"),
+            Some(0x001122aabbcc)
+        );
+        assert_eq!(
+            bluetooth_address_from_instance_id("BTHHFENUM\\DEV_001122AABBCC\\8&123"),
+            None
+        );
+    }
+
+    #[test]
+    fn maps_connected_addresses_to_the_canonical_classic_device() {
+        let device = ConnectedClassicDevice {
+            address: 0x001122aabbcc,
+            device_id: "classic-device-id".to_owned(),
+            name: "Baseus Bass BS2 Lite".to_owned(),
+        };
+        assert_eq!(
+            connected_classic_device_for_address(device.address, std::slice::from_ref(&device))
+                .map(|device| device.device_id.as_str()),
+            Some("classic-device-id")
+        );
+        assert!(connected_classic_device_for_address(
+            0x001122aabbcd,
+            std::slice::from_ref(&device)
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn decodes_bluetooth_address_properties() {
+        let address = "00:11:22:AA:BB:CC\0"
+            .encode_utf16()
+            .flat_map(u16::to_le_bytes)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            decode_bluetooth_device_address(DEVPROP_TYPE_STRING, &address).unwrap(),
+            0x001122aabbcc
+        );
+        assert!(decode_bluetooth_device_address(DEVPROP_TYPE_STRING, &[]).is_err());
+        assert!(decode_bluetooth_device_address(DEVPROP_TYPE_UINT32, &address).is_err());
     }
 
     #[test]

@@ -9,21 +9,29 @@ use budget::{push_scan_budget_warning, ScanBudget, BLUETOOTH_SCAN_BUDGET};
 
 pub(super) const WINDOWS_BATTERY_LIFE_PROPERTY: &str = "System.Devices.BatteryLife";
 
+#[derive(Clone, Debug)]
+pub(super) struct ConnectedClassicDevice {
+    pub(super) address: u64,
+    pub(super) device_id: String,
+    pub(super) name: String,
+}
+
 pub(super) fn scan_battery_devices() -> Result<BluetoothScan, BluetoothError> {
     let budget = ScanBudget::new(BLUETOOTH_SCAN_BUDGET);
     winrt::initialize()?;
     let mut scan = BluetoothScan::default();
+    let mut connected_classic_devices = Vec::new();
     run_scan_phase(
         &mut scan,
         &budget,
         "Windows Bluetooth battery property",
-        classic::scan_windows_battery_property,
+        |budget| classic::scan_windows_battery_property(budget, &mut connected_classic_devices),
     );
     run_scan_phase(
         &mut scan,
         &budget,
         "Windows Bluetooth device-property",
-        setupapi::scan_setupapi_battery_property,
+        |budget| setupapi::scan_setupapi_battery_property(budget, &connected_classic_devices),
     );
     run_scan_phase(
         &mut scan,
