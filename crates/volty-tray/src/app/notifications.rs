@@ -2,7 +2,7 @@ use super::{
     battery_is_full, battery_status_label, is_device_monitored, record_event, AppConfig,
     DeviceReading, DeviceState, FileLogger, LogLevel,
 };
-use crate::notify::{BatterySample, NotificationEngine, NotificationOutcome};
+use crate::notify::{BatterySample, NotificationEngine, NotificationError, NotificationOutcome};
 use std::{
     collections::{hash_map::Entry, BTreeMap, HashMap, HashSet, VecDeque},
     error::Error,
@@ -72,6 +72,21 @@ impl DeviceNotifications {
         device_name: &str,
         sample: BatterySample,
     ) -> Result<NotificationOutcome, Box<dyn Error>> {
+        self.update_with(
+            id,
+            device_name,
+            sample,
+            crate::notify::show_low_battery_notification,
+        )
+    }
+
+    pub(super) fn update_with(
+        &mut self,
+        id: DeviceId,
+        device_name: &str,
+        sample: BatterySample,
+        dispatch: impl FnOnce(&str, u8) -> Result<(), NotificationError>,
+    ) -> Result<NotificationOutcome, Box<dyn Error>> {
         let identity_key = id.as_str().to_owned();
         let previously_notified = self
             .persisted_alerts
@@ -87,7 +102,7 @@ impl DeviceNotifications {
                     entry.insert(engine)
                 }
             };
-            let outcome = engine.update(device_name, sample)?;
+            let outcome = engine.update_with(device_name, sample, Instant::now(), dispatch)?;
             let notified_thresholds: HashSet<u8> =
                 engine.notified_thresholds().into_iter().collect();
             (outcome, notified_thresholds)
@@ -393,7 +408,7 @@ mod tests {
 
         assert_eq!(
             notifications
-                .update(
+                .update_with(
                     device.clone(),
                     "Test device",
                     BatterySample {
@@ -401,19 +416,25 @@ mod tests {
                         charging: false,
                         full: false,
                     },
+                    |_, _| panic!("restored thresholds must not dispatch a notification"),
                 )
                 .unwrap(),
             NotificationOutcome::AlreadyNotified
         );
         assert_eq!(
             notifications
-                .update(
+                .update_with(
                     device,
                     "Test device",
                     BatterySample {
                         percentage: 9,
                         charging: false,
                         full: false,
+                    },
+                    |name, percentage| {
+                        assert_eq!(name, "Test device");
+                        assert_eq!(percentage, 9);
+                        Ok(())
                     },
                 )
                 .unwrap(),

@@ -124,26 +124,7 @@ impl NotificationEngine {
         Ok(())
     }
 
-    /// Processes one battery sample and attempts a native toast when due.
-    ///
-    /// A sample that is charging or full resets every notified threshold. The
-    /// reached thresholds are marked before dispatch, making failures visible
-    /// to the caller without repeatedly attempting the same toast on every
-    /// polling iteration.
-    pub fn update(
-        &mut self,
-        device_name: &str,
-        sample: BatterySample,
-    ) -> Result<NotificationOutcome, NotificationError> {
-        self.update_with(
-            device_name,
-            sample,
-            Instant::now(),
-            show_low_battery_notification,
-        )
-    }
-
-    fn update_with(
+    pub(super) fn update_with(
         &mut self,
         device_name: &str,
         sample: BatterySample,
@@ -217,7 +198,7 @@ fn configured_thresholds(config: &AppConfig) -> Result<Vec<u8>, NotificationErro
 }
 
 #[cfg(windows)]
-fn show_low_battery_notification(
+pub(super) fn show_low_battery_notification(
     device_name: &str,
     percentage: u8,
 ) -> Result<(), NotificationError> {
@@ -264,7 +245,7 @@ pub(crate) fn capture_notification_opens_file(
 }
 
 #[cfg(not(windows))]
-fn show_low_battery_notification(
+pub(super) fn show_low_battery_notification(
     _device_name: &str,
     _percentage: u8,
 ) -> Result<(), NotificationError> {
@@ -673,7 +654,14 @@ mod tests {
         })
         .unwrap();
         assert_eq!(
-            engine.update("Test device", discharging(10)).unwrap(),
+            engine
+                .update_with(
+                    "Test device",
+                    discharging(10),
+                    Instant::now(),
+                    |_, _| panic!("disabled notifications must not dispatch"),
+                )
+                .unwrap(),
             NotificationOutcome::NotificationsDisabled
         );
         assert!(engine.notified_thresholds().is_empty());
