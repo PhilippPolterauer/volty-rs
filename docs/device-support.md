@@ -12,7 +12,7 @@ verified until a reading and its capture replay are confirmed.
 | Baseus Bass BS2 Lite | Bluetooth Classic (HFP/A2DP) | Windows PnP battery property (`DEVPKEY_Device_BatteryLevel`) | Percentage, property capture and offline replay; charging state unavailable | Verified, opt-in Bluetooth build |
 | Keychron K8 Pro | USB cable or Bluetooth | None exposed to Windows | No standard HID battery, BLE GATT Battery Service, or usable vendor command | Not supported |
 | Flydigi controllers on the vendor protocol (VID `0x37d7`, e.g. Vader 5 Pro) | USB cable, vendor HID interface | Flydigi `5A A5 01` info report (state and 20 % level step in byte 11, per SDL's open-source driver) | Percentage in 20 % steps, charging/charged state | Experimental; synthetic tests only, not hardware-validated |
-| Flydigi Vader 4 Pro (wired USB) | USB HID / XInput | No standard HID battery usage; it uses the older `04b4:2412` protocol, whose battery field is undocumented, and XInput reports only wired/full | No battery percentage or charging state observed | Investigating; battery protocol unknown |
+| Flydigi Vader 4 Pro (wired USB) | USB HID / XInput | No standard HID battery usage; it uses the older `04b4:2412` protocol, whose battery field is undocumented, and XInput reports only wired/full | No battery percentage or charging state observed | Investigating; in DInput mode the `05 EC` info reply (interface 2, usage `0xffa0`) identifies the device but contains no battery field |
 | Generic HID battery devices | Any HID transport | Standard HID battery usages | Percentage, charging state when available, layout capture and offline replay | Experimental; no named device verified |
 
 **Verified** means a reading was observed on real hardware and reproduced from
