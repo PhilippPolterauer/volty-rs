@@ -21,11 +21,7 @@ before your device dies. It reads supported Logitech HID++ and standard HID
 battery reports on Windows 10/11. Bluetooth is experimental and opt-in.
 
 <p align="center">
-  <img src="docs/tray.png" alt="Tray icon with battery tooltip: G502 X PLUS 76%, discharging" height="70">
-  &nbsp;&nbsp;
-  <img src="docs/context.png" alt="Tray context menu" height="220">
-  &nbsp;&nbsp;
-  <img src="docs/notification.png" alt="Low-battery notification" height="110">
+  <img src="docs/hero.png" alt="Volty tray icon with battery tooltip, right-click menu, and low-battery notification" width="100%">
 </p>
 
 > **Project status:** Volty is a hobby project with limited hardware testing. It
