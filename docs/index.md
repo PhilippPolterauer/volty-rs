@@ -14,6 +14,8 @@ Volty is a hobby project with limited hardware validation. Device support and
 battery readings are best-effort; Volty is not production-ready and is not
 affiliated with Logitech.
 
+![Volty tray icon, battery tooltip, right-click menu, and low-battery alert](hero.png)
+
 ## Start here
 
 - [Install the latest release](installation.md)
