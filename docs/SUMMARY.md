@@ -8,6 +8,7 @@
 - [Configuration and data](configuration.md)
 - [Troubleshooting and diagnostics](diagnostics.md)
 - [Device support](device-support.md)
+- [Vader 4 Pro investigation findings](vader-4-pro-findings.md)
 - [Hardware captures](hardware-capture.md)
 
 # Technical reference
