@@ -636,10 +636,7 @@ mod tests {
         );
         assert!(state.history_recording_enabled(identity).unwrap());
         assert_eq!(state.monitored_devices().unwrap().get(identity), None);
-        assert_eq!(
-            state.history_recording_preferences().unwrap()["hid:keyboard#10"],
-            false
-        );
+        assert!(!state.history_recording_preferences().unwrap()["hid:keyboard#10"]);
         assert_eq!(
             state.notified_thresholds().unwrap()["hid:keyboard#10"],
             [15].into_iter().collect()
