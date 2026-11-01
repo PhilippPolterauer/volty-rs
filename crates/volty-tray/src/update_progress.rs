@@ -237,7 +237,7 @@ fn run_window(
     }
     state.create_complete = true;
     let _ = ready.send(());
-    win32::run_message_loop(window, SW_SHOWNORMAL, state, |state, value| {
+    win32::run_foreground_message_loop(window, SW_SHOWNORMAL, state, |state, value| {
         state.create_complete = value;
     })?;
     Ok(())
