@@ -26,6 +26,7 @@ use std::{
     io,
     path::PathBuf,
     sync::mpsc::TryRecvError,
+    thread,
     time::{Duration, Instant},
 };
 use volty_battery::{
@@ -79,6 +80,7 @@ struct App {
     next_ui_refresh: Instant,
     history: Option<HistoryStore>,
     history_error: Option<String>,
+    update_operation_running: bool,
 }
 
 pub fn run() -> Result<(), Box<dyn Error>> {
@@ -207,6 +209,7 @@ impl App {
             next_ui_refresh: Instant::now() + UI_REFRESH_INTERVAL,
             history,
             history_error: None,
+            update_operation_running: false,
         })
     }
 
@@ -335,6 +338,24 @@ impl App {
             TrayAction::SetPinnedDevice { identity } => {
                 self.set_pinned_device(identity.as_deref())?
             }
+            TrayAction::CheckForUpdates => self.start_update_check()?,
+            TrayAction::UpdateCheckResult(result) => self.handle_update_check_result(result)?,
+            TrayAction::UpdateInstallResult(Ok(())) => {
+                self.record_event(LogLevel::Info, "Update staged; restarting Volty")?;
+                self.session.request_quit();
+                return Ok(false);
+            }
+            TrayAction::UpdateInstallResult(Err(error)) => {
+                self.update_operation_running = false;
+                self.tray.set_check_for_updates_enabled(true);
+                self.report_error("Update failed", &error)?;
+                self.show_update_message(
+                    "Update failed",
+                    &error,
+                    windows_sys::Win32::UI::WindowsAndMessaging::MB_OK
+                        | windows_sys::Win32::UI::WindowsAndMessaging::MB_ICONERROR,
+                );
+            }
             TrayAction::About => {
                 if let Err(error) = show_about_window() {
                     self.report_error("About window error", &error.to_string())?;
@@ -348,6 +369,115 @@ impl App {
             }
         }
         Ok(true)
+    }
+
+    fn start_update_check(&mut self) -> Result<(), Box<dyn Error>> {
+        if self.update_operation_running {
+            return Ok(());
+        }
+        self.update_operation_running = true;
+        self.tray.set_check_for_updates_enabled(false);
+        let action_sender = self.tray.action_sender();
+        if let Err(error) = thread::Builder::new()
+            .name("volty-update-check".to_owned())
+            .spawn(move || {
+                let result = crate::update::check_for_update().map_err(|error| error.to_string());
+                if action_sender
+                    .send(TrayAction::UpdateCheckResult(result))
+                    .is_ok()
+                {
+                    wake::signal();
+                }
+            })
+        {
+            self.update_operation_running = false;
+            self.tray.set_check_for_updates_enabled(true);
+            self.report_error("Update check failed", &error.to_string())?;
+        }
+        Ok(())
+    }
+
+    fn handle_update_check_result(
+        &mut self,
+        result: Result<Option<crate::update::UpdateInfo>, String>,
+    ) -> Result<(), Box<dyn Error>> {
+        match result {
+            Err(error) => {
+                self.update_operation_running = false;
+                self.tray.set_check_for_updates_enabled(true);
+                self.report_error("Update check failed", &error)?;
+                self.show_update_message(
+                    "Update check failed",
+                    &error,
+                    windows_sys::Win32::UI::WindowsAndMessaging::MB_OK
+                        | windows_sys::Win32::UI::WindowsAndMessaging::MB_ICONERROR,
+                );
+            }
+            Ok(None) => {
+                self.update_operation_running = false;
+                self.tray.set_check_for_updates_enabled(true);
+                let message = format!("Volty {} is up to date.", env!("CARGO_PKG_VERSION"));
+                self.show_update_message(
+                    "Volty is up to date",
+                    &message,
+                    windows_sys::Win32::UI::WindowsAndMessaging::MB_OK
+                        | windows_sys::Win32::UI::WindowsAndMessaging::MB_ICONINFORMATION,
+                );
+            }
+            Ok(Some(update)) => {
+                let message = format!(
+                    "Volty {} is available (you have {}). Download and install it now? Volty will restart when the update is ready.",
+                    update.version,
+                    env!("CARGO_PKG_VERSION")
+                );
+                let response = self.show_update_message(
+                    "Volty update available",
+                    &message,
+                    windows_sys::Win32::UI::WindowsAndMessaging::MB_YESNO
+                        | windows_sys::Win32::UI::WindowsAndMessaging::MB_ICONINFORMATION
+                        | windows_sys::Win32::UI::WindowsAndMessaging::MB_DEFBUTTON2,
+                );
+                if response != windows_sys::Win32::UI::WindowsAndMessaging::IDYES {
+                    self.update_operation_running = false;
+                    self.tray.set_check_for_updates_enabled(true);
+                    return Ok(());
+                }
+
+                let action_sender = self.tray.action_sender();
+                if let Err(error) = thread::Builder::new()
+                    .name("volty-update-install".to_owned())
+                    .spawn(move || {
+                        let result = crate::update::install_and_launch(update)
+                            .map_err(|error| error.to_string());
+                        if action_sender
+                            .send(TrayAction::UpdateInstallResult(result))
+                            .is_ok()
+                        {
+                            wake::signal();
+                        }
+                    })
+                {
+                    self.update_operation_running = false;
+                    self.tray.set_check_for_updates_enabled(true);
+                    self.report_error("Update failed", &error.to_string())?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn show_update_message(&mut self, title: &str, message: &str, style: u32) -> i32 {
+        let text = crate::win32::to_wide(message);
+        let title = crate::win32::to_wide(title);
+        let response = crate::app_icon::show_message_box(&text, &title, style);
+        if response == 0 {
+            let error = io::Error::last_os_error();
+            if let Err(report_error) = self.report_error("Update dialog error", &error.to_string())
+            {
+                eprintln!("Volty could not report an update dialog error: {report_error}");
+            }
+        }
+        response
     }
 
     fn discover_devices_now(&mut self) -> Result<(), Box<dyn Error>> {

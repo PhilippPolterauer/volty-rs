@@ -28,11 +28,11 @@ use tray_icon::{
     Icon, TrayIcon, TrayIconBuilder, TrayIconEvent,
 };
 
-use crate::{config::BatteryColorMap, state::TrayIconStyle};
+use crate::{config::BatteryColorMap, state::TrayIconStyle, update::UpdateInfo};
 
 const MAX_STATUS_CHARS: usize = 80;
 const MAX_TOOLTIP_UTF16_UNITS: usize = 127;
-const MENU_ITEMS_AFTER_ADVANCED_OPTIONS: usize = 3; // About, separator, Quit.
+const MENU_ITEMS_AFTER_ADVANCED_OPTIONS: usize = 4; // Check for Updates, About, separator, Quit.
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum MenuItemId {
@@ -53,6 +53,7 @@ enum MenuItemId {
     TrayIconStylePercentage,
     PinnedDeviceLowest,
     PinnedDevice(u64),
+    CheckForUpdates,
     About,
     Quit,
 }
@@ -79,6 +80,7 @@ impl MenuItemId {
             Self::TrayIconStylePercentage => "volty.tray-icon-style.percentage".to_owned(),
             Self::PinnedDeviceLowest => "volty.pinned-device.lowest".to_owned(),
             Self::PinnedDevice(sequence) => format!("volty.pinned-device.{sequence}"),
+            Self::CheckForUpdates => "volty.check-for-updates".to_owned(),
             Self::About => "volty.about".to_owned(),
             Self::Quit => "volty.quit".to_owned(),
         }
@@ -101,6 +103,7 @@ impl MenuItemId {
             "volty.tray-icon-style.battery" => Some(Self::TrayIconStyleBattery),
             "volty.tray-icon-style.percentage" => Some(Self::TrayIconStylePercentage),
             "volty.pinned-device.lowest" => Some(Self::PinnedDeviceLowest),
+            "volty.check-for-updates" => Some(Self::CheckForUpdates),
             "volty.about" => Some(Self::About),
             "volty.quit" => Some(Self::Quit),
             _ => id
@@ -152,6 +155,9 @@ pub enum TrayAction {
     SetDeviceMonitored { identity: String, monitored: bool },
     SetTrayIconStyle { style: TrayIconStyle },
     SetPinnedDevice { identity: Option<String> },
+    CheckForUpdates,
+    UpdateCheckResult(Result<Option<UpdateInfo>, String>),
+    UpdateInstallResult(Result<(), String>),
     About,
     Quit,
 }
@@ -193,6 +199,7 @@ pub struct TrayController {
     pinned_device: Option<String>,
     tray_icon_style: TrayIconStyle,
     start_on_boot_item: CheckMenuItem,
+    check_for_updates_item: MenuItem,
     actions_tx: Sender<TrayAction>,
     actions_rx: Receiver<TrayAction>,
     percentage: Option<u8>,
@@ -211,6 +218,7 @@ struct TrayMenu {
     show_advanced_options_item: CheckMenuItem,
     advanced_menu_items: AdvancedMenuItems,
     start_on_boot_item: CheckMenuItem,
+    check_for_updates_item: MenuItem,
 }
 
 struct TrayMenuItems {
@@ -222,6 +230,7 @@ struct TrayMenuItems {
     show_advanced_options_item: CheckMenuItem,
     advanced_options_separator: PredefinedMenuItem,
     advanced_menu_items: AdvancedMenuItems,
+    check_for_updates_item: MenuItem,
     about_item: MenuItem,
     about_separator: PredefinedMenuItem,
     quit_item: MenuItem,
@@ -378,6 +387,12 @@ fn create_tray_menu(
         show_advanced_options_item,
         advanced_options_separator: PredefinedMenuItem::separator(),
         advanced_menu_items,
+        check_for_updates_item: MenuItem::with_id(
+            MenuItemId::CheckForUpdates.as_id(),
+            "Check for Updates...",
+            true,
+            None,
+        ),
         about_item: MenuItem::with_id(MenuItemId::About.as_id(), "About Volty", true, None),
         about_separator: PredefinedMenuItem::separator(),
         quit_item: MenuItem::with_id(MenuItemId::Quit.as_id(), "Quit", true, None),
@@ -392,6 +407,7 @@ fn create_tray_menu(
         show_advanced_options_item: items.show_advanced_options_item,
         advanced_menu_items: items.advanced_menu_items,
         start_on_boot_item: items.start_on_boot_item,
+        check_for_updates_item: items.check_for_updates_item,
     })
 }
 
@@ -423,6 +439,10 @@ fn append_tray_menu_items(
     if advanced_options_visible {
         append_advanced_menu_items(menu, &items.advanced_menu_items)?;
     }
+    menu.append(&items.check_for_updates_item)
+        .map_err(|error| {
+            TrayError::new(format!("could not add Check for Updates action: {error}"))
+        })?;
     menu.append(&items.about_item)
         .map_err(|error| TrayError::new(format!("could not add About action: {error}")))?;
     menu.append(&items.about_separator)
@@ -508,6 +528,7 @@ impl TrayController {
             pinned_device: None,
             tray_icon_style: TrayIconStyle::Battery,
             start_on_boot_item: tray_menu.start_on_boot_item,
+            check_for_updates_item: tray_menu.check_for_updates_item,
             actions_tx,
             actions_rx,
             percentage: None,
@@ -861,6 +882,7 @@ impl TrayController {
                 .map(|entry| TrayAction::SetPinnedDevice {
                     identity: Some(entry.identity.clone()),
                 }),
+            MenuItemId::CheckForUpdates => Some(TrayAction::CheckForUpdates),
             MenuItemId::About => Some(TrayAction::About),
             MenuItemId::ResetVolty => Some(TrayAction::ResetVolty),
             MenuItemId::Quit => Some(TrayAction::Quit),
@@ -901,6 +923,10 @@ impl TrayController {
 
     pub(crate) fn action_sender(&self) -> Sender<TrayAction> {
         self.actions_tx.clone()
+    }
+
+    pub fn set_check_for_updates_enabled(&self, enabled: bool) {
+        self.check_for_updates_item.set_enabled(enabled);
     }
 
     pub fn set_device_monitored_checked(&self, identity: &str, checked: bool) {
@@ -1084,6 +1110,7 @@ mod tests {
             MenuItemId::TrayIconStylePercentage,
             MenuItemId::PinnedDeviceLowest,
             MenuItemId::PinnedDevice(7),
+            MenuItemId::CheckForUpdates,
             MenuItemId::About,
             MenuItemId::Quit,
         ] {
@@ -1125,6 +1152,7 @@ mod tests {
         assert!(basic_ids.contains(&MenuItemId::MonitoredDevices.as_id()));
         assert!(basic_ids.contains(&MenuItemId::StartOnBoot.as_id()));
         assert!(basic_ids.contains(&MenuItemId::OpenDashboard.as_id()));
+        assert!(basic_ids.contains(&MenuItemId::CheckForUpdates.as_id()));
         assert!(
             basic_ids
                 .iter()
