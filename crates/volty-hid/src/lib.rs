@@ -11,6 +11,7 @@ mod battery_query;
 mod command;
 mod device;
 mod flydigi;
+mod flydigi_xinput;
 mod generic_battery;
 #[cfg(feature = "hidapi")]
 mod hid;
@@ -28,6 +29,7 @@ pub use battery_query::{query_battery_with_transport, query_device_with_transpor
 pub use command::*;
 pub use device::*;
 pub use flydigi::{decode_flydigi_info, FLYDIGI_DEVICE, FLYDIGI_VENDOR, SOURCE_FLYDIGI};
+pub use flydigi_xinput::{decode_flydigi_xinput_battery, SOURCE_FLYDIGI_XINPUT};
 pub use generic_battery::{
     decode_generic_battery, GenericBatteryButton, GenericBatteryButtonReading,
     GenericBatteryLayout, GenericBatteryProbe, GenericBatterySample, GenericBatteryValue,
