@@ -1094,7 +1094,7 @@ impl App {
             identity: reading.id.as_str().to_owned(),
             name: reading.label.display(),
             recorded_at,
-            percent: reading.battery.level_percent,
+            percent: reading.battery.percentage.exact(),
             charging: matches!(
                 reading.battery.state,
                 BatteryState::Charging

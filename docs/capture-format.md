@@ -22,9 +22,16 @@ malformed, or out-of-range evidence can cause replay to fail.
 
 ## Record layout
 
-Captures use the `volty.capture/v1` schema and UTF-8 JSON Lines. Each line is a
+Captures use the `volty.capture/v2` schema and UTF-8 JSON Lines. Each line is a
 JSON object. A `header` record identifies the schema version and a `footer`
 record closes a complete capture.
+
+Normalized battery readings retain percentage provenance in the `percentage`
+field: `{"kind":"exact","value":N}` is reported by the source,
+`{"kind":"estimated","value":N,"method":"..."}` is an estimate, and
+`{"kind":"unavailable"}` means no percentage is available. The separate
+`level` and `raw_level` fields retain the coarse bucket and raw protocol value.
+Capture summaries prefix estimates with `~`.
 
 | Record | Purpose |
 | --- | --- |

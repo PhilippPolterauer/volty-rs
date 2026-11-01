@@ -1,10 +1,10 @@
-{"type":"header","schema":"volty.capture/v1","capture_id":"synthetic-battery-voltage","created_at":"2026-10-29T00:00:00Z","app_version":"0.2.1","app_commit":null,"os":"windows","architecture":"x86_64","mode":"snapshot","privacy":"standard","features":["hidapi","profile"]}
+{"type":"header","schema":"volty.capture/v2","capture_id":"synthetic-battery-voltage","created_at":"2026-10-29T00:00:00Z","app_version":"0.2.1","app_commit":null,"os":"windows","architecture":"x86_64","mode":"snapshot","privacy":"standard","features":["hidapi","profile"]}
 {"type":"interface","id":"iface-1","bus":"Usb","vendor_id":1133,"product_id":50503,"release_number":1026,"usage_page":65280,"usage":2,"interface_number":2,"manufacturer":"Logitech","product":"USB Receiver","serial_present":false}
 {"type":"match","id":"iface-1","device_index":null,"backend":"Logitech HID++ 2.0","outcome":"matched","detail":null}
 {"type":"hidpp_exchange","id":"iface-1","device_index":1,"t_ms":1,"request":"1101000110040000000000000000000000000000","response":"1101000100000000000000000000000000000000","error":null,"elapsed_ms":1}
 {"type":"hidpp_exchange","id":"iface-1","device_index":1,"t_ms":2,"request":"1101000110000000000000000000000000000000","response":"1101000100000000000000000000000000000000","error":null,"elapsed_ms":1}
 {"type":"hidpp_exchange","id":"iface-1","device_index":1,"t_ms":3,"request":"1101000110010000000000000000000000000000","response":"1101000105000100000000000000000000000000","error":null,"elapsed_ms":1}
 {"type":"hidpp_exchange","id":"iface-1","device_index":1,"t_ms":4,"request":"1101050100000000000000000000000000000000","response":"110105010e740000000000000000000000000000","error":null,"elapsed_ms":1}
-{"type":"reading","id":"iface-1","device_index":1,"t_ms":5,"backend":"Logitech HID++ 2.0","label":"USB Receiver","battery":{"percent":60,"level":"good","state":"unknown","raw_level":0,"raw_status":null,"source":"HID++ Battery Voltage (estimated)","voltage_mv":3700}}
+{"type":"reading","id":"iface-1","device_index":1,"t_ms":5,"backend":"Logitech HID++ 2.0","label":"USB Receiver","battery":{"percentage":{"kind":"estimated","value":60,"method":"voltage_curve"},"level":"good","state":"unknown","raw_level":0,"raw_status":null,"source":"HID++ Battery Voltage (estimated)","voltage_mv":3700}}
 {"type":"hidpp_features","id":"iface-1","device_index":1,"features":[{"logical_id":4097,"runtime_index":5,"feature_type":0,"version":1}]}
-{"type":"footer","schema":"volty.capture/v1","records":9,"complete":true}
+{"type":"footer","schema":"volty.capture/v2","records":9,"complete":true}

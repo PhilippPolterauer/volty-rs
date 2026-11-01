@@ -6,7 +6,7 @@
 //! synthetic-tested only and not hardware-validated.
 use crate::generic_battery::level_bucket;
 use crate::protocol::{BatteryProtocol, HidBatteryDevice, ProtocolError};
-use crate::{BatteryState, BatteryStatus, HidInterfaceInfo};
+use crate::{BatteryPercentage, BatteryState, BatteryStatus, HidInterfaceInfo};
 
 pub const FLYDIGI_VENDOR_ID_V2: u16 = 0x37d7;
 const FIRST_VENDOR_USAGE_PAGE: u16 = 0xff00;
@@ -56,7 +56,7 @@ pub fn decode_flydigi_info(report: &[u8]) -> Result<BatteryStatus, ProtocolError
         other => return Err(format!("unknown Flydigi charge state {other}").into()),
     };
     Ok(BatteryStatus {
-        level_percent: Some(percent),
+        percentage: BatteryPercentage::Exact(percent),
         level: level_bucket(percent),
         raw_level: step,
         state,
@@ -144,7 +144,7 @@ mod tests {
     #[test]
     fn decodes_discharging_levels_in_twenty_percent_steps() {
         let battery = decode_flydigi_info(&response(0x03)).unwrap();
-        assert_eq!(battery.level_percent, Some(60));
+        assert_eq!(battery.percentage.exact(), Some(60));
         assert_eq!(battery.state, BatteryState::Discharging);
         assert_eq!(battery.raw_level, 3);
         assert_eq!(battery.raw_status, Some(0));
@@ -154,25 +154,28 @@ mod tests {
     #[test]
     fn decodes_charging_and_charged() {
         let charging = decode_flydigi_info(&response(0x12)).unwrap();
-        assert_eq!(charging.level_percent, Some(40));
+        assert_eq!(charging.percentage.exact(), Some(40));
         assert_eq!(charging.state, BatteryState::Charging);
 
         let charged = decode_flydigi_info(&response(0x25)).unwrap();
-        assert_eq!(charged.level_percent, Some(100));
+        assert_eq!(charged.percentage.exact(), Some(100));
         assert_eq!(charged.state, BatteryState::Charged);
     }
 
     #[test]
     fn clamps_out_of_range_steps() {
         let battery = decode_flydigi_info(&response(0x0f)).unwrap();
-        assert_eq!(battery.level_percent, Some(100));
+        assert_eq!(battery.percentage.exact(), Some(100));
     }
 
     #[test]
     fn accepts_a_leading_report_id() {
         let mut frame = vec![0x00];
         frame.extend(response(0x04));
-        assert_eq!(decode_flydigi_info(&frame).unwrap().level_percent, Some(80));
+        assert_eq!(
+            decode_flydigi_info(&frame).unwrap().percentage.exact(),
+            Some(80)
+        );
     }
 
     #[test]

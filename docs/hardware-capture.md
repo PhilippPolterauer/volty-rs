@@ -120,6 +120,41 @@ Replay is local-only and does not write another capture. A replay success means
 Volty can reproduce the recorded decoding result, not that the device behaves
 that way in every firmware or connection mode.
 
+## Raw HID report traces
+
+For protocol investigation, Volty has a separate, explicit HID report trace.
+Unlike a battery capture, a trace stores raw HID input bytes and can therefore
+contain button or keyboard input. It is local-only, has a finite duration and
+payload limit, and requires an explicit acknowledgment:
+
+```text
+volty hid inspect --vid 04b4 --pid 2412
+volty hid sniff --vid 04b4 --pid 2412 --interface 2 --duration-seconds 15 --output .\vader4pro.hidtrace.jsonl --include-input
+volty hid trace .\vader4pro.hidtrace.jsonl
+```
+
+`sniff` opens exactly one selected HID interface, records its input reports for
+1–120 seconds (10 seconds by default), and never sends a report. It refuses to
+overwrite an existing output file. The trace contains numeric interface
+metadata, report IDs, raw bytes, and relative timestamps; it excludes device
+paths and serial numbers. Review the file before sharing it.
+
+This is a user-mode HID report capture, not a USB bus sniffer: it does not see
+output or feature requests made by another application, nor USB control
+transfers. Volty's report transport can record input, output, and feature
+operations made by future Volty protocol probes, but `sniff` currently records
+passive input reports only. Capturing Flydigi Space Station's requests still
+requires an external bus capture such as
+[USBPcap with Wireshark](https://desowin.org/usbpcap/); Volty does not install
+a filter driver or require administrator access for its own trace. The USBPcap
+project page currently lists Windows 7, 8, and 10; it does not explicitly list
+Windows 11, so verify compatibility before installing it.
+
+Raw HID traces use the separate `volty.hid_trace/v1` schema and are not accepted
+as battery snapshots or uploaded automatically. A validated trace can be
+summarized with `volty hid trace <file>` and parsed with the
+`volty-capture` trace reader for later protocol tests.
+
 ## Review before sharing
 
 Open the `.volty.jsonl` file in a text editor. It is JSON Lines: one JSON object

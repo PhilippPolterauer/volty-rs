@@ -188,7 +188,8 @@ mod tests {
         Arc,
     };
     use volty_battery::{
-        BatteryLevel, BatteryState, BatteryStatus, DeviceId, DeviceLabel, SourceReading,
+        BatteryLevel, BatteryPercentage, BatteryState, BatteryStatus, DeviceId, DeviceLabel,
+        SourceReading,
     };
 
     fn test_reading() -> SourceReading {
@@ -196,7 +197,7 @@ mod tests {
             id: DeviceId::new("hid:test#1"),
             label: DeviceLabel::new("Test device").with_qualifier("slot 1"),
             battery: BatteryStatus {
-                level_percent: Some(20),
+                percentage: BatteryPercentage::Exact(20),
                 level: BatteryLevel::Low,
                 raw_level: 2,
                 state: BatteryState::Discharging,

@@ -4,8 +4,8 @@ use std::time::{Duration, Instant};
 
 use crate::profile::{Access, CommandProfile, Decoder, Endianness, Operation};
 use crate::{
-    parse_unified_battery, BatteryStatus, FrameFormat, HidppError, HidppFrame, HidppTransport,
-    SoftwareIdAllocator, UnifiedBatteryCapabilities,
+    parse_unified_battery, BatteryPercentage, BatteryStatus, FrameFormat, HidppError, HidppFrame,
+    HidppTransport, SoftwareIdAllocator, UnifiedBatteryCapabilities,
 };
 
 const FEATURE_ROOT_INDEX: u8 = 0;
@@ -242,7 +242,7 @@ impl<T: HidppTransport> CommandExecutor<T> {
         if matches!(
             &decoded,
             DecodedOutput::UnifiedBatteryStatus(BatteryStatus {
-                level_percent: None,
+                percentage: BatteryPercentage::Unavailable,
                 ..
             })
         ) {
@@ -789,7 +789,7 @@ mod tests {
         assert!(matches!(
             result.decoded,
             DecodedOutput::UnifiedBatteryStatus(ref status)
-                if status.level_percent == Some(78)
+                if status.percentage.exact() == Some(78)
         ));
     }
 

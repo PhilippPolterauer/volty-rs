@@ -172,10 +172,11 @@ fn render_bluetooth_device(device: &CaptureBluetoothDevice) -> String {
 }
 
 fn render_reading(reading: &CaptureReading) -> String {
-    let percent = reading
-        .battery
-        .percent
-        .map_or_else(|| "-".to_owned(), |percent| format!("{percent}%"));
+    let percent = match reading.battery.percentage {
+        crate::CapturedBatteryPercentage::Unavailable => "-".to_owned(),
+        crate::CapturedBatteryPercentage::Exact { value } => format!("{value}%"),
+        crate::CapturedBatteryPercentage::Estimated { value, .. } => format!("~{value}%"),
+    };
     let device = reading
         .device_index
         .map_or_else(|| "-".to_owned(), |index| index.to_string());

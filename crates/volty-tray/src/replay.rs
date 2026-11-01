@@ -853,8 +853,8 @@ mod tests {
         to_hex, BatterySnapshot, CaptureBluetoothDevice, CaptureBluetoothGatt,
         CaptureBluetoothKind, CaptureBluetoothProperty, CaptureFooter, CaptureHeader,
         CaptureHidSample, CaptureMatch, CaptureMode, CaptureReading, CaptureWriter,
-        HidButtonCapability, HidFieldRef, HidSelectedLayout, HidValueCapability, HidValueSample,
-        HidppFeature, MatchOutcome, PrivacyProfile, SCHEMA,
+        CapturedBatteryPercentage, HidButtonCapability, HidFieldRef, HidSelectedLayout,
+        HidValueCapability, HidValueSample, HidppFeature, MatchOutcome, PrivacyProfile, SCHEMA,
     };
 
     fn header() -> CaptureHeader {
@@ -881,7 +881,7 @@ mod tests {
         source: &str,
     ) -> BatterySnapshot {
         BatterySnapshot {
-            percent: Some(percent),
+            percentage: CapturedBatteryPercentage::Exact { value: percent },
             level: level.to_owned(),
             state: state.to_owned(),
             raw_level,
@@ -1230,7 +1230,13 @@ mod tests {
         assert_eq!(report.transport_errors, 0);
 
         let reading = first_reading(&file);
-        assert_eq!(reading.battery.percent, Some(60));
+        assert_eq!(
+            reading.battery.percentage,
+            CapturedBatteryPercentage::Estimated {
+                value: 60,
+                method: volty_capture::CapturedPercentageEstimateMethod::VoltageCurve,
+            }
+        );
         assert_eq!(reading.battery.level, "good");
         assert_eq!(reading.battery.state, "unknown");
         assert_eq!(reading.battery.raw_level, 0);
@@ -1348,7 +1354,7 @@ mod tests {
         let CaptureRecord::Reading(reading) = &mut file.records[2] else {
             panic!("expected reading");
         };
-        reading.battery.percent = Some(54);
+        reading.battery.percentage = CapturedBatteryPercentage::Exact { value: 54 };
         let error = replay_capture(&file).unwrap_err().to_string();
         assert!(error.contains("does not match"), "{error}");
     }

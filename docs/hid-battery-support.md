@@ -147,17 +147,18 @@ To get a device into tray polling:
 6. Keep device matchers mutually exclusive for every interface. If multiple
    devices match, resolution fails with an ambiguity error rather than choosing
    a backend based on catalog order.
-7. Only `level_percent` should drive the numeric tray icon and percentage
-   notifications. Leave it `None` when the device reports only a raw level or
-   unknown value; the normalized battery state is still available for status
-   text. The one documented exception is a percentage estimated from a metric
-   the device does report: the HID++ Battery Voltage (`0x1001`) fallback sets
-   `level_percent` from a published voltage curve and labels its `source` as
-   estimated.
+7. Preserve percentage provenance in `BatteryStatus::percentage`. Use a
+   reported percentage for ETA, discharge-rate learning, exact-percentage
+   history, and numeric low-battery thresholds. An estimate can drive the tray
+   icon/color and must be marked with `~` in percentage text, but must not be
+   treated as a reported percentage for those calculations. Leave the
+   percentage unavailable when the device reports only a raw level or unknown
+   value; the normalized coarse level and state remain available for status
+   text.
 
 No additional tray/UI trait is required: once `query_battery` returns a valid
-`BatteryStatus`, the existing app updates the status text, icon when a true
-percentage is available, and charging/full notification state.
+`BatteryStatus`, the existing app updates status text and the tray icon. Its
+percentage provenance determines which calculations and alerts are eligible.
 
 `logitech_hidpp.rs` and `generic_battery.rs` are the two protocol backends. The
 generic backend reads one directly addressed interface (`0xff`) through the

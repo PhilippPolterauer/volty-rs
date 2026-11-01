@@ -118,7 +118,7 @@ mod tests {
 
         assert_eq!(target.devices_examined, 5);
         assert_eq!(target.readings.len(), 2);
-        assert_eq!(target.readings[0].battery.level_percent, Some(20));
+        assert_eq!(target.readings[0].battery.percentage.exact(), Some(20));
         assert_eq!(target.readings[1].device_id, "new");
         assert_eq!(target.evidence.len(), 3);
         assert_eq!(target.warnings, ["first warning", "second warning"]);

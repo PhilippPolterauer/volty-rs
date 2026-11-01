@@ -2,7 +2,9 @@ use crate::logitech_hidpp::{
     HidppError, HidppFrame, FUNCTION_GET_BATTERY_STATUS, FUNCTION_GET_BATTERY_VOLTAGE,
     FUNCTION_GET_UNIFIED_BATTERY_INFO,
 };
-pub use volty_battery::{BatteryLevel, BatteryState, BatteryStatus};
+pub use volty_battery::{
+    BatteryLevel, BatteryPercentage, BatteryPercentageEstimateMethod, BatteryState, BatteryStatus,
+};
 
 pub const SOURCE_UNIFIED_BATTERY: &str = "HID++ Unified Battery";
 pub const SOURCE_BATTERY_STATUS: &str = "HID++ Battery Status";
@@ -87,7 +89,7 @@ pub fn parse_unified_battery(
     let raw_status = frame.params[2];
     let state = parse_charge_status(raw_status);
     Ok(BatteryStatus {
-        level_percent,
+        percentage: level_percent.map_or(BatteryPercentage::Unavailable, BatteryPercentage::Exact),
         level,
         raw_level,
         state,
@@ -117,7 +119,7 @@ pub fn parse_legacy_battery_status(frame: &HidppFrame) -> Result<BatteryStatus, 
     let raw_level = frame.params[0];
     let raw_status = frame.params[2];
     Ok(BatteryStatus {
-        level_percent: None,
+        percentage: BatteryPercentage::Unavailable,
         level: BatteryLevel::Unknown,
         raw_level,
         state: parse_charge_status(raw_status),
@@ -153,7 +155,10 @@ pub fn parse_battery_voltage(frame: &HidppFrame) -> Result<BatteryStatus, HidppE
     }
     let level_percent = estimate_percent_from_voltage(voltage_mv);
     Ok(BatteryStatus {
-        level_percent: Some(level_percent),
+        percentage: BatteryPercentage::Estimated {
+            value: level_percent,
+            method: BatteryPercentageEstimateMethod::VoltageCurve,
+        },
         level: voltage_level(level_percent),
         raw_level: 0,
         state: BatteryState::Unknown,

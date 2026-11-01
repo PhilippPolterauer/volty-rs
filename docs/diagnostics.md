@@ -68,6 +68,8 @@ the normal tray app.
 volty hid inspect
 volty hid inspect --vid 0x046d --pid 0xc547 --usage-page 0xff00 --usage 0x0002
 volty hid features --vid 0x046d --pid 0xc547 --usage-page 0xff00 --usage 0x0002 --device-index 0x01
+volty hid sniff --vid 0x04b4 --pid 0x2412 --interface 2 --duration-seconds 15 --output .\vader4pro.hidtrace.jsonl --include-input
+volty hid trace .\vader4pro.hidtrace.jsonl
 ```
 
 `inspect` lists matching interface IDs, usage page/usage, interface number,
@@ -85,6 +87,15 @@ diagnostics but requires `--allow-state-changing` because arbitrary raw requests
 cannot safely be classified as read-only. Prefer `inspect` and `features`.
 Review diagnostic output before sharing it; interface paths can identify local
 devices.
+
+`sniff` is a separate, passive report-level trace for protocol investigation.
+It requires `--include-input` because raw reports can contain buttons or
+keystrokes, runs for at most 120 seconds, and refuses to overwrite a file.
+`trace` validates the JSONL file and summarizes its report IDs and sizes. The
+trace omits interface paths and serial numbers but must still be reviewed
+before sharing. It sees input reports available to Volty, not USB traffic or
+output/feature requests made by another application; see
+[raw HID report traces](hardware-capture.md#raw-hid-report-traces).
 
 For a worked Logitech example, see [Adding a Logitech HID++ device](adding-mice.md).
 For a battery support report, use the

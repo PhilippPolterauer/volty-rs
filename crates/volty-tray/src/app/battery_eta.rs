@@ -121,7 +121,7 @@ impl BatteryEtaEstimator {
         measured_at: Instant,
         window: Duration,
     ) -> Option<Duration> {
-        let Some(level_percent) = battery.level_percent else {
+        let Some(level_percent) = battery.percentage.exact() else {
             self.remove(identity);
             return None;
         };
@@ -211,7 +211,7 @@ impl BatteryEtaEstimator {
     }
 }
 pub(super) fn battery_eta_label(reading: &DeviceReading) -> Option<String> {
-    let level_percent = reading.battery.level_percent?;
+    let level_percent = reading.battery.percentage.exact()?;
     if level_percent >= 100 || matches!(reading.battery.state, BatteryState::Charged) {
         return None;
     }
@@ -250,10 +250,10 @@ pub(super) fn format_battery_eta(eta: Duration) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use volty_battery::{BatteryLevel, DeviceLabel};
+    use volty_battery::{BatteryLevel, BatteryPercentage, DeviceLabel};
     fn eta_battery(level_percent: u8, state: BatteryState) -> BatteryStatus {
         BatteryStatus {
-            level_percent: Some(level_percent),
+            percentage: BatteryPercentage::Exact(level_percent),
             level: BatteryLevel::Good,
             raw_level: level_percent,
             state,
@@ -519,5 +519,27 @@ mod tests {
             format_battery_eta(Duration::from_secs(25 * 60 * 60)),
             "1d 1h"
         );
+    }
+
+    #[test]
+    fn estimated_percentages_do_not_feed_eta_calculations() {
+        let mut estimator = BatteryEtaEstimator::default();
+        let identity = DeviceId::new("xinput:0");
+        let mut battery = eta_battery(50, BatteryState::Unknown);
+        battery.percentage = BatteryPercentage::Estimated {
+            value: 50,
+            method: volty_battery::BatteryPercentageEstimateMethod::XInputBucketMapping,
+        };
+
+        assert_eq!(
+            estimator.estimate_at(
+                &identity,
+                &battery,
+                Instant::now(),
+                Duration::from_secs(10 * 60),
+            ),
+            None
+        );
+        assert!(!estimator.samples.contains_key(&identity));
     }
 }

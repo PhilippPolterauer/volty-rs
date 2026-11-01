@@ -46,7 +46,7 @@ fn sample_header() -> CaptureHeader {
 
 fn sample_battery() -> BatterySnapshot {
     BatterySnapshot {
-        percent: Some(85),
+        percentage: CapturedBatteryPercentage::Exact { value: 85 },
         level: "good".to_owned(),
         state: "discharging".to_owned(),
         raw_level: 0x55,
@@ -258,10 +258,10 @@ fn every_record_variant_round_trips_through_writer_and_reader() {
 }
 
 #[test]
-fn hid_samples_without_state_bits_from_older_captures_still_parse() {
+fn hid_samples_without_state_bits_still_parse() {
     let record: CaptureRecord = serde_json::from_str(
         r#"{"type":"hid_sample","id":"iface-1","device_index":null,"t_ms":1,
-            "values":[],"battery":{"percent":50,"level":"good","state":"unknown",
+            "values":[],"battery":{"percentage":{"kind":"exact","value":50},"level":"good","state":"unknown",
             "raw_level":50,"raw_status":null,"source":"HID Battery"}}"#,
     )
     .unwrap();
@@ -272,11 +272,12 @@ fn hid_samples_without_state_bits_from_older_captures_still_parse() {
 }
 
 #[test]
-fn battery_snapshots_without_voltage_from_older_captures_still_parse() {
+fn battery_snapshots_without_voltage_still_parse() {
     let record: CaptureRecord = serde_json::from_str(
         r#"{"type":"reading","id":"iface-1","device_index":1,"t_ms":1,
             "backend":"Logitech HID++ 2.0","label":null,
-            "battery":{"percent":60,"level":"good","state":"unknown",
+            "battery":{"percentage":{"kind":"estimated","value":60,
+            "method":"voltage_curve"},"level":"good","state":"unknown",
             "raw_level":0,"raw_status":null,
             "source":"HID++ Battery Voltage (estimated)"}}"#,
     )
@@ -285,6 +286,13 @@ fn battery_snapshots_without_voltage_from_older_captures_still_parse() {
         panic!("expected a reading");
     };
     assert_eq!(reading.battery.voltage_mv, None);
+    assert_eq!(
+        reading.battery.percentage,
+        CapturedBatteryPercentage::Estimated {
+            value: 60,
+            method: CapturedPercentageEstimateMethod::VoltageCurve,
+        }
+    );
 }
 
 #[test]
@@ -397,13 +405,13 @@ fn record_after_footer_is_rejected() {
 fn wrong_schema_is_rejected() {
     let path = TempPath::new("wrong-schema");
     let mut header = sample_header();
-    header.schema = "volty.capture/v2".to_owned();
+    header.schema = "volty.capture/v1".to_owned();
     write_records(
         path.path(),
         &[
             CaptureRecord::Header(header),
             CaptureRecord::Footer(CaptureFooter {
-                schema: "volty.capture/v2".to_owned(),
+                schema: "volty.capture/v1".to_owned(),
                 records: 1,
                 complete: true,
             }),
@@ -523,7 +531,7 @@ fn render_summary_includes_counts_and_sensitive_values_are_unrepresentable() {
     file.validate().unwrap();
 
     let summary = file.render_summary();
-    assert!(summary.contains("schema: volty.capture/v1"));
+    assert!(summary.contains("schema: volty.capture/v2"));
     assert!(summary.contains("app_version: 0.2.1"));
     assert!(summary.contains("os: Windows 11"));
     assert!(summary.contains("mode: snapshot"));
@@ -542,6 +550,28 @@ fn render_summary_includes_counts_and_sensitive_values_are_unrepresentable() {
     assert!(!summary.contains("C:\\"));
     assert!(!summary.contains("\\\\?\\"));
     assert!(summary.lines().count() < 100, "{summary}");
+}
+
+#[test]
+fn render_summary_marks_estimated_percentages() {
+    let mut records = sample_records();
+    let Some(CaptureRecord::Reading(reading)) = records
+        .iter_mut()
+        .find(|record| matches!(record, CaptureRecord::Reading(_)))
+    else {
+        panic!("expected a reading");
+    };
+    reading.battery.percentage = CapturedBatteryPercentage::Estimated {
+        value: 60,
+        method: CapturedPercentageEstimateMethod::VoltageCurve,
+    };
+    let file = CaptureFile {
+        header: sample_header(),
+        footer: sample_footer(u64::try_from(records.len()).unwrap() + 1, true),
+        records,
+    };
+
+    assert!(file.render_summary().contains("battery=~60%"));
 }
 
 #[test]
@@ -612,7 +642,7 @@ fn validate_rejects_wrong_footer_schema() {
         header: sample_header(),
         records: Vec::new(),
         footer: CaptureFooter {
-            schema: "volty.capture/v2".to_owned(),
+            schema: "volty.capture/v1".to_owned(),
             records: 1,
             complete: true,
         },

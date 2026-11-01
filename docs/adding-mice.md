@@ -109,8 +109,10 @@ To make a non-standard battery feature available in the tray:
    handling within the HID++ backend, then parse its response into the shared
    `BatteryStatus` representation in
     [`crates/volty-hid/src/battery.rs`](https://github.com/PhilippPolterauer/volty-rs/blob/main/crates/volty-hid/src/battery.rs).
-   Set `level_percent` only when the device's protocol guarantees that value
-   is a percentage; preserve unknown status values rather than guessing.
+   Use `BatteryPercentage::Exact` only when the device reports a percentage.
+   Mark derived values as `BatteryPercentage::Estimated` with an explicit
+   method, preserve the raw value and coarse `BatteryLevel`, and retain unknown
+   status values rather than guessing.
 4. Add unit tests using captured response frames, including malformed and
    unknown values. Keep hardware tests read-only.
 5. Run the workspace checks below and verify the new mouse in the tray.

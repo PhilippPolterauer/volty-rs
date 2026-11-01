@@ -1,8 +1,9 @@
-//! Small, UI-free helpers for Logitech HID++ 2.0 devices.
+//! UI-free protocol helpers for HID battery devices.
 //!
-//! Frame handling, feature discovery, and battery parsing work without native
-//! dependencies. Enable `hidapi` for interface enumeration and sessions, and
-//! `profile` for the TOML command profiles used by the `volty hid` diagnostics.
+//! Frame handling, feature discovery, battery parsing, and report recording
+//! work without native dependencies. Enable `hidapi` for interface
+//! enumeration and sessions, and `profile` for TOML command profiles used by
+//! the `volty hid` diagnostics.
 
 mod battery;
 mod battery_query;
@@ -19,6 +20,7 @@ mod logitech_hidpp;
 mod profile;
 mod protocol;
 mod recording;
+mod report_io;
 
 pub use battery::*;
 pub use battery_query::{query_battery_with_transport, query_device_with_transport};
@@ -35,7 +37,7 @@ pub use generic_battery::{
 #[cfg(feature = "hidapi")]
 pub use hid::{
     enumerate_hid_devices, enumerate_hid_interfaces, select_hid_interface, HidDeviceInfo,
-    HidppSession,
+    HidReportSession, HidppSession,
 };
 pub use interface::{
     select_hid_interface_from, stable_interface_keys, HidInterfaceInfo, HidInterfaceSelector,
@@ -48,6 +50,9 @@ pub use protocol::{
     ProtocolDeviceReading, ProtocolError, SUPPORTED_HID_DEVICES,
 };
 pub use recording::{HidppExchange, RecordingTransport};
+pub use report_io::{
+    HidReportDirection, HidReportEvent, HidReportIo, HidReportIoError, RecordingHidIo,
+};
 
 #[cfg(feature = "hidapi")]
 pub(crate) use hid::{query_battery_interface, query_device_interface};

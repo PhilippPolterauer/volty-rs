@@ -1,5 +1,6 @@
 use crate::battery_query::{discover_battery_feature, read_battery, BatteryFeature, QUERY_TIMEOUT};
 use crate::logitech_hidpp::{transact_io, ReportIo};
+use crate::report_io::HidReportIo;
 use crate::*;
 use hidapi::{DeviceInfo, HidApi, HidDevice};
 use std::collections::{HashMap, HashSet};
@@ -125,6 +126,46 @@ pub struct HidppSession {
     device: HidDevice,
     info: HidInterfaceInfo,
     software_ids: SoftwareIdAllocator,
+}
+
+/// Raw report-level access to one explicitly selected HID interface.
+pub struct HidReportSession {
+    device: HidDevice,
+}
+
+impl HidReportSession {
+    /// Opens an already enumerated interface without selecting it again.
+    pub fn open_for_interface(info: &HidInterfaceInfo) -> Result<Self, HidppError> {
+        let device = with_shared_api(false, |api| {
+            api.open_path(&info.path).map_err(HidppError::HidApi)
+        })?;
+        Ok(Self { device })
+    }
+}
+
+impl HidReportIo for HidReportSession {
+    type Error = hidapi::HidError;
+
+    fn read_input(&mut self, buffer: &mut [u8], timeout: Duration) -> Result<usize, Self::Error> {
+        let timeout_ms = timeout.as_millis().min(i32::MAX as u128) as i32;
+        if timeout_ms == 0 {
+            return Ok(0);
+        }
+        HidDevice::read_timeout(&self.device, buffer, timeout_ms)
+    }
+
+    fn write_output(&mut self, report: &[u8]) -> Result<usize, Self::Error> {
+        self.device.write(report)
+    }
+
+    fn get_feature_report(&mut self, buffer: &mut [u8]) -> Result<usize, Self::Error> {
+        self.device.get_feature_report(buffer)
+    }
+
+    fn send_feature_report(&mut self, report: &[u8]) -> Result<usize, Self::Error> {
+        self.device.send_feature_report(report)?;
+        Ok(report.len())
+    }
 }
 
 impl HidppSession {

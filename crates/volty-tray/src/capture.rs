@@ -12,10 +12,10 @@ use std::{
 use volty_capture::{
     to_hex, BatterySnapshot, CaptureEvent, CaptureFile, CaptureHeader, CaptureHidLayout,
     CaptureHidSample, CaptureHidppExchange, CaptureHidppFeatures, CaptureInterface, CaptureMatch,
-    CaptureMode, CaptureReading, CaptureRecord, CaptureWriter, EventLevel, HidButtonCapability,
-    HidButtonSample, HidFieldRef, HidRatioRef, HidReportKind, HidSelectedLayout,
-    HidValueCapability, HidValueSample, HidppFeature, MatchOutcome, PrivacyProfile, Redactor,
-    SCHEMA,
+    CaptureMode, CaptureReading, CaptureRecord, CaptureWriter, CapturedBatteryPercentage,
+    CapturedPercentageEstimateMethod, EventLevel, HidButtonCapability, HidButtonSample,
+    HidFieldRef, HidRatioRef, HidReportKind, HidSelectedLayout, HidValueCapability, HidValueSample,
+    HidppFeature, MatchOutcome, PrivacyProfile, Redactor, SCHEMA,
 };
 #[cfg(feature = "bluetooth")]
 use volty_capture::{
@@ -23,8 +23,9 @@ use volty_capture::{
 };
 use volty_hid::{
     enumerate_features, enumerate_hid_interfaces, query_battery_with_transport, resolve_hid_device,
-    stable_interface_keys, BatteryLevel, BatteryProtocol, BatteryState, BatteryStatus,
-    GenericBatteryButton, GenericBatteryButtonReading, GenericBatteryLayout, GenericBatteryValue,
+    stable_interface_keys, BatteryLevel, BatteryPercentage, BatteryPercentageEstimateMethod,
+    BatteryProtocol, BatteryState, BatteryStatus, GenericBatteryButton,
+    GenericBatteryButtonReading, GenericBatteryLayout, GenericBatteryValue,
     GenericBatteryValueReading, GenericHidBattery, GenericReportKind, HidInterfaceInfo,
     HidppSession, RecordingTransport, SoftwareIdAllocator, GENERIC_HID_BATTERY, LOGITECH_HIDPP_20,
 };
@@ -739,7 +740,23 @@ const fn hid_report_kind(kind: GenericReportKind) -> HidReportKind {
 
 pub(crate) fn battery_snapshot(battery: &BatteryStatus) -> BatterySnapshot {
     BatterySnapshot {
-        percent: battery.level_percent,
+        percentage: match battery.percentage {
+            BatteryPercentage::Unavailable => CapturedBatteryPercentage::Unavailable,
+            BatteryPercentage::Exact(value) => CapturedBatteryPercentage::Exact { value },
+            BatteryPercentage::Estimated { value, method } => {
+                CapturedBatteryPercentage::Estimated {
+                    value,
+                    method: match method {
+                        BatteryPercentageEstimateMethod::VoltageCurve => {
+                            CapturedPercentageEstimateMethod::VoltageCurve
+                        }
+                        BatteryPercentageEstimateMethod::XInputBucketMapping => {
+                            CapturedPercentageEstimateMethod::XInputBucketMapping
+                        }
+                    },
+                }
+            }
+        },
         level: level_name(battery.level).to_owned(),
         state: state_name(battery.state).to_owned(),
         raw_level: battery.raw_level,
@@ -821,7 +838,7 @@ fn default_path() -> Result<PathBuf, Box<dyn Error>> {
     Ok(directory.join(format!("volty-capture-{seconds}-{nanos:09}.volty.jsonl")))
 }
 
-fn unix_now() -> Result<(u64, u32), Box<dyn Error>> {
+pub(crate) fn unix_now() -> Result<(u64, u32), Box<dyn Error>> {
     let duration = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_err(|error| {
@@ -890,7 +907,7 @@ mod tests {
     #[test]
     fn battery_state_and_level_names_match_the_schema() {
         let battery = BatteryStatus {
-            level_percent: Some(73),
+            percentage: BatteryPercentage::Exact(73),
             level: BatteryLevel::Good,
             raw_level: 73,
             state: BatteryState::ChargingNearlyFull,
@@ -899,7 +916,10 @@ mod tests {
             source: "HID++ Unified Battery",
         };
         let snapshot = battery_snapshot(&battery);
-        assert_eq!(snapshot.percent, Some(73));
+        assert_eq!(
+            snapshot.percentage,
+            CapturedBatteryPercentage::Exact { value: 73 }
+        );
         assert_eq!(snapshot.level, "good");
         assert_eq!(snapshot.state, "charging_nearly_full");
         assert_eq!(snapshot.raw_level, 73);
