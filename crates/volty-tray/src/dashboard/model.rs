@@ -11,7 +11,20 @@ const SECONDS_PER_DAY: i64 = 86_400;
 pub(super) struct DashboardData {
     pub(super) generated_at: i64,
     pub(super) window_days: u32,
+    pub(super) management_allowed: bool,
     pub(super) devices: Vec<DashboardDevice>,
+    pub(super) inventory: Vec<DashboardInventoryDevice>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub(super) struct DashboardInventoryDevice {
+    pub(super) identity: String,
+    pub(super) name: String,
+    pub(super) samples: u64,
+    pub(super) last_sample_at: Option<i64>,
+    pub(super) monitored: Option<bool>,
+    pub(super) history_recording_enabled: bool,
+    pub(super) pinned: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -52,6 +65,8 @@ pub(super) fn build_data(
     window_days: u32,
     generated_at: i64,
     window_start: i64,
+    management_allowed: bool,
+    inventory: Vec<DashboardInventoryDevice>,
 ) -> Result<DashboardData, io::Error> {
     let summaries = HistoryStore::summaries_from_samples(&samples);
     let mut samples_by_identity = BTreeMap::<String, Vec<HistorySample>>::new();
@@ -101,7 +116,9 @@ pub(super) fn build_data(
     Ok(DashboardData {
         generated_at,
         window_days,
+        management_allowed,
         devices,
+        inventory,
     })
 }
 
@@ -234,5 +251,20 @@ mod tests {
         assert_eq!(estimate_eta(Some(50), true, Some(25.0)), None);
         assert_eq!(estimate_eta(Some(50), false, None), None);
         assert_eq!(estimate_eta(Some(50), false, Some(0.0)), None);
+    }
+
+    #[test]
+    fn management_capability_is_serialized_for_both_read_only_and_interactive_data() {
+        let read_only = build_data(Vec::new(), 7, 100, 0, false, Vec::new()).unwrap();
+        let interactive = build_data(Vec::new(), 7, 100, 0, true, Vec::new()).unwrap();
+
+        assert_eq!(
+            serde_json::to_value(read_only).unwrap()["management_allowed"],
+            false
+        );
+        assert_eq!(
+            serde_json::to_value(interactive).unwrap()["management_allowed"],
+            true
+        );
     }
 }

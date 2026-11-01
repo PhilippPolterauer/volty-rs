@@ -1,5 +1,7 @@
 //! CLI orchestration for the local HTML battery-history dashboard.
 
+mod ipc;
+mod management;
 mod model;
 mod render;
 mod window;
@@ -12,7 +14,8 @@ use std::{
 };
 
 use crate::history::{unix_now, HistoryStore};
-use render::render_dashboard;
+use management::DashboardBackend;
+use render::{render_dashboard, render_dashboard_data};
 
 const DEFAULT_DAYS: u32 = 7;
 const SECONDS_PER_DAY: i64 = 86_400;
@@ -60,31 +63,19 @@ pub fn run_cli(args: &[String]) -> Result<(), Box<dyn Error>> {
         return Ok(());
     }
 
-    let generated_at = unix_now()?;
     let database = match &options.database {
         Some(path) => path.clone(),
         None => HistoryStore::local_path()?,
     };
-    let samples = if database.exists() {
-        let store = HistoryStore::open(&database)?;
-        let window_start =
-            generated_at.saturating_sub(i64::from(options.days).saturating_mul(SECONDS_PER_DAY));
-        store.samples_since(window_start)?
-    } else {
-        Vec::new()
-    };
-    if samples.is_empty() && !options.window {
-        println!("{EMPTY_MESSAGE}");
-        return Ok(());
-    }
-
-    let html = render_dashboard(samples, options.days, generated_at)?;
     let output = options
         .output
         .unwrap_or_else(|| std::env::temp_dir().join("volty-dashboard.html"));
 
     if options.window {
-        if let Err(error) = window::open_dashboard_window(&html) {
+        let backend = DashboardBackend::new(database, options.database.is_none());
+        let data = backend.get_dashboard_data(options.days)?;
+        let html = render_dashboard_data(&data)?;
+        if let Err(error) = window::open_dashboard_window(&html, backend) {
             eprintln!(
                 "Could not open the native dashboard window ({error}); opening the HTML dashboard in the default browser."
             );
@@ -95,6 +86,20 @@ pub fn run_cli(args: &[String]) -> Result<(), Box<dyn Error>> {
         return Ok(());
     }
 
+    let generated_at = unix_now()?;
+    let samples = if database.exists() {
+        let store = HistoryStore::open(&database)?;
+        let window_start =
+            generated_at.saturating_sub(i64::from(options.days).saturating_mul(SECONDS_PER_DAY));
+        store.samples_since(window_start)?
+    } else {
+        Vec::new()
+    };
+    if samples.is_empty() {
+        println!("{EMPTY_MESSAGE}");
+        return Ok(());
+    }
+    let html = render_dashboard(samples, options.days, generated_at)?;
     fs::write(&output, html)?;
     println!("Wrote battery dashboard to {}", output.display());
 
