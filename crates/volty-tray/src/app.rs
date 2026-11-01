@@ -218,6 +218,7 @@ impl App {
             }
 
             self.process_tray_menu_events()?;
+            self.process_tray_icon_events()?;
             if !self.dispatch_tray_actions()? {
                 return Ok(());
             }
@@ -253,6 +254,13 @@ impl App {
         Ok(())
     }
 
+    fn process_tray_icon_events(&mut self) -> io::Result<()> {
+        if let Err(error) = self.tray.process_tray_icon_events() {
+            self.report_error("Tray icon error", &error.to_string())?;
+        }
+        Ok(())
+    }
+
     fn dispatch_tray_actions(&mut self) -> Result<bool, Box<dyn Error>> {
         loop {
             match self.tray.try_recv_action() {
@@ -272,6 +280,41 @@ impl App {
 
     fn handle_tray_action(&mut self, action: TrayAction) -> Result<bool, Box<dyn Error>> {
         match action {
+            TrayAction::OpenDashboard => {
+                let action_sender = self.tray.action_sender();
+                if let Err(error) = std::thread::Builder::new()
+                    .name("volty-dashboard".to_owned())
+                    .spawn(move || {
+                        use std::os::windows::process::CommandExt;
+
+                        let result = (|| {
+                            std::process::Command::new(std::env::current_exe()?)
+                                .args(["dashboard", "--window", "--days", "7"])
+                                .creation_flags(
+                                    windows_sys::Win32::System::Threading::CREATE_NO_WINDOW,
+                                )
+                                .spawn()
+                                .map(|_| ())
+                        })()
+                        .map_err(|error: io::Error| error.to_string());
+                        if action_sender
+                            .send(TrayAction::DashboardResult(result))
+                            .is_ok()
+                        {
+                            wake::signal();
+                        }
+                    })
+                {
+                    self.report_error(
+                        "Dashboard error",
+                        &format!("could not start dashboard worker thread: {error}"),
+                    )?;
+                }
+            }
+            TrayAction::DashboardResult(Ok(())) => {}
+            TrayAction::DashboardResult(Err(error)) => {
+                self.report_error("Dashboard error", &error)?;
+            }
             TrayAction::DiscoverDevicesNow => self.discover_devices_now()?,
             TrayAction::OpenLogFile => self.open_log_file()?,
             TrayAction::SaveHardwareCapture => self.save_hardware_capture()?,

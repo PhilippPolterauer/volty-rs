@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Left-clicking the tray icon opens the local battery-history dashboard in a native WebView2 window, falling back to the default browser if WebView2 is unavailable. `volty dashboard` still writes a self-contained HTML file and opens it in the browser by default; `--window` selects the native window. Nothing is uploaded.
+- Centralized the Volty application icon across native windows and added its favicon to dashboard HTML.
+
 ## [0.5.0] - 2026-11-01
 
 ### Added

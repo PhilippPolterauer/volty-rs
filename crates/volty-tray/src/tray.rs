@@ -1,7 +1,8 @@
 //! System-tray UI and small platform integrations for Volty.
 //!
-//! Call [`TrayController::process_menu_events`] from the application's event
-//! loop. Menu events are received through tray-icon's process-global receiver,
+//! Call [`TrayController::process_menu_events`] and
+//! [`TrayController::process_tray_icon_events`] from the application's event
+//! loop. Tray events are received through tray-icon's process-global receivers,
 //! so an application should own one controller.
 
 mod icon;
@@ -24,7 +25,7 @@ use std::{
 
 use tray_icon::{
     menu::{CheckMenuItem, Menu, MenuEvent, MenuItem, PredefinedMenuItem, Submenu},
-    Icon, TrayIcon, TrayIconBuilder,
+    Icon, TrayIcon, TrayIconBuilder, TrayIconEvent,
 };
 
 use crate::{config::BatteryColorMap, state::TrayIconStyle};
@@ -36,6 +37,7 @@ const MENU_ITEMS_AFTER_ADVANCED_OPTIONS: usize = 3; // About, separator, Quit.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum MenuItemId {
     Status,
+    OpenDashboard,
     Discover,
     Configuration,
     LogFile,
@@ -59,6 +61,7 @@ impl MenuItemId {
     fn as_id(self) -> String {
         match self {
             Self::Status => "volty.status".to_owned(),
+            Self::OpenDashboard => "volty.open-dashboard".to_owned(),
             Self::Discover => "volty.discover".to_owned(),
             Self::Configuration => "volty.configuration".to_owned(),
             Self::LogFile => "volty.open-log-file".to_owned(),
@@ -84,6 +87,7 @@ impl MenuItemId {
     fn parse(id: &str) -> Option<Self> {
         match id {
             "volty.status" => Some(Self::Status),
+            "volty.open-dashboard" => Some(Self::OpenDashboard),
             "volty.discover" => Some(Self::Discover),
             "volty.configuration" => Some(Self::Configuration),
             "volty.open-log-file" => Some(Self::LogFile),
@@ -134,6 +138,8 @@ struct PinnedDeviceMenuItem {
 /// Actions the application should handle after menu events or notification clicks.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TrayAction {
+    OpenDashboard,
+    DashboardResult(Result<(), String>),
     DiscoverDevicesNow,
     OpenConfiguration,
     OpenLogFile,
@@ -209,6 +215,7 @@ struct TrayMenu {
 
 struct TrayMenuItems {
     status_item: MenuItem,
+    open_dashboard_item: MenuItem,
     monitored_devices_menu: Submenu,
     monitored_devices_empty_item: MenuItem,
     start_on_boot_item: CheckMenuItem,
@@ -359,6 +366,12 @@ fn create_tray_menu(
 
     let items = TrayMenuItems {
         status_item,
+        open_dashboard_item: MenuItem::with_id(
+            MenuItemId::OpenDashboard.as_id(),
+            "Open Dashboard",
+            true,
+            None,
+        ),
         monitored_devices_menu,
         monitored_devices_empty_item,
         start_on_boot_item,
@@ -395,6 +408,8 @@ fn append_tray_menu_items(
         .map_err(|error| {
             TrayError::new(format!("could not add monitored-devices menu: {error}"))
         })?;
+    menu.append(&items.open_dashboard_item)
+        .map_err(|error| TrayError::new(format!("could not add dashboard action: {error}")))?;
     menu.append(&items.start_on_boot_item)
         .map_err(|error| TrayError::new(format!("could not add start-on-boot action: {error}")))?;
     menu.append(&items.show_advanced_options_item)
@@ -470,6 +485,7 @@ impl TrayController {
             .with_tooltip("Volty — Searching for supported devices")
             .with_icon(unknown_battery_icon_at_size(ICON_SIZE)?)
             .with_menu(Box::new(tray_menu.menu.clone()))
+            .with_menu_on_left_click(false)
             .build()
             .map_err(|error| TrayError::new(format!("could not create tray icon: {error}")))?;
         let (actions_tx, actions_rx) = mpsc::channel();
@@ -782,8 +798,38 @@ impl TrayController {
         Ok(handled)
     }
 
+    /// Processes pending tray-icon events and returns the number handled.
+    pub fn process_tray_icon_events(&mut self) -> Result<usize, TrayError> {
+        let mut handled = 0;
+        #[allow(clippy::while_let_loop)]
+        loop {
+            let event = match TrayIconEvent::receiver().try_recv() {
+                Ok(event) => event,
+                Err(error) if error.is_empty() => break,
+                Err(error) => {
+                    return Err(TrayError::new(format!(
+                        "tray icon event channel disconnected: {error}"
+                    )))
+                }
+            };
+            if let TrayIconEvent::Click {
+                button: tray_icon::MouseButton::Left,
+                button_state: tray_icon::MouseButtonState::Up,
+                ..
+            } = event
+            {
+                self.actions_tx
+                    .send(TrayAction::OpenDashboard)
+                    .map_err(|_| TrayError::new("tray action receiver has been dropped"))?;
+                handled += 1;
+            }
+        }
+        Ok(handled)
+    }
+
     fn action_for_menu_id(&self, id: MenuItemId) -> Option<TrayAction> {
         match id {
+            MenuItemId::OpenDashboard => Some(TrayAction::OpenDashboard),
             MenuItemId::Discover => Some(TrayAction::DiscoverDevicesNow),
             MenuItemId::Configuration => Some(TrayAction::OpenConfiguration),
             MenuItemId::LogFile => Some(TrayAction::OpenLogFile),
@@ -970,7 +1016,9 @@ fn tooltip_for_devices(summary: &str, tooltip_statuses: &[String]) -> String {
     if details.encode_utf16().count() <= MAX_TOOLTIP_UTF16_UNITS {
         return details;
     }
-    shorten_tooltip(&format!("{summary}; right-click for all device stats"))
+    shorten_tooltip(&format!(
+        "{summary}; left-click for dashboard, right-click for device stats"
+    ))
 }
 
 fn shorten_tooltip(status: &str) -> String {
@@ -1020,6 +1068,7 @@ mod tests {
     fn menu_item_ids_round_trip() {
         for id in [
             MenuItemId::Status,
+            MenuItemId::OpenDashboard,
             MenuItemId::Discover,
             MenuItemId::Configuration,
             MenuItemId::LogFile,
@@ -1075,6 +1124,17 @@ mod tests {
         assert!(basic_ids.contains(&MenuItemId::ShowAdvancedOptions.as_id()));
         assert!(basic_ids.contains(&MenuItemId::MonitoredDevices.as_id()));
         assert!(basic_ids.contains(&MenuItemId::StartOnBoot.as_id()));
+        assert!(basic_ids.contains(&MenuItemId::OpenDashboard.as_id()));
+        assert!(
+            basic_ids
+                .iter()
+                .position(|id| id == &MenuItemId::MonitoredDevices.as_id())
+                .unwrap()
+                < basic_ids
+                    .iter()
+                    .position(|id| id == &MenuItemId::OpenDashboard.as_id())
+                    .unwrap()
+        );
         for id in [
             MenuItemId::TrayDisplay,
             MenuItemId::Discover,
@@ -1224,7 +1284,7 @@ mod tests {
 
         let overflow = vec![format!("{}{}", "🙂".repeat(32), "x".repeat(64))];
         let tooltip = tooltip_for_devices("summary", &overflow);
-        assert!(tooltip.contains("right-click for all device stats"));
+        assert!(tooltip.contains("left-click for dashboard, right-click for device stats"));
         assert!(tooltip.encode_utf16().count() <= MAX_TOOLTIP_UTF16_UNITS);
     }
 
@@ -1234,6 +1294,6 @@ mod tests {
         let tooltip = tooltip_for_devices("2 devices monitored", &statuses);
 
         assert!(tooltip.encode_utf16().count() <= MAX_TOOLTIP_UTF16_UNITS);
-        assert!(tooltip.contains("right-click for all device stats"));
+        assert!(tooltip.contains("left-click for dashboard, right-click for device stats"));
     }
 }

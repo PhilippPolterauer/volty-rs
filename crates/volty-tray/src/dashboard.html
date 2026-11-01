@@ -1,0 +1,576 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark light">
+  <title>Volty — Battery dashboard</title>
+  <link rel="icon" href="__VOLTY_FAVICON__">
+  <style>
+:root{color-scheme: dark;--bg: #0c1118;--surface: #121a24;--surface-raised: #182230;--surface-soft: #1b2938;--line: #293747;--text: #edf4fa;--muted: #91a1b2;--faint: #647587;--green: #53d59a;--yellow: #f2c46d;--red: #f07878;--blue: #70b7ff;--purple: #b7a3ff;--shadow: 0 18px 48px rgb(0 0 0 / 18%);font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;font-synthesis: none;text-rendering: optimizeLegibility;}
+@media (prefers-color-scheme: light){:root{color-scheme: light;--bg: #f3f6f9;--surface: #ffffff;--surface-raised: #f7f9fb;--surface-soft: #edf3f7;--line: #dce5ec;--text: #16222e;--muted: #5e7081;--faint: #8091a0;--green: #16875b;--yellow: #a56b08;--red: #c34646;--blue: #247bc2;--purple: #7259c4;--shadow: 0 14px 36px rgb(30 55 75 / 8%);}
+}
+*{box-sizing: border-box;}
+body{margin: 0;min-width: 320px;color: var(--text);background: radial-gradient(ellipse at 12% -8%, color-mix(in srgb, var(--blue) 10%, transparent), transparent 34rem), var(--bg);font-size: 14px;line-height: 1.5;}
+button{font: inherit;}
+.shell{width: min(1180px, calc(100% - 44px));margin: 0 auto;padding: 38px 0 56px;}
+.topbar{display: flex;align-items: flex-start;justify-content: space-between;gap: 24px;margin-bottom: 30px;}
+.brand{display: flex;gap: 14px;align-items: center;}
+.brand-mark{display: grid;place-items: center;width: 46px;height: 46px;border: 1px solid color-mix(in srgb, var(--green) 36%, var(--line));border-radius: 15px;color: var(--green);background: color-mix(in srgb, var(--green) 9%, var(--surface));}
+.brand-mark svg{width: 25px;height: 25px;}
+h1{margin: 0;font-size: 23px;letter-spacing: -.045em;line-height: 1.15;}
+.subtitle{margin: 5px 0 0;color: var(--muted);font-size: 13px;}
+.generated{text-align: right;color: var(--muted);font-size: 12px;padding-top: 5px;}
+.generated strong{display: block;color: var(--text);font-weight: 550;font-size: 13px;margin-bottom: 3px;}
+.summary{display: grid;grid-template-columns: repeat(3, minmax(0, 1fr));gap: 14px;margin-bottom: 24px;}
+.summary-card{display: flex;align-items: center;gap: 14px;min-height: 94px;padding: 17px 20px;border: 1px solid var(--line);border-radius: 16px;background: var(--surface);box-shadow: var(--shadow);}
+.summary-icon{display: grid;place-items: center;flex: 0 0 42px;height: 42px;border-radius: 13px;color: var(--blue);background: color-mix(in srgb, var(--blue) 10%, var(--surface-raised));}
+.summary-icon.green{color: var(--green);background: color-mix(in srgb, var(--green) 10%, var(--surface-raised));}
+.summary-icon.purple{color: var(--purple);background: color-mix(in srgb, var(--purple) 10%, var(--surface-raised));}
+.summary-icon svg{width: 20px;height: 20px;}
+.summary-value{font-size: 22px;line-height: 1.15;font-weight: 680;letter-spacing: -.04em;font-variant-numeric: tabular-nums;}
+.summary-label{margin-top: 4px;color: var(--muted);font-size: 12px;}
+.devices{display: grid;gap: 18px;}
+.device-card{overflow: hidden;border: 1px solid var(--line);border-radius: 19px;background: var(--surface);box-shadow: var(--shadow);}
+.device-head{display: flex;align-items: center;justify-content: space-between;gap: 18px;padding: 21px 24px 18px;border-bottom: 1px solid var(--line);}
+.device-title-wrap{min-width: 0;}
+.device-title{overflow-wrap: anywhere;margin: 0;font-size: 18px;letter-spacing: -.025em;}
+.identity{color: var(--muted);margin-top: 3px;font-size: 12px;overflow-wrap: anywhere;}
+.head-actions{display: flex;align-items: center;gap: 10px;flex-shrink: 0;}
+.pill{display: inline-flex;align-items: center;gap: 7px;border: 1px solid var(--line);border-radius: 999px;padding: 6px 10px;color: var(--muted);background: var(--surface-raised);font-size: 11px;font-weight: 650;letter-spacing: .035em;text-transform: uppercase;white-space: nowrap;}
+.pill::before{content: "";width: 7px;height: 7px;border-radius: 50%;background: var(--faint);}
+.pill.online{color: var(--green);border-color: color-mix(in srgb, var(--green) 30%, var(--line));}
+.pill.online::before{background: var(--green);box-shadow: 0 0 10px color-mix(in srgb, var(--green) 55%, transparent);}
+.button{display: inline-flex;align-items: center;justify-content: center;gap: 7px;min-height: 34px;padding: 7px 11px;border: 1px solid var(--line);border-radius: 9px;color: var(--text);background: var(--surface-raised);cursor: pointer;font-size: 12px;font-weight: 600;transition: border-color .15s, background .15s, transform .15s;}
+.button:hover{border-color: color-mix(in srgb, var(--blue) 48%, var(--line));background: var(--surface-soft);}
+.button:active{transform: translateY(1px);}
+.button:focus-visible, summary:focus-visible{outline: 2px solid var(--blue);outline-offset: 3px;}
+.button svg{width: 15px;height: 15px;}
+.device-overview{display: grid;grid-template-columns: 220px minmax(0, 1fr);gap: 26px;padding: 23px 24px 21px;}
+.battery-panel{display: flex;align-items: center;gap: 18px;min-width: 0;padding: 17px;border: 1px solid var(--line);border-radius: 14px;background: var(--surface-raised);}
+.gauge{--level: 0%;--gauge-color: var(--green);display: grid;place-items: center;position: relative;flex: 0 0 86px;width: 86px;height: 86px;border-radius: 50%;background: conic-gradient(var(--gauge-color) var(--level), var(--surface-soft) var(--level));}
+.gauge::before{content: "";position: absolute;inset: 6px;border-radius: 50%;background: var(--surface);}
+.gauge-content{position: relative;z-index: 1;text-align: center;}
+.gauge-value{font-size: 22px;font-weight: 720;line-height: 1;letter-spacing: -.05em;font-variant-numeric: tabular-nums;}
+.gauge-bolt{width: 13px;height: 13px;color: var(--yellow);vertical-align: -1px;margin-left: 1px;}
+.gauge-caption{margin-top: 5px;color: var(--muted);font-size: 9px;text-transform: uppercase;letter-spacing: .08em;}
+.battery-info{min-width: 0;}
+.battery-info-label{color: var(--muted);font-size: 11px;}
+.battery-info-value{margin-top: 4px;font-size: 15px;font-weight: 650;}
+.battery-info-sub{margin-top: 3px;color: var(--muted);font-size: 11px;}
+.metric-grid{display: grid;grid-template-columns: repeat(3, minmax(0, 1fr));gap: 11px;}
+.metric{min-width: 0;padding: 14px 15px;border: 1px solid var(--line);border-radius: 13px;background: var(--surface-raised);}
+.metric-label{color: var(--muted);font-size: 11px;}
+.metric-value{margin-top: 8px;overflow-wrap: anywhere;font-size: 17px;font-weight: 660;letter-spacing: -.03em;font-variant-numeric: tabular-nums;}
+.metric-note{margin-top: 2px;color: var(--faint);font-size: 10px;}
+.section{padding: 0 24px 21px;}
+.section-heading{display: flex;align-items: baseline;justify-content: space-between;gap: 12px;margin-bottom: 12px;}
+.section-title{margin: 0;font-size: 13px;font-weight: 670;letter-spacing: -.01em;}
+.section-note{color: var(--muted);font-size: 11px;}
+.chart-wrap{position: relative;min-height: 210px;padding: 8px 8px 2px;border: 1px solid var(--line);border-radius: 13px;background: var(--surface-raised);}
+.chart{display: block;width: 100%;height: 194px;overflow: visible;}
+.chart text{fill: var(--muted);font: 10px ui-sans-serif, system-ui, sans-serif;}
+.chart .grid-line{stroke: var(--line);stroke-width: 1;stroke-dasharray: 3 5;}
+.chart .charge-band{fill: color-mix(in srgb, var(--yellow) 11%, transparent);}
+.chart .area{fill: color-mix(in srgb, var(--blue) 15%, transparent);}
+.chart .line{fill: none;stroke: var(--blue);stroke-width: 2.4;stroke-linecap: round;stroke-linejoin: round;}
+.chart .point{fill: var(--surface);stroke: var(--blue);stroke-width: 2;}
+.chart .hit{fill: transparent;stroke: transparent;cursor: crosshair;}
+.chart-tooltip{position: absolute;z-index: 2;display: none;min-width: 132px;padding: 8px 10px;border: 1px solid var(--line);border-radius: 9px;color: var(--text);background: var(--surface);box-shadow: var(--shadow);pointer-events: none;font-size: 11px;line-height: 1.55;}
+.chart-tooltip strong{display: block;margin-bottom: 2px;font-size: 10px;font-weight: 600;color: var(--muted);}
+.legend{display: flex;flex-wrap: wrap;gap: 16px;margin-top: 9px;color: var(--muted);font-size: 10px;}
+.legend-item{display: inline-flex;align-items: center;gap: 6px;}
+.legend-mark{width: 12px;height: 3px;border-radius: 3px;background: var(--blue);}
+.legend-mark.charge{height: 9px;background: color-mix(in srgb, var(--yellow) 25%, var(--surface-soft));border: 1px solid color-mix(in srgb, var(--yellow) 35%, var(--line));}
+.timeline{display: flex;overflow: hidden;height: 18px;border: 1px solid var(--line);border-radius: 6px;background: var(--surface-soft);}
+.segment{min-width: 2px;height: 100%;}
+.segment.online{background: var(--green);}
+.segment.offline{background: color-mix(in srgb, var(--faint) 36%, var(--surface-soft));}
+.timeline-legend{display: flex;flex-wrap: wrap;gap: 16px;margin-top: 10px;color: var(--muted);font-size: 11px;}
+.timeline-item{display: inline-flex;align-items: center;gap: 7px;}
+.timeline-dot{width: 8px;height: 8px;border-radius: 2px;background: var(--green);}
+.timeline-dot.offline{background: var(--faint);}
+.timeline-item strong{color: var(--text);font-weight: 650;font-variant-numeric: tabular-nums;}
+details.data-details{border-top: 1px solid var(--line);}
+details.data-details summary{display: flex;align-items: center;justify-content: space-between;gap: 12px;padding: 16px 24px;color: var(--text);cursor: pointer;list-style: none;font-size: 12px;font-weight: 620;}
+details.data-details summary::-webkit-details-marker{display: none;}
+details.data-details summary::after{content: "+";color: var(--muted);font-size: 18px;font-weight: 400;}
+details.data-details[open] summary::after{content: "−";}
+.details-count{margin-left: auto;color: var(--muted);font-size: 11px;font-weight: 450;}
+.table-wrap{overflow-x: auto;border-top: 1px solid var(--line);}
+table{width: 100%;min-width: 510px;border-collapse: collapse;text-align: left;}
+th{padding: 10px 24px;color: var(--muted);background: var(--surface-raised);font-size: 10px;font-weight: 650;text-transform: uppercase;letter-spacing: .07em;}
+td{padding: 10px 24px;border-top: 1px solid var(--line);color: var(--text);font-size: 12px;font-variant-numeric: tabular-nums;}
+tbody tr:hover{background: var(--surface-raised);}
+.charge-label{display: inline-flex;align-items: center;gap: 5px;color: var(--yellow);}
+.charge-label svg{width: 12px;height: 12px;}
+.empty{padding: 58px 24px;border: 1px dashed var(--line);border-radius: 18px;text-align: center;background: var(--surface);}
+.empty-icon{display: grid;place-items: center;width: 48px;height: 48px;margin: 0 auto 13px;border-radius: 15px;color: var(--muted);background: var(--surface-raised);}
+.empty-icon svg{width: 22px;height: 22px;}
+.empty h2{margin: 0;font-size: 16px;}
+.empty p{margin: 6px 0 0;color: var(--muted);font-size: 12px;}
+.chart-empty{display: grid;place-items: center;height: 190px;color: var(--muted);font-size: 12px;}
+.footer{margin-top: 22px;color: var(--faint);text-align: center;font-size: 10px;}
+@media (max-width: 760px){.shell{width: min(100% - 28px, 600px);padding-top: 24px;}
+.topbar{margin-bottom: 22px;}
+.summary{gap: 9px;}
+.summary-card{min-height: 80px;gap: 10px;padding: 13px;}
+.summary-icon{flex-basis: 34px;height: 34px;border-radius: 10px;}
+.summary-icon svg{width: 17px;height: 17px;}
+.summary-value{font-size: 19px;}
+.summary-label{font-size: 10px;}
+.device-overview{grid-template-columns: 1fr;gap: 12px;}
+.battery-panel{min-height: 118px;}
+.section{padding-right: 18px;padding-left: 18px;}
+.device-head{padding-right: 18px;padding-left: 18px;}
+details.data-details summary{padding-right: 18px;padding-left: 18px;}
+th, td{padding-right: 18px;padding-left: 18px;}
+}
+@media (max-width: 480px){.shell{width: calc(100% - 22px);padding-top: 18px;}
+.topbar{align-items: flex-start;gap: 10px;}
+.brand{gap: 10px;}
+.brand-mark{width: 39px;height: 39px;border-radius: 12px;}
+.brand-mark svg{width: 21px;height: 21px;}
+h1{font-size: 20px;}
+.subtitle{max-width: 175px;font-size: 11px;}
+.generated{max-width: 120px;font-size: 10px;}
+.generated strong{font-size: 11px;}
+.summary{grid-template-columns: repeat(3, minmax(0, 1fr));gap: 6px;}
+.summary-card{display: block;min-height: 83px;padding: 10px;}
+.summary-icon{width: 28px;height: 28px;margin-bottom: 7px;}
+.summary-value{font-size: 18px;}
+.summary-label{margin-top: 2px;font-size: 9px;line-height: 1.25;}
+.device-head{align-items: flex-start;gap: 8px;padding-top: 16px;}
+.device-title{font-size: 16px;}
+.head-actions{flex-direction: column-reverse;align-items: flex-end;gap: 6px;}
+.pill{padding: 5px 8px;font-size: 9px;}
+.button{min-height: 30px;padding: 5px 8px;font-size: 10px;}
+.device-overview{padding: 15px 14px 18px;}
+.battery-panel{gap: 13px;padding: 13px;}
+.gauge{flex-basis: 78px;width: 78px;height: 78px;}
+.metric-grid{gap: 7px;}
+.metric{padding: 10px;}
+.metric-label{font-size: 10px;}
+.metric-value{font-size: 14px;}
+.metric-note{font-size: 9px;}
+.section{padding-right: 14px;padding-left: 14px;}
+.chart-wrap{min-height: 190px;padding-right: 4px;padding-left: 4px;}
+.chart{height: 174px;}
+details.data-details summary{padding-right: 14px;padding-left: 14px;}
+}
+
+  </style>
+</head>
+<body>
+  <main class="shell">
+    <header class="topbar">
+      <div class="brand">
+        <div class="brand-mark" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M13.2 2.8 5.8 13h5l-.8 8.2L18.2 11h-5.1l.1-8.2Z"/>
+          </svg>
+        </div>
+        <div><h1>Volty</h1><p class="subtitle">Battery health, at a glance</p></div>
+      </div>
+      <div class="generated"><strong id="generated-at">—</strong><span id="window-label">Local device dashboard</span></div>
+    </header>
+    <section class="summary" aria-label="Fleet summary">
+      <div class="summary-card">
+        <div class="summary-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M7 9h4M7 13h10M7 16h6"/></svg></div>
+        <div><div class="summary-value" id="summary-devices">0</div><div class="summary-label">Devices tracked</div></div>
+      </div>
+      <div class="summary-card">
+        <div class="summary-icon purple"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19V5M4 19h16"/><path d="m7 15 3-4 3 2 5-7"/></svg></div>
+        <div><div class="summary-value" id="summary-points">0</div><div class="summary-label">Data points</div></div>
+      </div>
+      <div class="summary-card">
+        <div class="summary-icon green"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="m8 12 2.5 2.5L16 9"/></svg></div>
+        <div><div class="summary-value" id="summary-online">0</div><div class="summary-label">Devices online</div></div>
+      </div>
+    </section>
+    <section class="devices" id="devices" aria-label="Devices"></section>
+    <div class="footer">All measurements are collected locally by Volty.</div>
+  </main>
+  <script>
+    const DATA = __VOLTY_DATA__;
+
+    const $ = (selector, root = document) => root.querySelector(selector);
+    const SVG_NS = "http://www.w3.org/2000/svg";
+    const numberFormat = new Intl.NumberFormat();
+    const dateFormat = new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" });
+    const shortDateFormat = new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric" });
+
+    function element(tag, className, text) {
+      const node = document.createElement(tag);
+      if (className) node.className = className;
+      if (text !== undefined) node.textContent = text;
+      return node;
+    }
+
+    function svg(tag, attributes = {}) {
+      const node = document.createElementNS(SVG_NS, tag);
+      for (const [key, value] of Object.entries(attributes)) node.setAttribute(key, String(value));
+      return node;
+    }
+
+    function formatDate(seconds, format = dateFormat) {
+      if (seconds == null || !Number.isFinite(Number(seconds))) return "—";
+      return format.format(new Date(Number(seconds) * 1000));
+    }
+
+    function formatDuration(seconds) {
+      if (seconds == null || !Number.isFinite(Number(seconds))) return "—";
+      const total = Math.max(0, Math.floor(Number(seconds)));
+      const days = Math.floor(total / 86400);
+      const hours = Math.floor((total % 86400) / 3600);
+      const minutes = Math.floor((total % 3600) / 60);
+      if (days) return `${days}d ${hours}h`;
+      if (hours) return `${hours}h ${minutes}m`;
+      if (minutes) return `${minutes}m`;
+      return "<1m";
+    }
+
+    function formatPercent(value) {
+      return value == null || !Number.isFinite(Number(value)) ? "—" : `${Math.round(Number(value))}%`;
+    }
+
+    function formatVoltage(value) {
+      return value == null || !Number.isFinite(Number(value)) ? "—" : `${Math.round(Number(value))} mV`;
+    }
+
+    function getLevelColor(percent) {
+      if (percent == null || !Number.isFinite(Number(percent))) return "var(--faint)";
+      if (percent <= 20) return "var(--red)";
+      if (percent <= 50) return "var(--yellow)";
+      return "var(--green)";
+    }
+
+    function metric(label, value, note) {
+      const box = element("div", "metric");
+      box.append(element("div", "metric-label", label), element("div", "metric-value", value));
+      if (note) box.append(element("div", "metric-note", note));
+      return box;
+    }
+
+    function boltIcon(className = "") {
+      const icon = svg("svg", { viewBox: "0 0 16 16", class: className, "aria-hidden": "true" });
+      icon.append(svg("path", { d: "M9.1 1.2 3.8 8.4h3.7l-.6 6.4 5.3-7.7H8.5l.6-5.9Z", fill: "currentColor" }));
+      return icon;
+    }
+
+    function makeGauge(device) {
+      const panel = element("div", "battery-panel");
+      const percent = device.latest_percent;
+      const valid = percent != null && Number.isFinite(Number(percent));
+      const gauge = element("div", "gauge");
+      const normalized = valid ? Math.max(0, Math.min(100, Number(percent))) : 0;
+      gauge.style.setProperty("--level", `${normalized}%`);
+      gauge.style.setProperty("--gauge-color", getLevelColor(percent));
+      const content = element("div", "gauge-content");
+      const value = element("div", "gauge-value");
+      value.append(document.createTextNode(valid ? `${Math.round(Number(percent))}` : "—"));
+      if (valid) value.append(document.createTextNode("%"));
+      if (device.charging) value.append(boltIcon("gauge-bolt"));
+      content.append(value, element("div", "gauge-caption", "Battery"));
+      gauge.append(content);
+      const info = element("div", "battery-info");
+      info.append(
+        element("div", "battery-info-label", device.charging ? "Power state" : "Current level"),
+        element("div", "battery-info-value", device.charging ? "Charging" : formatPercent(percent)),
+        element("div", "battery-info-sub", device.online ? "Reporting now" : "Last reported level")
+      );
+      panel.append(gauge, info);
+      return panel;
+    }
+
+    function makeChart(points, device, tooltip) {
+      const wrap = element("div", "chart-wrap");
+      const validPoints = points.filter(point => Number.isFinite(Number(point.t)));
+      if (validPoints.length < 2 || !validPoints.some(point => point.p != null)) {
+        wrap.append(element("div", "chart-empty", "Not enough battery readings to plot a trend"));
+        return wrap;
+      }
+
+      const width = 900;
+      const height = 190;
+      const left = 43;
+      const right = 12;
+      const top = 14;
+      const bottom = 28;
+      const plotWidth = width - left - right;
+      const plotHeight = height - top - bottom;
+      const times = validPoints.map(point => Number(point.t));
+      const minTime = Math.min(...times);
+      const maxTime = Math.max(...times);
+      const span = Math.max(1, maxTime - minTime);
+      const x = time => left + ((Number(time) - minTime) / span) * plotWidth;
+      const y = percent => top + (1 - Math.max(0, Math.min(100, Number(percent))) / 100) * plotHeight;
+      const chart = svg("svg", { class: "chart", viewBox: `0 0 ${width} ${height}`, role: "img", "aria-label": "Battery percentage over time" });
+
+      for (const level of [0, 25, 50, 75, 100]) {
+        const yy = y(level);
+        chart.append(svg("line", { class: "grid-line", x1: left, x2: width - right, y1: yy, y2: yy }));
+        const label = svg("text", { x: left - 9, y: yy + 3, "text-anchor": "end" });
+        label.textContent = `${level}%`;
+        chart.append(label);
+      }
+
+      for (let index = 0; index < validPoints.length; index += 1) {
+        const point = validPoints[index];
+        if (!point.c) continue;
+        const prev = validPoints[index - 1];
+        const next = validPoints[index + 1];
+        const start = prev ? (Number(prev.t) + Number(point.t)) / 2 : Number(point.t);
+        const end = next ? (Number(next.t) + Number(point.t)) / 2 : Number(point.t);
+        chart.append(svg("rect", {
+          class: "charge-band",
+          x: x(start),
+          y: top,
+          width: Math.max(1, x(end) - x(start)),
+          height: plotHeight
+        }));
+      }
+
+      const plotted = validPoints.map((point, index) => ({ point, index })).filter(item => item.point.p != null && Number.isFinite(Number(item.point.p)));
+      let segment = [];
+      const segments = [];
+      for (const item of plotted) {
+        const previous = plotted[plotted.indexOf(item) - 1];
+        if (previous && item.index !== previous.index + 1) {
+          segments.push(segment);
+          segment = [];
+        }
+        segment.push(item);
+      }
+      if (segment.length) segments.push(segment);
+
+      for (const pathPoints of segments) {
+        const lineD = pathPoints.map(({ point }, index) => `${index ? "L" : "M"}${x(point.t).toFixed(2)},${y(point.p).toFixed(2)}`).join(" ");
+        const first = pathPoints[0].point;
+        const last = pathPoints[pathPoints.length - 1].point;
+        const areaD = `${lineD} L${x(last.t).toFixed(2)},${y(0).toFixed(2)} L${x(first.t).toFixed(2)},${y(0).toFixed(2)} Z`;
+        chart.append(svg("path", { class: "area", d: areaD }));
+        chart.append(svg("path", { class: "line", d: lineD }));
+      }
+
+      plotted.forEach(({ point }) => {
+        const cx = x(point.t);
+        const cy = y(point.p);
+        chart.append(svg("circle", { class: "point", cx, cy, r: 3.5 }));
+        const hit = svg("circle", { class: "hit", cx, cy, r: 11, tabindex: 0, "aria-label": `${formatDate(point.t)}: ${formatPercent(point.p)}, ${formatVoltage(point.v)}` });
+        const showTooltip = event => {
+          const box = wrap.getBoundingClientRect();
+          const target = event.currentTarget.getBoundingClientRect();
+          tooltip.replaceChildren();
+          const heading = element("strong", "", formatDate(point.t));
+          const detail = element("span", "", `${formatPercent(point.p)} · ${formatVoltage(point.v)}${point.c ? " · Charging" : ""}`);
+          tooltip.append(heading, detail);
+          tooltip.style.display = "block";
+          tooltip.style.left = `${Math.max(4, Math.min(box.width - 155, target.left - box.left + target.width / 2 - 60))}px`;
+          tooltip.style.top = `${Math.max(4, target.top - box.top - 57)}px`;
+        };
+        hit.addEventListener("pointerenter", showTooltip);
+        hit.addEventListener("focus", showTooltip);
+        hit.addEventListener("pointerleave", () => { tooltip.style.display = "none"; });
+        hit.addEventListener("blur", () => { tooltip.style.display = "none"; });
+        chart.append(hit);
+      });
+
+      const firstLabel = svg("text", { x: left, y: height - 7, "text-anchor": "start" });
+      firstLabel.textContent = shortDateFormat.format(new Date(minTime * 1000));
+      const lastLabel = svg("text", { x: width - right, y: height - 7, "text-anchor": "end" });
+      lastLabel.textContent = shortDateFormat.format(new Date(maxTime * 1000));
+      chart.append(firstLabel, lastLabel);
+      wrap.append(chart, tooltip);
+      return wrap;
+    }
+
+    function makeTimeline(device) {
+      const onlineSeconds = Math.max(0, Number(device.online_seconds) || 0);
+      const offlineSeconds = Math.max(0, Number(device.offline_seconds) || 0);
+      const total = onlineSeconds + offlineSeconds;
+      const onlinePercent = total > 0 ? Math.round((onlineSeconds / total) * 100) : null;
+      const section = element("section", "section");
+      const heading = element("div", "section-heading");
+      heading.append(element("h3", "section-title", "Connectivity timeline"));
+      heading.append(element("span", "section-note", total > 0 ? `${onlinePercent}% online` : "No session history"));
+      const bar = element("div", "timeline");
+      bar.setAttribute("role", "img");
+      bar.setAttribute("aria-label", total > 0 ? `Online ${formatDuration(onlineSeconds)}, offline ${formatDuration(offlineSeconds)}` : "No connectivity history");
+      const sessions = Array.isArray(device.sessions) ? device.sessions : [];
+      const segments = sessions.filter(item => Number.isFinite(Number(item.start)) && Number.isFinite(Number(item.end)) && Number(item.end) > Number(item.start));
+      const sum = segments.reduce((acc, item) => acc + Number(item.end) - Number(item.start), 0);
+      if (sum > 0) {
+        segments.forEach(item => {
+          const segment = element("div", `segment ${item.online ? "online" : "offline"}`);
+          segment.style.width = `${((Number(item.end) - Number(item.start)) / sum) * 100}%`;
+          segment.title = `${item.online ? "Online" : "Offline"} · ${formatDate(item.start)} – ${formatDate(item.end)}`;
+          bar.append(segment);
+        });
+      } else {
+        const online = element("div", "segment online");
+        const offline = element("div", "segment offline");
+        online.style.width = `${onlinePercent ?? 0}%`;
+        offline.style.width = `${onlinePercent == null ? 100 : 100 - onlinePercent}%`;
+        bar.append(online, offline);
+      }
+      const legend = element("div", "timeline-legend");
+      const onlineItem = element("span", "timeline-item");
+      onlineItem.append(element("span", "timeline-dot"), element("span", "", "Online"), element("strong", "", formatDuration(onlineSeconds)));
+      const offlineItem = element("span", "timeline-item");
+      offlineItem.append(element("span", "timeline-dot offline"), element("span", "", "Offline"), element("strong", "", formatDuration(offlineSeconds)));
+      legend.append(onlineItem, offlineItem);
+      section.append(heading, bar, legend);
+      return section;
+    }
+
+    function csvCell(value) {
+      const text = value == null ? "" : String(value);
+      return `"${text.replaceAll('"', '""')}"`;
+    }
+
+    function downloadCsv(device) {
+      const rows = [["time", "percent", "charging", "millivolts"]];
+      const points = Array.isArray(device.points) ? device.points : [];
+      for (const point of points) rows.push([formatDate(point.t), point.p ?? "", point.c ? "true" : "false", point.v ?? ""]);
+      const csv = rows.map(row => row.map(csvCell).join(",")).join("\r\n");
+      const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
+      const url = URL.createObjectURL(blob);
+      const link = element("a");
+      link.href = url;
+      link.download = `volty-${String(device.name || "device").replace(/[^a-z0-9_-]+/gi, "-").replace(/^-|-$/g, "").toLowerCase() || "device"}.csv`;
+      document.body.append(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(url);
+    }
+
+    function makeTable(device) {
+      const details = element("details", "data-details");
+      const summary = element("summary");
+      summary.append(element("span", "", "Data points"));
+      const points = Array.isArray(device.points) ? device.points : [];
+      summary.append(element("span", "details-count", `${numberFormat.format(points.length)} total · latest 200`));
+      details.append(summary);
+      const wrapper = element("div", "table-wrap");
+      const table = document.createElement("table");
+      const thead = document.createElement("thead");
+      const header = document.createElement("tr");
+      ["Time", "Battery", "State", "Voltage"].forEach(label => header.append(element("th", "", label)));
+      thead.append(header);
+      const tbody = document.createElement("tbody");
+      points.slice().sort((a, b) => Number(b.t) - Number(a.t)).slice(0, 200).forEach(point => {
+        const row = document.createElement("tr");
+        row.append(element("td", "", formatDate(point.t)), element("td", "", formatPercent(point.p)));
+        const state = document.createElement("td");
+        if (point.c) {
+          const charging = element("span", "charge-label");
+          charging.append(boltIcon(), document.createTextNode("Charging"));
+          state.append(charging);
+        } else {
+          state.textContent = "Discharging";
+        }
+        row.append(state, element("td", "", formatVoltage(point.v)));
+        tbody.append(row);
+      });
+      if (!points.length) {
+        const row = document.createElement("tr");
+        const cell = element("td", "", "No readings recorded");
+        cell.colSpan = 4;
+        row.append(cell);
+        tbody.append(row);
+      }
+      table.append(thead, tbody);
+      wrapper.append(table);
+      details.append(wrapper);
+      return details;
+    }
+
+    function makeDeviceCard(device, index) {
+      const card = element("article", "device-card");
+      const head = element("header", "device-head");
+      const titleWrap = element("div", "device-title-wrap");
+      titleWrap.append(element("h2", "device-title", device.name || `Device ${index + 1}`));
+      titleWrap.append(element("div", "identity", device.identity || "Identity unavailable"));
+      const actions = element("div", "head-actions");
+      const status = element("span", `pill${device.online ? " online" : ""}`, device.online ? "Online" : "Offline");
+      const download = element("button", "button", "Download CSV");
+      download.type = "button";
+      download.prepend(svg("svg", { viewBox: "0 0 20 20", fill: "none", stroke: "currentColor", "stroke-width": "1.7", "stroke-linecap": "round", "stroke-linejoin": "round" }));
+      download.firstChild.append(svg("path", { d: "M10 3v9m0 0 3-3m-3 3L7 9M4 14v3h12v-3" }));
+      download.addEventListener("click", () => downloadCsv(device));
+      actions.append(status, download);
+      head.append(titleWrap, actions);
+
+      const points = Array.isArray(device.points) ? device.points : [];
+      const overview = element("section", "device-overview");
+      overview.append(makeGauge(device));
+      const metrics = element("div", "metric-grid");
+      const eta = device.charging ? "Charging" : formatDuration(device.eta_seconds);
+      const rate = device.percent_per_day == null || !Number.isFinite(Number(device.percent_per_day))
+        ? "—"
+        : `${Number(device.percent_per_day).toFixed(1)}%`;
+      metrics.append(
+        metric("Estimated remaining", eta, device.charging ? "Connected to power" : "At current drain"),
+        metric("Drain rate", rate, "Per day"),
+        metric("Samples", numberFormat.format(Number(device.samples) || 0), `${numberFormat.format(points.length)} in this window`)
+      );
+      overview.append(metrics);
+
+      const chartSection = element("section", "section");
+      const chartHeading = element("div", "section-heading");
+      chartHeading.append(element("h3", "section-title", "Battery history"));
+      chartHeading.append(element("span", "section-note", points.length ? `${numberFormat.format(points.length)} readings` : "No readings"));
+      const tooltip = element("div", "chart-tooltip");
+      chartSection.append(chartHeading, makeChart(points, device, tooltip));
+      const legend = element("div", "legend");
+      const levelLegend = element("span", "legend-item");
+      levelLegend.append(element("span", "legend-mark"), document.createTextNode("Battery level"));
+      const chargeLegend = element("span", "legend-item");
+      chargeLegend.append(element("span", "legend-mark charge"), document.createTextNode("Charging"));
+      legend.append(levelLegend, chargeLegend);
+      chartSection.append(legend);
+
+      const stats = element("section", "section");
+      const statHeading = element("div", "section-heading");
+      statHeading.append(element("h3", "section-title", "Observed period"));
+      statHeading.append(element("span", "section-note", `${numberFormat.format(Number(device.samples) || 0)} samples`));
+      const statGrid = element("div", "metric-grid");
+      statGrid.append(
+        metric("First seen", formatDate(device.first_at), "Recorded locally"),
+        metric("Last seen", formatDate(device.last_at), "Most recent activity"),
+        metric("Window", `${Math.max(0, Number(DATA.window_days) || 0)} days`, "Selected range")
+      );
+      stats.append(statHeading, statGrid);
+
+      card.append(head, overview, chartSection, makeTimeline(device), stats, makeTable(device));
+      return card;
+    }
+
+    function render() {
+      const data = DATA && typeof DATA === "object" ? DATA : {};
+      const devices = Array.isArray(data.devices) ? data.devices : [];
+      $("#generated-at").textContent = data.generated_at == null ? "Generated time unavailable" : `Updated ${formatDate(data.generated_at)}`;
+      const windowDays = Number(data.window_days);
+      $("#window-label").textContent = Number.isFinite(windowDays) ? `Last ${windowDays} day${windowDays === 1 ? "" : "s"}` : "Local device dashboard";
+      $("#summary-devices").textContent = numberFormat.format(devices.length);
+      $("#summary-points").textContent = numberFormat.format(devices.reduce((sum, device) => sum + (Array.isArray(device.points) ? device.points.length : 0), 0));
+      $("#summary-online").textContent = numberFormat.format(devices.filter(device => device.online).length);
+
+      const container = $("#devices");
+      if (!devices.length) {
+        const empty = element("div", "empty");
+        const icon = element("div", "empty-icon");
+        icon.append(svg("svg", { viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", "stroke-width": "1.7", "stroke-linecap": "round", "stroke-linejoin": "round" }));
+        icon.firstChild.append(svg("rect", { x: "3", y: "7", width: "17", height: "10", rx: "2" }), svg("path", { d: "M22 10v4" }));
+        empty.append(icon, element("h2", "", "No devices yet"), element("p", "", "Battery readings will appear here once Volty starts collecting data."));
+        container.append(empty);
+        return;
+      }
+      devices.forEach((device, index) => container.append(makeDeviceCard(device, index)));
+    }
+
+    render();
+  </script>
+</body>
+</html>

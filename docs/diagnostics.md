@@ -19,6 +19,26 @@ Capture**. The tray status shows its file name and a Windows notification opens
 the file. See [Hardware captures](hardware-capture.md) for its contents,
 privacy properties, review steps, and submission workflow.
 
+## Battery history dashboard
+
+Generate a self-contained dashboard from the locally stored battery history:
+
+```powershell
+volty dashboard
+volty dashboard --days 14
+volty dashboard --window --days 14
+volty dashboard --output .\battery-dashboard.html --no-open
+volty dashboard --database .\battery-history.sqlite3
+```
+
+By default, the dashboard covers the last seven days, writes
+`%TEMP%\volty-dashboard.html`, and opens it in the default browser. Use
+`--no-open` to only write the file, or `--window` to show it in a native
+WebView2 window. The Microsoft WebView2 Runtime is required for the native
+window; if it is unavailable, Volty writes the HTML file and opens it in the
+default browser. Left-click the Volty tray icon to open the same native window.
+All data stays local; nothing is uploaded.
+
 ## Command-line capture
 
 From a PowerShell prompt, use the release executable or run through Cargo from

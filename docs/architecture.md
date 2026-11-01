@@ -49,3 +49,10 @@ presentation. A new provider implements `BatteryProvider`; new HID protocols
 implement `BatteryProtocol` and register a specific `HidBatteryDevice` in the
 catalog. See [Generic HID battery support](hid-battery-support.md) and
 [Adding a Logitech HID++ device](adding-mice.md).
+
+The Windows tray crate centralizes executable-resource icon loading, native
+window icons, the WebView window icon, and the dashboard favicon in
+`app_icon.rs`. The local dashboard is organized as `dashboard/model.rs` for
+history aggregation, `dashboard/render.rs` for HTML generation, and
+`dashboard/window.rs` for the native WebView host; CLI orchestration remains in
+`dashboard.rs`.

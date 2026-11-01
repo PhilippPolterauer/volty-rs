@@ -5,8 +5,12 @@ mod about;
 #[cfg(windows)]
 mod app;
 #[cfg(windows)]
+mod app_icon;
+#[cfg(windows)]
 mod capture;
 mod config;
+#[cfg(windows)]
+mod dashboard;
 #[cfg(windows)]
 mod diagnose;
 mod hid_cli;
@@ -33,10 +37,23 @@ mod win32;
 
 fn main() {
     #[cfg(windows)]
+    if let Err(error) = app_icon::set_process_app_user_model_id() {
+        show_error(&format!(
+            "volty: could not set the Windows application identity: {error}"
+        ));
+        std::process::exit(2);
+    }
+
+    #[cfg(windows)]
     let cli_mode = matches!(
         std::env::args().nth(1).as_deref(),
-        Some("hid" | "capture" | "history")
+        Some("hid" | "capture" | "history" | "dashboard")
     );
+    #[cfg(windows)]
+    let dashboard_window_mode = std::env::args()
+        .skip(2)
+        .any(|argument| argument == "--window")
+        && std::env::args().nth(1).as_deref() == Some("dashboard");
 
     #[cfg(windows)]
     if !cli_mode {
@@ -48,7 +65,7 @@ fn main() {
     }
 
     #[cfg(windows)]
-    if cli_mode {
+    if cli_mode && !dashboard_window_mode {
         if let Err(error) = attach_cli_console() {
             show_error(&format!(
                 "volty: could not initialize diagnostic console: {error}"
@@ -60,7 +77,7 @@ fn main() {
     if let Err(error) = run() {
         let message = format!("volty: {error}");
         #[cfg(windows)]
-        if cli_mode {
+        if cli_mode && !dashboard_window_mode {
             eprintln!("{message}");
         } else {
             show_error(&message);
@@ -94,19 +111,11 @@ fn attach_parent_console() -> std::io::Result<()> {
 
 #[cfg(windows)]
 fn show_error(message: &str) {
-    use windows_sys::Win32::UI::WindowsAndMessaging::{MessageBoxW, MB_ICONERROR, MB_OK};
+    use windows_sys::Win32::UI::WindowsAndMessaging::MB_OK;
 
     let message = crate::win32::to_wide(message);
     let title = crate::win32::to_wide("Volty");
-    // SAFETY: message and title are NUL-terminated buffers that remain live through MessageBoxW.
-    unsafe {
-        MessageBoxW(
-            std::ptr::null_mut(),
-            message.as_ptr(),
-            title.as_ptr(),
-            MB_ICONERROR | MB_OK,
-        );
-    }
+    crate::app_icon::show_message_box(&message, &title, MB_OK);
 }
 
 #[cfg(windows)]
@@ -197,6 +206,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         Some("capture") => return capture::run_cli(&args.collect::<Vec<_>>()),
         #[cfg(windows)]
         Some("history") => return history::run_cli(&args.collect::<Vec<_>>()),
+        #[cfg(windows)]
+        Some("dashboard") => return dashboard::run_cli(&args.collect::<Vec<_>>()),
         _ => {}
     }
 

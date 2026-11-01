@@ -10,14 +10,14 @@ use windows_sys::Win32::{
         Shell::ShellExecuteW,
         WindowsAndMessaging::{
             CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetMessageW,
-            GetWindowLongPtrW, PostQuitMessage, RegisterClassW, SetWindowLongPtrW, SetWindowTextW,
-            ShowWindow, TranslateMessage, BS_PUSHBUTTON, CREATESTRUCTW, GWLP_USERDATA, MSG,
-            SW_SHOWNORMAL, WNDCLASSW, WS_CHILD, WS_TABSTOP, WS_VISIBLE,
+            GetWindowLongPtrW, PostQuitMessage, RegisterClassExW, SetWindowLongPtrW,
+            SetWindowTextW, ShowWindow, TranslateMessage, BS_PUSHBUTTON, CREATESTRUCTW,
+            GWLP_USERDATA, MSG, SW_SHOWNORMAL, WNDCLASSEXW, WS_CHILD, WS_TABSTOP, WS_VISIBLE,
         },
     },
 };
 
-use crate::native_ui::application_icon;
+use crate::app_icon::class_icons;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ControlRect {
@@ -56,7 +56,6 @@ pub fn register_window_class(
     class_name: &[u16],
     window_proc: unsafe extern "system" fn(HWND, u32, WPARAM, LPARAM) -> LRESULT,
     instance: HINSTANCE,
-    icon_size: i32,
 ) -> io::Result<()> {
     if !is_terminated_wide(class_name) {
         return Err(io::Error::new(
@@ -65,22 +64,27 @@ pub fn register_window_class(
         ));
     }
 
-    let class = WNDCLASSW {
+    let (small_icon, large_icon) = class_icons(instance)?;
+    let class = WNDCLASSEXW {
+        cbSize: mem::size_of::<WNDCLASSEXW>()
+            .try_into()
+            .map_err(|_| io::Error::other("WNDCLASSEXW size exceeds u32"))?,
         style: 0,
         lpfnWndProc: Some(window_proc),
         cbClsExtra: 0,
         cbWndExtra: 0,
         hInstance: instance,
-        hIcon: application_icon(instance, icon_size)?,
+        hIcon: large_icon,
         hCursor: ptr::null_mut(),
         // SAFETY: COLOR_WINDOW is a valid system color index; the returned system brush is shared.
         hbrBackground: unsafe { GetSysColorBrush(COLOR_WINDOW) },
         lpszMenuName: ptr::null(),
         lpszClassName: class_name.as_ptr(),
+        hIconSm: small_icon,
     };
     // SAFETY: class and its NUL-terminated class name remain valid for this call.
-    let registered = unsafe { RegisterClassW(ptr::addr_of!(class)) };
-    // SAFETY: GetLastError is read immediately after RegisterClassW reports failure.
+    let registered = unsafe { RegisterClassExW(ptr::addr_of!(class)) };
+    // SAFETY: GetLastError is read immediately after RegisterClassExW reports failure.
     if registered == 0 && unsafe { GetLastError() } != ERROR_CLASS_ALREADY_EXISTS {
         return Err(io::Error::last_os_error());
     }

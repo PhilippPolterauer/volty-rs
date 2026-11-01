@@ -47,17 +47,12 @@ pub(super) fn start_on_boot_for_first_run() -> Result<bool, TrayError> {
          Keep the file there. You can change this later from the tray menu.",
     );
     let title = crate::win32::to_wide("Start Volty with Windows?");
-    // SAFETY: text and title are NUL-terminated buffers that remain live through MessageBoxW.
-    let response = unsafe {
-        windows_sys::Win32::UI::WindowsAndMessaging::MessageBoxW(
-            std::ptr::null_mut(),
-            text.as_ptr(),
-            title.as_ptr(),
-            windows_sys::Win32::UI::WindowsAndMessaging::MB_DEFBUTTON2
-                | windows_sys::Win32::UI::WindowsAndMessaging::MB_ICONQUESTION
-                | windows_sys::Win32::UI::WindowsAndMessaging::MB_YESNO,
-        )
-    };
+    let response = crate::app_icon::show_message_box(
+        &text,
+        &title,
+        windows_sys::Win32::UI::WindowsAndMessaging::MB_DEFBUTTON2
+            | windows_sys::Win32::UI::WindowsAndMessaging::MB_YESNO,
+    );
     if response == 0 {
         return Err(TrayError::new(format!(
             "could not show first-run startup prompt: {}",
@@ -116,17 +111,12 @@ pub fn confirm_reset(
         local_state_file.display()
     ));
     let title = crate::win32::to_wide("Reset Volty?");
-    // SAFETY: text and title are NUL-terminated buffers that remain live through MessageBoxW.
-    let response = unsafe {
-        windows_sys::Win32::UI::WindowsAndMessaging::MessageBoxW(
-            std::ptr::null_mut(),
-            text.as_ptr(),
-            title.as_ptr(),
-            windows_sys::Win32::UI::WindowsAndMessaging::MB_DEFBUTTON2
-                | windows_sys::Win32::UI::WindowsAndMessaging::MB_ICONWARNING
-                | windows_sys::Win32::UI::WindowsAndMessaging::MB_YESNO,
-        )
-    };
+    let response = crate::app_icon::show_message_box(
+        &text,
+        &title,
+        windows_sys::Win32::UI::WindowsAndMessaging::MB_DEFBUTTON2
+            | windows_sys::Win32::UI::WindowsAndMessaging::MB_YESNO,
+    );
     match response {
         windows_sys::Win32::UI::WindowsAndMessaging::IDYES => Ok(true),
         windows_sys::Win32::UI::WindowsAndMessaging::IDNO => Ok(false),

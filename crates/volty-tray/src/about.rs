@@ -13,7 +13,8 @@ use windows_sys::Win32::{
 };
 
 use crate::{
-    native_ui::{application_icon, set_control_font, static_control_color, FontSet},
+    app_icon::load_application_icon,
+    native_ui::{set_control_font, static_control_color, FontSet},
     win32,
 };
 
@@ -67,7 +68,7 @@ pub fn show_about_window() -> Result<(), Box<dyn Error>> {
     if instance.is_null() {
         return Err(io::Error::last_os_error().into());
     }
-    win32::register_window_class(&class_name, window_proc, instance, 32)?;
+    win32::register_window_class(&class_name, window_proc, instance)?;
 
     let (window_x, window_y) = centered_window_position(WINDOW_WIDTH, WINDOW_HEIGHT)?;
     let fonts = FontSet::new()?;
@@ -188,7 +189,7 @@ fn create_about_icon(window: HWND, instance: HINSTANCE) -> io::Result<()> {
         SendMessageW(
             icon,
             STM_SETICON,
-            application_icon(instance, ICON_SIZE)?.expose_provenance(),
+            load_application_icon(instance, ICON_SIZE)?.expose_provenance(),
             0,
         );
     }

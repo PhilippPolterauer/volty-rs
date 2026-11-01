@@ -102,7 +102,7 @@ impl HistoryStore {
         Ok(store)
     }
 
-    fn local_path() -> Result<PathBuf, io::Error> {
+    pub(crate) fn local_path() -> Result<PathBuf, io::Error> {
         Ok(crate::state::local_state_path()?.with_file_name("battery-history.sqlite3"))
     }
 
@@ -172,7 +172,11 @@ impl HistoryStore {
 
     /// Samples in the requested window, ordered by timestamp then identity.
     pub fn samples(&self, days: u32) -> Result<Vec<HistorySample>, Box<dyn Error>> {
-        let since = window_start(days)?;
+        self.samples_since(window_start(days)?)
+    }
+
+    /// Samples since a Unix timestamp, ordered by timestamp then identity.
+    pub(crate) fn samples_since(&self, since: i64) -> Result<Vec<HistorySample>, Box<dyn Error>> {
         let mut statement = self.connection.prepare(
             "SELECT identity, name, recorded_at, percent, charging, voltage_mv
              FROM samples
@@ -194,8 +198,14 @@ impl HistoryStore {
 
     /// Per-device aggregates for the requested window.
     pub fn summary(&self, days: u32) -> Result<Vec<HistorySummary>, Box<dyn Error>> {
+        let samples = self.samples(days)?;
+        Ok(Self::summaries_from_samples(&samples))
+    }
+
+    /// Per-device aggregates for an already queried set of samples.
+    pub(crate) fn summaries_from_samples(samples: &[HistorySample]) -> Vec<HistorySummary> {
         let mut summaries: BTreeMap<String, SummaryAccumulator> = BTreeMap::new();
-        for sample in self.samples(days)? {
+        for sample in samples {
             let entry =
                 summaries
                     .entry(sample.identity.clone())
@@ -233,10 +243,10 @@ impl HistoryStore {
                 entry.last_percent = Some((sample.recorded_at, percent));
             }
         }
-        Ok(summaries
+        summaries
             .into_iter()
             .map(|(identity, accumulator)| accumulator.finish(identity))
-            .collect())
+            .collect()
     }
 
     fn prune(&self, before: i64) -> Result<(), Box<dyn Error>> {

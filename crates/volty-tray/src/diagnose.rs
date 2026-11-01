@@ -94,7 +94,7 @@ pub fn show_diagnose_window(report: &str) -> Result<(), Box<dyn Error>> {
     if instance.is_null() {
         return Err(io::Error::last_os_error().into());
     }
-    win32::register_window_class(&class_name, window_proc, instance, 32)?;
+    win32::register_window_class(&class_name, window_proc, instance)?;
 
     let fonts = FontSet::new()?;
     let mut state = Box::new(DiagnoseWindow {
