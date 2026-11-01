@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-11-01
+
+### Added
+
+- Added a small progress window during tray updates showing download progress, verification, and restart status.
+
 ## [0.7.0] - 2026-11-01
 
 ### Changed

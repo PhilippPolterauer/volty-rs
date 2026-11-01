@@ -35,6 +35,8 @@ mod tray;
 #[cfg(windows)]
 mod update;
 #[cfg(windows)]
+mod update_progress;
+#[cfg(windows)]
 mod win32;
 
 fn main() {

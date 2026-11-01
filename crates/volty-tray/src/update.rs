@@ -1,3 +1,4 @@
+use crate::update_progress::{Phase, UpdateProgress};
 use semver::Version;
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
@@ -130,6 +131,8 @@ pub fn install_and_launch(update: UpdateInfo) -> Result<(), Box<dyn Error>> {
     let staged_executable = updates_directory.join(format!("volty-update-{nonce}.exe"));
     let helper_executable = updates_directory.join(format!("volty-update-helper-{nonce}.exe"));
 
+    let progress = UpdateProgress::start(&update.version);
+
     let result = (|| {
         let checksum_response = http_agent()
             .get(&update.checksum_url)
@@ -143,7 +146,13 @@ pub fn install_and_launch(update: UpdateInfo) -> Result<(), Box<dyn Error>> {
             read_limited(&mut checksum_reader, MAX_CHECKSUM_BYTES, "update checksum")?;
         let expected_hash = parse_sha256_checksum(&checksum_file, &update.executable_name)?;
 
-        download_verified_executable(&update.executable_url, &staged_executable, &expected_hash)?;
+        download_verified_executable(
+            &update.executable_url,
+            &staged_executable,
+            &expected_hash,
+            &progress,
+        )?;
+        progress.set_phase(Phase::Restarting);
 
         let current_executable = std::env::current_exe().map_err(|error| {
             UpdateError::new(format!("could not locate the running executable: {error}"))
@@ -472,12 +481,20 @@ fn download_verified_executable(
     url: &str,
     destination: &Path,
     expected_hash: &str,
+    progress: &UpdateProgress,
 ) -> Result<(), UpdateError> {
     let response = http_agent()
         .get(url)
         .set("User-Agent", USER_AGENT)
         .call()
         .map_err(|error| UpdateError::new(format!("could not download the update: {error}")))?;
+    if let Some(length) = response
+        .header("Content-Length")
+        .and_then(|value| value.parse::<u64>().ok())
+    {
+        progress.set_total(length);
+    }
+    progress.set_phase(Phase::Downloading);
     let mut reader = response.into_reader();
     let mut file = fs::OpenOptions::new()
         .write(true)
@@ -512,7 +529,9 @@ fn download_verified_executable(
                 UpdateError::new(format!("could not write the update staging file: {error}"))
             })?;
             hasher.update(&buffer[..count]);
+            progress.set_downloaded(total_bytes);
         }
+        progress.set_phase(Phase::Verifying);
         if total_bytes == 0 {
             return Err(UpdateError::new("the downloaded update is empty"));
         }
@@ -816,12 +835,44 @@ fn show_update_error(message: &str) {
 #[cfg(test)]
 mod tests {
     use super::{
-        digest_to_hex, find_release_asset, is_executable_path, parse_release_version,
-        parse_sha256_checksum, GitHubReleaseAsset,
+        digest_to_hex, download_verified_executable, find_release_asset, is_executable_path,
+        parse_release_version, parse_sha256_checksum, remove_staged_file, unique_suffix,
+        GitHubReleaseAsset,
     };
+    use crate::update_progress::{Phase, UpdateProgress};
     use semver::Version;
     use sha2::{Digest, Sha256};
-    use std::path::Path;
+    use std::{
+        io::{Read, Write},
+        net::TcpListener,
+        path::Path,
+        thread,
+    };
+
+    fn serve_download(body: Vec<u8>) -> (String, thread::JoinHandle<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = [0; 1024];
+            let _ = stream.read(&mut request);
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            )
+            .unwrap();
+            stream.write_all(&body).unwrap();
+        });
+        (format!("http://{address}/update.exe"), server)
+    }
+
+    fn staged_test_path() -> std::path::PathBuf {
+        std::env::temp_dir().join(format!(
+            "volty-update-test-{}.exe",
+            unique_suffix().unwrap()
+        ))
+    }
 
     #[test]
     fn parses_canonical_release_tags() {
@@ -894,5 +945,39 @@ mod tests {
             digest_to_hex(&digest[..]),
             "14010c781dc09c557bd3615e4e745cd43f81a3d4e6649b5089a26ea3c87bc3e1"
         );
+    }
+
+    #[test]
+    fn downloads_and_verifies_update_while_reporting_progress() {
+        let body = b"test update executable".to_vec();
+        let expected_hash = digest_to_hex(&Sha256::digest(&body)[..]);
+        let (url, server) = serve_download(body.clone());
+        let destination = staged_test_path();
+        let progress = UpdateProgress::without_window();
+
+        download_verified_executable(&url, &destination, &expected_hash, &progress).unwrap();
+
+        server.join().unwrap();
+        assert_eq!(std::fs::read(&destination).unwrap(), body);
+        let (phase, downloaded, total) = progress.snapshot();
+        assert!(phase == Phase::Verifying);
+        assert_eq!(downloaded, body.len() as u64);
+        assert_eq!(total, body.len() as u64);
+        remove_staged_file(&destination).unwrap();
+    }
+
+    #[test]
+    fn rejects_bad_checksum_and_removes_partial_update() {
+        let body = b"test update executable".to_vec();
+        let (url, server) = serve_download(body);
+        let destination = staged_test_path();
+        let progress = UpdateProgress::without_window();
+
+        let error = download_verified_executable(&url, &destination, &"0".repeat(64), &progress)
+            .unwrap_err();
+
+        server.join().unwrap();
+        assert!(error.to_string().contains("SHA-256 mismatch"));
+        assert!(!destination.exists());
     }
 }
