@@ -7,11 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-11-01
+
 ### Added
 
 - Added an opt-in GitHub release update check to the tray menu. Updates are checksum-verified, staged beside the per-user helper, and atomically replace the running executable after shutdown while preserving its path and Windows startup entry.
 - Left-clicking the tray icon opens the local battery-history dashboard in a native WebView2 window, falling back to the default browser if WebView2 is unavailable. `volty dashboard` still writes a self-contained HTML file and opens it in the browser by default; `--window` selects the native window. Nothing is uploaded.
+- XInput gamepad battery monitoring uses Windows' coarse battery levels and presents them as estimates rather than exact percentages.
+- Experimental battery readings for Flydigi controllers using the vendor HID protocol, reported in 20% steps with charging state. Synthetic-tested only; no named device has been hardware-validated.
+- Bounded raw HID input-report tracing for diagnostics, with capture replay support.
+
+### Changed
+
+- Hardware captures now preserve whether a battery percentage is exact or estimated; the capture schema also supports raw HID traces.
 - Centralized the Volty application icon across native windows and added its favicon to dashboard HTML.
+- Enlarged the digits in percentage tray icons.
 
 ## [0.5.0] - 2026-11-01
 
