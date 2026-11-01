@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.1] - 2026-11-01
+
+### Fixed
+
+- Update dialogs now appear above other windows and request focus, including the update progress window.
+
 ## [0.10.0] - 2026-11-01
 
 ### Added
