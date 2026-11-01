@@ -6,8 +6,9 @@
 
 Volty is a Windows system-tray battery monitor for supported HID devices and
 XInput gamepads, written in Rust. It reads supported Logitech HID++, standard
-HID battery reports, and coarse XInput battery levels. An experimental
-Bluetooth provider is available as an opt-in build feature.
+HID battery reports, coarse XInput battery levels, and an experimental
+Bluetooth provider enabled by default. Bluetooth hardware validation is
+limited to one Classic headset; BLE GATT has not been validated on hardware.
 
 Volty is a hobby project with limited hardware validation. Device support and
 battery readings are best-effort; Volty is not production-ready and is not
@@ -30,8 +31,8 @@ affiliated with Logitech.
   and other actions.
 - Hardware captures can be inspected and replayed locally; Volty never uploads
   diagnostics automatically.
-- The default build monitors HID devices and XInput gamepads. Bluetooth support
-  is experimental, opt-in, and has limited hardware validation.
+- The default build monitors HID devices, XInput gamepads, and Bluetooth
+  devices. Bluetooth remains experimental with limited hardware validation.
 
 ## Battery history dashboard
 

@@ -8,7 +8,7 @@ rust-version.workspace = true
 description = "Windows system tray application for Volty"
 
 [features]
-default = []
+default = ["bluetooth"]
 bluetooth = ["volty-bluetooth/windows-backend"]
 
 [[bin]]

@@ -17,11 +17,11 @@ cargo fmt --all -- --check
 cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
 ```
 
-CI also builds the tray with the optional Bluetooth feature, checks the
+CI also builds the tray with its default Bluetooth feature, checks the
 workspace on Rust 1.99.0, and audits dependencies:
 
 ```powershell
-cargo build -p volty-tray --features bluetooth --locked
+cargo build -p volty-tray --locked
 cargo check --workspace --all-features --locked
 cargo audit
 ```

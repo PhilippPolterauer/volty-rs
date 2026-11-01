@@ -6,7 +6,7 @@ rendering and app behavior.
 ```text
 volty-battery      Shared BatteryStatus, DeviceId, DeviceLabel, provider trait
 volty-hid          HID interface matching, HID++ and generic HID backends
-volty-bluetooth    Optional Windows Bluetooth battery provider
+volty-bluetooth    Windows Bluetooth battery provider (enabled by default)
 volty-tray         Windows tray app, XInput and HID polling, settings, history and UI
 volty-capture      Versioned JSONL battery captures and raw HID trace schema
 ```
@@ -48,7 +48,8 @@ state, monitoring preferences, and low-battery de-duplication use a stable
 device identity plus HID++ slot.
 
 `volty-bluetooth` is separate from the HID backend and remains experimental. It
-is compiled into the tray only with `--features bluetooth`; see the
+is enabled by the tray crate's default features; build with
+`--no-default-features` to exclude it. See the
 [Bluetooth support notes](bluetooth-headphone-battery-support.md).
 
 `volty-tray` owns polling, configuration, local state, notifications, and tray

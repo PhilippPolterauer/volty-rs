@@ -54,9 +54,9 @@ volty capture replay .\capture.volty.jsonl
 
 `--strict` omits model strings. `inspect` validates a saved capture and
 `replay` checks whether its recorded HID or Bluetooth evidence can be decoded
-again without hardware. Bluetooth evidence is recorded only by a build with
-the opt-in `bluetooth` feature; default builds can still inspect and replay
-Bluetooth records.
+again without hardware. Bluetooth evidence is recorded when the `bluetooth`
+feature is enabled (the default for the tray); builds made with
+`--no-default-features` can still inspect and replay Bluetooth records.
 
 ## HID diagnostics
 

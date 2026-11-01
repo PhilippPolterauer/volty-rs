@@ -18,7 +18,9 @@
 Your mouse battery, always one glance away. Volty sits in the Windows
 notification area, shows the live charge level on the tray icon, and warns you
 before your device dies. It reads supported Logitech HID++ and standard HID
-battery reports on Windows 10/11. Bluetooth is experimental and opt-in.
+battery reports on Windows 10/11, and includes experimental Bluetooth battery
+monitoring by default. The Baseus Bass BS2 Lite is validated; other Bluetooth
+device coverage remains limited.
 
 <p align="center">
   <img src="docs/hero.png" alt="Volty tray icon with battery tooltip, right-click menu, and low-battery notification" width="100%">
@@ -62,7 +64,8 @@ and development guides.
 
 Device support is best-effort beyond the hardware listed in the
 [device support guide](https://philipppolterauer.github.io/volty-rs/device-support.html).
-Bluetooth is disabled in default builds. See the
+Bluetooth is enabled in default builds but remains experimental with limited
+hardware validation. See the
 [Bluetooth validation notes](https://philipppolterauer.github.io/volty-rs/bluetooth-headphone-battery-support.html)
 for current limitations.
 

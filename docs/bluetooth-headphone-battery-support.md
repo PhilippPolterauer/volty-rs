@@ -1,10 +1,10 @@
 # Bluetooth headphone battery support
 
-> **Status:** The tray Bluetooth integration is opt-in and disabled in default
-> builds. Hardware validation is limited to one Bluetooth Classic headset; the
-> BLE GATT path has not been tested on real hardware. Do not treat Bluetooth
-> support as universal. To opt in locally, run
-> `cargo run --release --package volty-tray --features bluetooth`.
+> **Status:** The tray Bluetooth integration is enabled by default. Hardware
+> validation is limited to one Bluetooth Classic headset; the BLE GATT path has
+> not been tested on real hardware. Do not treat Bluetooth support as
+> universal. To disable it in a local build, run
+> `cargo run --release --package volty-tray --no-default-features`.
 
 ## Bluetooth scope
 
@@ -97,12 +97,14 @@ The implemented structure keeps the backends separate:
    readings. Device ids carry the source prefix (`hid:`, `bluetooth:`), so HID
    and Bluetooth notification state cannot collide.
 
-Bluetooth stays behind the `bluetooth` feature. Its three probes (battery-life
-property, SetupAPI, paired GATT) are merged by opaque device id under a shared
-budget; that is a discovery strategy, not a protocol. The validated PnP reading
-meets the criteria for a trustworthy Windows reading with a stable device id.
-Default enablement still waits for broader coverage, especially hardware
-validation of the BLE GATT path and a second headset model.
+Bluetooth stays behind the `bluetooth` feature, enabled by default in the tray.
+Its three probes (battery-life property, SetupAPI, paired GATT) are merged by
+opaque device id under a shared budget; that is a discovery strategy, not a
+protocol. The validated PnP reading on the Baseus headset meets the criteria
+for a trustworthy Windows reading with a stable device id and motivates default
+enablement. Broader coverage remains limited, especially hardware validation of
+the BLE GATT path and a second headset model. Build with
+`--no-default-features` to omit Bluetooth.
 
 ## Runtime behavior
 
@@ -139,31 +141,32 @@ validation of the BLE GATT path and a second headset model.
 
 ### Polling and tray
 
-- When built with the opt-in `bluetooth` feature, the tray poller queries HID
-  and Bluetooth independently. It preserves successful readings if the other
-  source fails, and keeps low-battery notification state keyed by
-  source-specific device identity. Default builds poll HID only.
+- When the `bluetooth` feature is enabled (the tray default), the tray poller
+  queries HID and Bluetooth independently. It preserves successful readings
+  if the other source fails, and keeps low-battery notification state keyed by
+  source-specific device identity. Builds with `--no-default-features` poll
+  HID only.
 - Bluetooth names are shown without HID slot numbers. The existing tray list
   and lowest-percentage icon behavior are intended to apply to both sources.
 
 ## Diagnostics and privacy
 
 - The Diagnose report identifies whether the Bluetooth integration is enabled
-  in this build. Bluetooth scan counts and reading status are included only
-  when the feature is enabled.
+  in this build. Bluetooth scan counts and reading status are included when
+  the feature is enabled.
 - **Discover Devices Now** triggers an immediate HID poll; it also polls
-  Bluetooth only when the opt-in feature is enabled. Trace logs explain HID
-  interface matches or skips and Bluetooth selector, Windows battery-property,
-  and GATT Battery Service match results.
+  Bluetooth when the feature is enabled. Trace logs explain HID interface
+  matches or skips and Bluetooth selector, Windows battery-property, and GATT
+  Battery Service match results.
 - Opaque Windows Bluetooth device IDs and addresses are retained only
   internally for stable notification identity; they are not written to logs
   or reports. HID interface paths are also excluded from discovery logs.
 
 ## Hardware capture and replay
 
-When the tray is built with the `bluetooth` feature, `volty capture` and the
-Diagnose action add Bluetooth records to the same `.volty.jsonl` file used for
-HID captures:
+When the tray is built with the `bluetooth` feature (enabled by default),
+`volty capture` and the Diagnose action add Bluetooth records to the same
+`.volty.jsonl` file used for HID captures:
 
 - `bluetooth_device` identifies each observed device with a capture-local
   `bt-N` id and records whether Windows exposed it as classic, PnP, or BLE.
@@ -179,7 +182,8 @@ names follow the capture privacy profile and are omitted by `--strict`.
 `volty capture replay` works without a Bluetooth backend and without hardware:
 it re-runs the recorded property or GATT bytes through the same decoders used
 by the tray and fails if the normalized reading does not match. A capture made
-by a Bluetooth-enabled build can therefore be verified in a default build.
+by a Bluetooth-enabled build can therefore be verified in a
+`--no-default-features` build.
 Replay reproduces what Windows exposed on the captured machine; it does not
 prove support for other headsets or transports.
 
@@ -207,10 +211,10 @@ Validated so far:
   with a valid percentage.
 - The Bluetooth scan completes without warnings for that headset, and the
   reading carries the stable PnP instance id as its device identity.
-- A Bluetooth-enabled build records the headset as `bt-1` with a raw
+- The default build records the headset as `bt-1` with a raw
   `bluetooth_property` value and a reading whose `device_index` is `null`.
-  `volty capture replay` reproduces the 100% reading in both Bluetooth-enabled
-  and default builds.
+  `volty capture replay` reproduces the 100% reading in default builds and
+  builds with `--no-default-features`.
 - The generated capture contains no Bluetooth address, opaque PnP instance id,
   or device path; only the capture-local `bt-1` id and the privacy-filtered
   friendly name appear.

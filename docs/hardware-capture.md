@@ -10,9 +10,9 @@ decoder tests.
 
 Captures are read-only evidence. Volty does not upload them, and creating one
 does not change device settings, pairing, or configuration. The current primary
-use case is the Logitech G502 X Superlight RGB; Bluetooth recording is
-available only in opt-in `bluetooth` builds, and capture support overall is
-still experimental with limited hardware validation.
+use case is the Logitech G502 X Superlight RGB; Bluetooth recording is enabled
+by default in the tray. Capture support overall is still experimental with
+limited hardware validation.
 
 ## What is recorded
 
@@ -74,8 +74,8 @@ records observations only; it does not change device settings or run commands.
    and the log records the full path. A Windows notification appears; click its
    body or **Open Capture** button to open the saved file. Diagnose also saves a
    text report under `%APPDATA%\Volty\reports` and shows both exact paths.
-   Bluetooth evidence is included only when Volty was built with the opt-in
-   `bluetooth` feature.
+   Bluetooth evidence is included in default tray builds; building with
+   `--no-default-features` disables Bluetooth recording.
 3. Review the capture before sharing it, then attach it to a **Hardware report**
    issue if you are reporting device support or battery behavior.
 
@@ -190,8 +190,8 @@ comfortable sharing. Nothing is uploaded automatically by Volty.
 
 A capture records one system's observed behavior. It is not a guarantee that
 every device of the same model behaves identically. Firmware, connection type,
-and Windows support can affect the reading. Bluetooth capture is available only
-in opt-in builds; only one Bluetooth Classic headset has been validated so far.
+and Windows support can affect the reading. Bluetooth capture is available in
+default builds; only one Bluetooth Classic headset has been validated so far.
 The BLE GATT capture path has not yet been tested on real hardware.
 
 For the record layout and replay details, see the

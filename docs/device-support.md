@@ -10,7 +10,7 @@ best-effort basis but are not verified.
 | --- | --- | --- | --- | --- |
 | Logitech G502 X Superlight RGB | USB cable or Lightspeed receiver | Logitech HID++ 2.0 Unified Battery (`0x1004`) | Percentage, charging/discharging state, HID++ capture and offline replay | Verified |
 | Logitech HID++ devices exposing only Battery Voltage (`0x1001`) | Any HID++ 2.0 transport | Battery Voltage fallback | Estimated percentage from millivolts; raw voltage retained and replayed | Experimental; synthetic tests only, not hardware-validated |
-| Baseus Bass BS2 Lite | Bluetooth Classic (HFP/A2DP) | Windows PnP battery property (`DEVPKEY_Device_BatteryLevel`) | Percentage, property capture and offline replay; charging state unavailable | Verified, opt-in Bluetooth build |
+| Baseus Bass BS2 Lite | Bluetooth Classic (HFP/A2DP) | Windows PnP battery property (`DEVPKEY_Device_BatteryLevel`) | Percentage, property capture and offline replay; charging state unavailable | Verified; Bluetooth enabled by default |
 | Keychron K8 Pro | USB cable or Bluetooth | None exposed to Windows | No standard HID battery, BLE GATT Battery Service, or usable vendor command | Not supported |
 | Flydigi controllers on the vendor protocol (VID `0x37d7`, e.g. Vader 5 Pro) | USB cable, vendor HID interface | Flydigi `5A A5 01` info report (state and 20 % level step in byte 11, per SDL's open-source driver) | Percentage in 20 % steps, charging/charged state | Experimental; synthetic tests only, not hardware-validated |
 | Flydigi Vader 4 Pro (DInput mode) | USB cable or 2.4 GHz receiver | Candidate battery byte in the `05 EC` device-info reply on interface 2 (`0xffa0`) | Reply observed, but its battery byte was not correlated with charge state | Investigating; do not treat the field as a reading yet |
@@ -32,7 +32,7 @@ Generic HID support covers interfaces whose report descriptor declares a
 standard battery level (Generic Device Controls *Battery Strength* or the
 Battery System page). A device exposing battery only through a vendor-defined
 report is not detected unless its protocol is implemented. Bluetooth support is
-disabled in default builds; only one Bluetooth Classic headset has been
+enabled in default builds; only one Bluetooth Classic headset has been
 validated, and BLE GATT has not been tested on real hardware. See
 [Bluetooth headphone battery support](bluetooth-headphone-battery-support.md).
 

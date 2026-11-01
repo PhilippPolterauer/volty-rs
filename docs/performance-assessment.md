@@ -7,7 +7,7 @@
 
 The observed process had a small, stable footprint over the one-minute sample: working set varied by 0.05 MB, private bytes by 0.08 MB, and CPU time did not measurably increase at the sampling precision used. This is consistent with an idle tray application, but it is not a general benchmark or proof of long-term stability.
 
-Source inspection shows that the device poller waits between scans rather than continuously looping. At a 10-second successful-poll interval, it can run up to six scans per minute when scans complete quickly, versus at most one every two minutes with the default interval. This increases per-device query activity, but does not imply a twelve-fold increase in total process CPU. Bluetooth is disabled in the default Cargo feature set. When enabled, its classic Bluetooth property, SetupAPI, and paired-device GATT phases share a 30-second overall scan budget, with individual Windows Runtime operations still capped at five seconds. Slow or unusually large device inventories may therefore return partial results with a budget warning.
+Source inspection shows that the device poller waits between scans rather than continuously looping. At a 10-second successful-poll interval, it can run up to six scans per minute when scans complete quickly, versus at most one every two minutes with the default interval. This increases per-device query activity, but does not imply a twelve-fold increase in total process CPU. Since v0.7.0, Bluetooth is enabled in the default Cargo feature set. Its classic Bluetooth property, SetupAPI, and paired-device GATT phases share a 30-second overall scan budget, with individual Windows Runtime operations still capped at five seconds. Slow or unusually large device inventories may therefore return partial results with a budget warning.
 
 ## Observed process
 
@@ -42,11 +42,12 @@ The UI loop no longer polls on a timer; it blocks until a window message, poll r
 
 The battery ETA uses a per-device discharge history, defaulting to a 10-minute window (configurable from 1 to 180 minutes). With 10-second polling, this retains about 60 samples per device. The estimate needs a full window of usable readings, resets while charging or after a level increase, and requires no additional device I/O.
 
-### Optional Bluetooth path
+### Bluetooth path
 
-Bluetooth is not enabled by default in the tray crate. ([Cargo.toml](https://github.com/PhilippPolterauer/volty-rs/blob/main/crates/volty-tray/Cargo.toml))
+Bluetooth is enabled by default in the tray crate. Build with
+`--no-default-features` to omit it. ([Cargo.toml](https://github.com/PhilippPolterauer/volty-rs/blob/main/crates/volty-tray/Cargo.toml))
 
-When enabled, each device query performs classic Bluetooth property discovery, SetupAPI device-property discovery, and paired BLE discovery sequentially under one shared 30-second overall scan budget. Individual Windows Runtime operations still time out after five seconds. If the budget is exhausted, phases stop and return results gathered so far with a warning. The work is on the device-poller thread, not the tray UI thread, but it can delay the next battery update. ([budget.rs](https://github.com/PhilippPolterauer/volty-rs/blob/main/crates/volty-bluetooth/src/windows_backend/budget.rs#L5), [budget.rs](https://github.com/PhilippPolterauer/volty-rs/blob/main/crates/volty-bluetooth/src/windows_backend/budget.rs#L6), [ble.rs](https://github.com/PhilippPolterauer/volty-rs/blob/main/crates/volty-bluetooth/src/windows_backend/ble.rs#L25))
+Each device query performs classic Bluetooth property discovery, SetupAPI device-property discovery, and paired BLE discovery sequentially under one shared 30-second overall scan budget. Individual Windows Runtime operations still time out after five seconds. If the budget is exhausted, phases stop and return results gathered so far with a warning. The work is on the device-poller thread, not the tray UI thread, but it can delay the next battery update. ([budget.rs](https://github.com/PhilippPolterauer/volty-rs/blob/main/crates/volty-bluetooth/src/windows_backend/budget.rs#L5), [budget.rs](https://github.com/PhilippPolterauer/volty-rs/blob/main/crates/volty-bluetooth/src/windows_backend/budget.rs#L6), [ble.rs](https://github.com/PhilippPolterauer/volty-rs/blob/main/crates/volty-bluetooth/src/windows_backend/ble.rs#L25))
 
 ## Conclusion and follow-up
 
