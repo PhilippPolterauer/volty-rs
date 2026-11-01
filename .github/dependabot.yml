@@ -12,6 +12,14 @@ updates:
         update-types:
           - minor
           - patch
+    ignore:
+      # These crates must stay aligned with the windows 0.62 dependency family.
+      - dependency-name: windows-collections
+        versions:
+          - ">= 0.100.0"
+      - dependency-name: windows-future
+        versions:
+          - ">= 0.100.0"
 
   - package-ecosystem: github-actions
     directory: /
