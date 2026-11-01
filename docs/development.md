@@ -23,8 +23,13 @@ workspace on Rust 1.99.0, and audits dependencies:
 ```powershell
 cargo build -p volty-tray --features bluetooth --locked
 cargo check --workspace --all-features --locked
-cargo audit --deny warnings
+cargo audit
 ```
+
+The audit reports informational notices such as unmaintained crates and
+unsound APIs, but only known vulnerabilities fail the check. Some
+platform-specific dependencies are included in `Cargo.lock` even when they
+are not built for Windows.
 
 Protocol frame tests use mock byte buffers and do not need connected hardware.
 Device communication, Windows HID parsing, Bluetooth discovery, and tray
