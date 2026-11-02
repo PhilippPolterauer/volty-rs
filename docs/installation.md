@@ -14,7 +14,12 @@ starts in the Windows notification area. On first launch, choose whether to
 start Volty automatically when you sign in. This setting applies to the current
 Windows user, does not require administrator privileges, and can be changed
 later from the tray menu. If enabled, Windows starts Volty from the executable's
-current location, so keep the file there.
+current location, so keep the file there. If you launch a different Volty copy
+while Start on Boot is enabled, Volty asks whether to change the startup entry
+to that executable; declining leaves the existing entry unchanged. If you
+manually install a newer release in a different location, launch it and confirm
+the change. The in-app updater replaces the executable in place, preserving the
+startup path; its restart does not show a second confirmation.
 
 ## Use the tray app
 

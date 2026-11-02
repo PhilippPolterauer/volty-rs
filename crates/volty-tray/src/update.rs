@@ -23,6 +23,7 @@ const MAX_EXECUTABLE_BYTES: u64 = 128 * 1024 * 1024;
 const PROCESS_SYNCHRONIZE_ACCESS: u32 = 0x0010_0000;
 const FILE_REPLACEMENT_TIMEOUT: Duration = Duration::from_secs(120);
 const USER_AGENT: &str = concat!("Volty/", env!("CARGO_PKG_VERSION"));
+pub const FINISH_UPDATE_ARGUMENT: &str = "--finish-update";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UpdateInfo {
@@ -523,7 +524,7 @@ fn launch_updated_executable(
 ) -> io::Result<()> {
     let mut command = std::process::Command::new(target);
     command
-        .arg("--finish-update")
+        .arg(FINISH_UPDATE_ARGUMENT)
         .arg(std::process::id().to_string())
         .arg(helper)
         .arg(backup.unwrap_or_else(|| Path::new("-")))

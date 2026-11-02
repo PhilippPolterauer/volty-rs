@@ -1,4 +1,4 @@
-use std::io;
+use std::{io, path::Path};
 
 use super::TrayError;
 
@@ -20,12 +20,7 @@ const STARTUP_PROMPT_VALUE: &str = "StartupPrompted";
 pub fn start_on_boot_enabled() -> Result<bool, TrayError> {
     #[cfg(windows)]
     {
-        Ok(read_registry_value(
-            BATTERY_RUN_KEY,
-            "could not read Windows startup setting",
-            |key| key.get_value::<String, _>(APP_RUN_VALUE),
-        )?
-        .is_some())
+        Ok(startup_command_from_registry()?.is_some())
     }
 
     #[cfg(not(windows))]
@@ -36,9 +31,22 @@ pub fn start_on_boot_enabled() -> Result<bool, TrayError> {
 
 #[cfg(windows)]
 pub(super) fn start_on_boot_for_first_run() -> Result<bool, TrayError> {
-    let enabled = start_on_boot_enabled()?;
-    if enabled || startup_prompt_shown()? {
-        return Ok(enabled);
+    if let Some(configured_command) = startup_command_from_registry()? {
+        let executable = std::env::current_exe().map_err(|error| {
+            TrayError::new(format!("could not locate the running executable: {error}"))
+        })?;
+        if should_confirm_startup_command_change(
+            &configured_command,
+            &executable,
+            is_update_restart(),
+        ) && confirm_startup_executable_change(&configured_command, &executable)?
+        {
+            set_start_on_boot_enabled(true)?;
+        }
+        return Ok(true);
+    }
+    if startup_prompt_shown()? {
+        return Ok(false);
     }
 
     let text = "Would you like Volty to start automatically when you sign in to Windows?\n\n\
@@ -62,6 +70,67 @@ pub(super) fn start_on_boot_for_first_run() -> Result<bool, TrayError> {
     }
     set_startup_prompt_shown()?;
     Ok(enable_startup)
+}
+
+#[cfg(windows)]
+fn startup_command_from_registry() -> Result<Option<String>, TrayError> {
+    read_registry_value(
+        BATTERY_RUN_KEY,
+        "could not read Windows startup setting",
+        |key| key.get_value::<String, _>(APP_RUN_VALUE),
+    )
+}
+
+fn startup_command(executable: &Path) -> String {
+    format!("\"{}\"", executable.display())
+}
+
+fn startup_command_matches(configured_command: &str, executable: &Path) -> bool {
+    configured_command.eq_ignore_ascii_case(&startup_command(executable))
+}
+
+fn should_confirm_startup_command_change(
+    configured_command: &str,
+    executable: &Path,
+    is_update_restart: bool,
+) -> bool {
+    !is_update_restart && !startup_command_matches(configured_command, executable)
+}
+
+#[cfg(windows)]
+fn is_update_restart() -> bool {
+    std::env::args().nth(1).as_deref() == Some(crate::update::FINISH_UPDATE_ARGUMENT)
+}
+
+#[cfg(windows)]
+fn confirm_startup_executable_change(
+    configured_command: &str,
+    executable: &Path,
+) -> Result<bool, TrayError> {
+    let text = format!(
+        "Windows is currently configured to start Volty from:\n\n{}\n\n\
+         This Volty instance is running from:\n\n{}\n\n\
+         Change the startup executable to this one?",
+        configured_command.trim_matches('"'),
+        executable.display()
+    );
+    let response = crate::app_icon::show_message_box(
+        &text,
+        "Change Volty Startup Executable?",
+        windows_sys::Win32::UI::WindowsAndMessaging::MB_DEFBUTTON2
+            | windows_sys::Win32::UI::WindowsAndMessaging::MB_YESNO,
+    );
+    match response {
+        windows_sys::Win32::UI::WindowsAndMessaging::IDYES => Ok(true),
+        windows_sys::Win32::UI::WindowsAndMessaging::IDNO => Ok(false),
+        0 => Err(TrayError::new(format!(
+            "could not show startup executable confirmation: {}",
+            io::Error::last_os_error()
+        ))),
+        _ => Err(TrayError::new(format!(
+            "startup executable confirmation returned unexpected response {response}"
+        ))),
+    }
 }
 
 #[cfg(windows)]
@@ -136,7 +205,7 @@ pub fn set_start_on_boot_enabled(enabled: bool) -> Result<(), TrayError> {
                 TrayError::new(format!("could not locate executable for startup: {error}"))
             })?;
             write_registry_value(&key, "could not enable Windows startup", |key| {
-                key.set_value(APP_RUN_VALUE, &format!("\"{}\"", executable.display()))
+                key.set_value(APP_RUN_VALUE, &startup_command(&executable))
             })
         } else {
             delete_registry_value(
@@ -231,4 +300,44 @@ fn delete_registry_value(path: &str, value_name: &str, context: &str) -> Result<
 #[cfg(windows)]
 fn registry_error(context: &str, error: io::Error) -> TrayError {
     TrayError::new(format!("{context}: {error}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{should_confirm_startup_command_change, startup_command, startup_command_matches};
+    use std::path::Path;
+
+    #[test]
+    fn startup_command_quotes_paths_with_spaces() {
+        assert_eq!(
+            startup_command(Path::new(r"C:\Program Files\Volty\volty.exe")),
+            r#""C:\Program Files\Volty\volty.exe""#
+        );
+    }
+
+    #[test]
+    fn startup_command_match_is_case_insensitive() {
+        assert!(startup_command_matches(
+            r#""c:\program files\volty\VOLTY.exe""#,
+            Path::new(r"C:\Program Files\Volty\volty.exe")
+        ));
+        assert!(!startup_command_matches(
+            r#""C:\Old\Volty\volty.exe""#,
+            Path::new(r"C:\Program Files\Volty\volty.exe")
+        ));
+    }
+
+    #[test]
+    fn update_restart_does_not_repeat_a_declined_startup_path_prompt() {
+        assert!(should_confirm_startup_command_change(
+            r#""C:\Old\Volty\volty.exe""#,
+            Path::new(r"C:\Program Files\Volty\volty.exe"),
+            false
+        ));
+        assert!(!should_confirm_startup_command_change(
+            r#""C:\Old\Volty\volty.exe""#,
+            Path::new(r"C:\Program Files\Volty\volty.exe"),
+            true
+        ));
+    }
 }

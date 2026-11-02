@@ -225,7 +225,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         #[cfg(windows)]
         Some("--apply-update") => return update::apply_update_cli(&args.collect::<Vec<_>>()),
         #[cfg(windows)]
-        Some("--finish-update") => {
+        Some(update::FINISH_UPDATE_ARGUMENT) => {
             if let Err(error) = update::finish_update_cli(&args.collect::<Vec<_>>()) {
                 show_error(&format!("volty: update cleanup failed: {error}"));
             }
