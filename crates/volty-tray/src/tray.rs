@@ -520,6 +520,9 @@ impl TrayController {
     /// other platforms the check item starts unchecked and the action reports
     /// that autostart is unsupported when selected.
     pub fn new(advanced_options_visible: bool) -> Result<Self, TrayError> {
+        #[cfg(windows)]
+        crate::win32::enable_system_dark_menus();
+
         let tray_menu = create_tray_menu(start_on_boot_for_first_run()?, advanced_options_visible)?;
         let icon = TrayIconBuilder::new()
             .with_tooltip("Volty — Searching for supported devices")
@@ -528,6 +531,9 @@ impl TrayController {
             .with_menu_on_left_click(false)
             .build()
             .map_err(|error| TrayError::new(format!("could not create tray icon: {error}")))?;
+        #[cfg(windows)]
+        crate::win32::allow_dark_mode_for_current_thread_windows();
+
         let (actions_tx, actions_rx) = mpsc::channel();
 
         Ok(Self {

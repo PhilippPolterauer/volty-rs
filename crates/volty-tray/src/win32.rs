@@ -20,6 +20,10 @@ use windows_sys::Win32::{
 
 use crate::app_icon::class_icons;
 
+mod dark_mode;
+
+pub(crate) use dark_mode::{allow_dark_mode_for_current_thread_windows, enable_system_dark_menus};
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ControlRect {
     pub x: i32,
