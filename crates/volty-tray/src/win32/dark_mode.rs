@@ -33,34 +33,40 @@ fn dark_mode_api() -> Option<DarkModeApi> {
         .get_or_init(|| {
             // These Windows theme exports are undocumented, so resolve them by ordinal and
             // gracefully keep the native default theme when the OS does not provide them.
-            let module = unsafe { LoadLibraryA(b"uxtheme.dll\0".as_ptr()) };
+            // SAFETY: the C string is static and NUL-terminated.
+            let module = unsafe { LoadLibraryA(c"uxtheme.dll".as_ptr().cast()) };
             if module.is_null() {
                 return None;
             }
 
+            // SAFETY: module is a loaded library and Windows encodes ordinal lookups as pointer values.
             let set_preferred_app_mode = unsafe {
                 GetProcAddress(module, SET_PREFERRED_APP_MODE_ORDINAL as usize as *const u8)
-            }
-            .map(|procedure| unsafe {
+            }?;
+            // SAFETY: uxtheme ordinal 135 is SetPreferredAppMode with this signature.
+            let set_preferred_app_mode = unsafe {
                 std::mem::transmute::<unsafe extern "system" fn() -> isize, SetPreferredAppMode>(
-                    procedure,
+                    set_preferred_app_mode,
                 )
-            })?;
+            };
+            // SAFETY: module is a loaded library and Windows encodes ordinal lookups as pointer values.
             let allow_dark_mode_for_window = unsafe {
                 GetProcAddress(
                     module,
                     ALLOW_DARK_MODE_FOR_WINDOW_ORDINAL as usize as *const u8,
                 )
-            }
-            .map(|procedure| unsafe {
+            };
+            // SAFETY: uxtheme ordinal 133 is AllowDarkModeForWindow with this signature.
+            let allow_dark_mode_for_window = allow_dark_mode_for_window.map(|procedure| unsafe {
                 std::mem::transmute::<unsafe extern "system" fn() -> isize, AllowDarkModeForWindow>(
                     procedure,
                 )
             });
-            let flush_menu_themes = unsafe {
-                GetProcAddress(module, FLUSH_MENU_THEMES_ORDINAL as usize as *const u8)
-            }
-            .map(|procedure| unsafe {
+            // SAFETY: module is a loaded library and Windows encodes ordinal lookups as pointer values.
+            let flush_menu_themes =
+                unsafe { GetProcAddress(module, FLUSH_MENU_THEMES_ORDINAL as usize as *const u8) };
+            // SAFETY: uxtheme ordinal 136 is FlushMenuThemes with this signature.
+            let flush_menu_themes = flush_menu_themes.map(|procedure| unsafe {
                 std::mem::transmute::<unsafe extern "system" fn() -> isize, FlushMenuThemes>(
                     procedure,
                 )
@@ -85,6 +91,7 @@ pub(crate) fn enable_system_dark_menus() {
     };
 
     // AllowDark opts in while leaving the actual light/dark choice to Windows.
+    // SAFETY: the function pointers came from the matching uxtheme ordinals above.
     unsafe {
         (api.set_preferred_app_mode)(PREFERRED_APP_MODE_ALLOW_DARK);
         if let Some(flush_menu_themes) = api.flush_menu_themes {

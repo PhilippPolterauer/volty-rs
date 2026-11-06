@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-11-06
+
+### Added
+
+- Added a refresh action to the battery dashboard.
+
+### Changed
+
+- Redesigned the dashboard with a clearer summary-first layout, responsive controls and cards, and system-aware light and dark colors.
+- Native Windows tray menus now follow the system light or dark theme.
+
 ## [0.10.3] - 2026-11-02
 
 ### Changed
