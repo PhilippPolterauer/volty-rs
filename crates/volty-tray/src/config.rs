@@ -8,7 +8,7 @@ use std::{
 
 use toml_edit::DocumentMut;
 
-use crate::state::TrayIconStyle;
+use crate::state::{TrayIconStyle, TrayIconTheme};
 
 pub const DEFAULT_LOW_BATTERY_THRESHOLDS: &[u8] = &[20, 10, 5];
 pub const DEFAULT_LOW_BATTERY_COOLDOWN_MINUTES: u64 = 120;
@@ -98,6 +98,7 @@ pub struct AppConfig {
     pub log_level: LogLevel,
     pub battery_color_map: BatteryColorMap,
     pub tray_icon_style: Option<TrayIconStyle>,
+    pub tray_icon_theme: Option<TrayIconTheme>,
     pub show_percentage_in_battery_icon: bool,
 }
 
@@ -114,6 +115,7 @@ impl Default for AppConfig {
             log_level: LogLevel::Info,
             battery_color_map: BatteryColorMap::default(),
             tray_icon_style: None,
+            tray_icon_theme: None,
             show_percentage_in_battery_icon: false,
         }
     }
@@ -172,6 +174,8 @@ impl AppConfig {
              # log_level = \"{}\"\n\
              # Tray icon style: \"battery\" or \"percentage\". Overrides the saved tray choice.\n\
              # tray_icon_style = \"battery\"\n\
+             # Tray icon theme: \"system\", \"light\", or \"dark\". Overrides the saved tray choice.\n\
+             # tray_icon_theme = \"system\"\n\
              # Draw the percentage over the battery icon when its style is \"battery\".\n\
              # show_percentage_in_battery_icon = false\n\
              # Uncomment this table to override the default tray battery colors.\n\
@@ -498,6 +502,20 @@ fn parse_toml(contents: &str, path: &Path) -> Result<AppConfig, ConfigError> {
                     ))
                 })?);
             }
+            "tray_icon_theme" => {
+                let theme = value.as_str().ok_or_else(|| {
+                    ConfigError::new(format!(
+                        "invalid configuration {}: tray_icon_theme must be a string",
+                        path.display()
+                    ))
+                })?;
+                config.tray_icon_theme = Some(TrayIconTheme::parse(theme).ok_or_else(|| {
+                    ConfigError::new(format!(
+                        "invalid configuration {}: tray_icon_theme must be \"system\", \"light\", or \"dark\"",
+                        path.display()
+                    ))
+                })?);
+            }
             "show_percentage_in_battery_icon" => {
                 config.show_percentage_in_battery_icon = value.as_bool().ok_or_else(|| {
                     ConfigError::new(format!(
@@ -699,6 +717,7 @@ mod tests {
                 log_level: LogLevel::Debug,
                 battery_color_map: BatteryColorMap::default(),
                 tray_icon_style: None,
+                tray_icon_theme: None,
                 show_percentage_in_battery_icon: false,
             }
         );
@@ -755,17 +774,28 @@ mod tests {
     #[test]
     fn toml_config_accepts_tray_icon_settings() {
         let config = parse_toml(
-            "tray_icon_style = \"percentage\"\nshow_percentage_in_battery_icon = true\n",
+            "tray_icon_style = \"percentage\"\ntray_icon_theme = \"dark\"\nshow_percentage_in_battery_icon = true\n",
             Path::new("config.toml"),
         )
         .unwrap();
         assert_eq!(config.tray_icon_style, Some(TrayIconStyle::Percentage));
+        assert_eq!(config.tray_icon_theme, Some(TrayIconTheme::Dark));
         assert!(config.show_percentage_in_battery_icon);
 
-        let config =
-            parse_toml("tray_icon_style = \"battery\"\n", Path::new("config.toml")).unwrap();
+        let config = parse_toml(
+            "tray_icon_style = \"battery\"\ntray_icon_theme = \"light\"\n",
+            Path::new("config.toml"),
+        )
+        .unwrap();
         assert_eq!(config.tray_icon_style, Some(TrayIconStyle::Battery));
+        assert_eq!(config.tray_icon_theme, Some(TrayIconTheme::Light));
         assert!(!config.show_percentage_in_battery_icon);
+        assert_eq!(
+            parse_toml("tray_icon_theme = \"system\"\n", Path::new("config.toml"))
+                .unwrap()
+                .tray_icon_theme,
+            Some(TrayIconTheme::System)
+        );
     }
 
     #[test]
@@ -824,6 +854,8 @@ mod tests {
             "log_level = \"verbose\"",
             "tray_icon_style = 5",
             "tray_icon_style = \"digits\"",
+            "tray_icon_theme = 5",
+            "tray_icon_theme = \"sepia\"",
             "show_percentage_in_battery_icon = \"true\"",
             "battery_color_map = \"invalid\"",
             "[battery_color_map]\nred_max_percent = -1",

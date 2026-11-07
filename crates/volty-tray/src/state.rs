@@ -12,6 +12,7 @@ use serde::Serialize;
 const SCHEMA_VERSION: i64 = 5;
 
 const TRAY_ICON_STYLE_KEY: &str = "tray_icon_style";
+const TRAY_ICON_THEME_KEY: &str = "tray_icon_theme";
 const PINNED_DEVICE_KEY: &str = "pinned_device";
 const ADVANCED_OPTIONS_VISIBLE_KEY: &str = "advanced_options_visible";
 
@@ -42,10 +43,40 @@ impl TrayIconStyle {
     }
 }
 
-/// Tray display preferences stored in local SQLite state, not `config.toml`.
+/// The color theme used when rendering the tray icon.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum TrayIconTheme {
+    /// Follow the current Windows system theme.
+    #[default]
+    System,
+    Light,
+    Dark,
+}
+
+impl TrayIconTheme {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::System => "system",
+            Self::Light => "light",
+            Self::Dark => "dark",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "system" => Some(Self::System),
+            "light" => Some(Self::Light),
+            "dark" => Some(Self::Dark),
+            _ => None,
+        }
+    }
+}
+
+/// Saved tray display preferences; `config.toml` can override icon settings.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct TrayDisplaySettings {
     pub icon_style: TrayIconStyle,
+    pub icon_theme: TrayIconTheme,
     /// A device identity that drives the tray icon; `None` means the lowest
     /// monitored percentage.
     pub pinned_device: Option<String>,
@@ -430,6 +461,14 @@ impl DeviceState {
                         )
                     })?;
                 }
+                TRAY_ICON_THEME_KEY => {
+                    settings.icon_theme = TrayIconTheme::parse(&value).ok_or_else(|| {
+                        io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            format!("unknown tray icon theme {value:?}"),
+                        )
+                    })?;
+                }
                 PINNED_DEVICE_KEY if !value.is_empty() => {
                     settings.pinned_device = Some(value);
                 }
@@ -447,6 +486,18 @@ impl DeviceState {
             "INSERT INTO settings (key, value) VALUES (?1, ?2)
              ON CONFLICT (key) DO UPDATE SET value = excluded.value",
             params![TRAY_ICON_STYLE_KEY, style.as_str()],
+        )?;
+        Ok(())
+    }
+
+    pub fn set_tray_icon_theme(
+        &mut self,
+        theme: TrayIconTheme,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        self.connection.execute(
+            "INSERT INTO settings (key, value) VALUES (?1, ?2)
+             ON CONFLICT (key) DO UPDATE SET value = excluded.value",
+            params![TRAY_ICON_THEME_KEY, theme.as_str()],
         )?;
         Ok(())
     }
@@ -998,6 +1049,7 @@ mod tests {
             state.tray_display().unwrap(),
             TrayDisplaySettings {
                 icon_style: TrayIconStyle::Battery,
+                icon_theme: TrayIconTheme::System,
                 pinned_device: None,
             }
         );
@@ -1043,7 +1095,7 @@ mod tests {
     }
 
     #[test]
-    fn tray_display_preferences_persist_and_validate_stored_styles() {
+    fn tray_display_preferences_persist_and_validate_stored_styles_and_themes() {
         let path = fresh_state_path("volty-tray-display-state");
 
         {
@@ -1055,6 +1107,7 @@ mod tests {
             state
                 .set_tray_icon_style(TrayIconStyle::Percentage)
                 .unwrap();
+            state.set_tray_icon_theme(TrayIconTheme::Dark).unwrap();
             state.set_pinned_device("bluetooth:headset").unwrap();
         }
 
@@ -1064,6 +1117,7 @@ mod tests {
                 state.tray_display().unwrap(),
                 TrayDisplaySettings {
                     icon_style: TrayIconStyle::Percentage,
+                    icon_theme: TrayIconTheme::Dark,
                     pinned_device: Some("bluetooth:headset".to_owned()),
                 }
             );
@@ -1084,6 +1138,25 @@ mod tests {
             assert_eq!(
                 state.tray_display().unwrap_err().to_string(),
                 "unknown tray icon style \"neon\""
+            );
+            state
+                .connection
+                .execute(
+                    "UPDATE settings SET value = 'percentage' WHERE key = 'tray_icon_style'",
+                    [],
+                )
+                .unwrap();
+            state
+                .connection
+                .execute(
+                    "INSERT INTO settings (key, value) VALUES ('tray_icon_theme', 'sepia')
+                     ON CONFLICT (key) DO UPDATE SET value = excluded.value",
+                    [],
+                )
+                .unwrap();
+            assert_eq!(
+                state.tray_display().unwrap_err().to_string(),
+                "unknown tray icon theme \"sepia\""
             );
         }
 
@@ -1176,6 +1249,7 @@ mod tests {
             state.tray_display().unwrap(),
             TrayDisplaySettings {
                 icon_style: TrayIconStyle::Percentage,
+                icon_theme: TrayIconTheme::System,
                 pinned_device: Some("hid:keep#1".to_owned()),
             }
         );

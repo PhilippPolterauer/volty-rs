@@ -16,6 +16,7 @@ stale_after_minutes = 15 # 1-1440 minutes without a fresh reading before marking
 notifications_enabled = true
 log_level = "info" # error, warn, info, debug, or trace
 tray_icon_style = "battery" # "battery" or "percentage"; overrides the saved tray choice
+tray_icon_theme = "system" # "system", "light", or "dark"; overrides the saved tray choice
 show_percentage_in_battery_icon = false # draw contrasting digits inside the battery
 
 # Optional tray color-map overrides. Thresholds are inclusive upper bounds.
@@ -40,6 +41,10 @@ and must remain ordered. Omitted colors and thresholds retain their defaults.
 `tray_icon_style` selects the battery glyph or percentage-only display; when it
 is set, it takes precedence over the tray menu's saved style. Enable
 `show_percentage_in_battery_icon` to draw the percentage over the battery glyph.
+`tray_icon_theme` selects the colors used to render the icon: `system` follows
+the Windows theme and is the default, while `light` and `dark` force that
+appearance. When set, it takes precedence over the saved choice in the
+advanced **Tray Display** menu.
 The overlay automatically chooses a contrasting text color and outline based
 on the active battery color. It does not add a background plate, so the battery
 fill and transparent taskbar background remain visible. The overlay has no

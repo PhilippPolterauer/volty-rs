@@ -43,7 +43,7 @@ use crate::{
     history::{unix_now, HistorySample, HistoryStore},
     logging::FileLogger,
     report::generate_diagnostic_report,
-    state::{local_state_path, DeviceState, TrayIconStyle},
+    state::{local_state_path, DeviceState, TrayIconStyle, TrayIconTheme},
     tray::{
         confirm_reset, reset_startup_preferences, start_on_boot_enabled, TrayAction,
         TrayController, UpdateCheckOrigin,
@@ -74,6 +74,7 @@ struct App {
     monitor_state: Option<DeviceState>,
     monitored_devices: BTreeMap<String, bool>,
     tray_icon_style: TrayIconStyle,
+    tray_icon_theme: TrayIconTheme,
     pinned_device: Option<String>,
     advanced_options_visible: bool,
     active_config: AppConfig,
@@ -152,7 +153,11 @@ impl App {
             )?;
         }
 
-        let mut tray = TrayController::new(startup.advanced_options_visible)?;
+        let tray_icon_theme = startup
+            .active_config
+            .tray_icon_theme
+            .unwrap_or(startup.tray_display.icon_theme);
+        let mut tray = TrayController::new(startup.advanced_options_visible, tray_icon_theme)?;
         tray.set_battery_color_map(startup.active_config.battery_color_map)?;
         tray.set_show_percentage_in_battery_icon(
             startup.active_config.show_percentage_in_battery_icon,
@@ -231,6 +236,7 @@ impl App {
             monitor_state: startup.monitor_state,
             monitored_devices: startup.monitored_devices,
             tray_icon_style: startup.tray_display.icon_style,
+            tray_icon_theme: startup.tray_display.icon_theme,
             pinned_device: startup.tray_display.pinned_device,
             advanced_options_visible: startup.advanced_options_visible,
             active_config: startup.active_config,
@@ -394,6 +400,7 @@ impl App {
                 monitored,
             } => self.set_device_monitored(&identity, monitored)?,
             TrayAction::SetTrayIconStyle { style } => self.set_tray_icon_style(style)?,
+            TrayAction::SetTrayIconTheme { theme } => self.set_tray_icon_theme(theme)?,
             TrayAction::SetPinnedDevice { identity } => {
                 self.set_pinned_device(identity.as_deref())?
             }
@@ -952,6 +959,44 @@ impl App {
         Ok(())
     }
 
+    fn set_tray_icon_theme(&mut self, theme: TrayIconTheme) -> Result<(), Box<dyn Error>> {
+        if theme == self.tray_icon_theme {
+            self.tray
+                .set_tray_icon_theme(self.active_config.tray_icon_theme.unwrap_or(theme));
+            return Ok(());
+        }
+
+        let save_result = match self.monitor_state.as_mut() {
+            Some(state) => state.set_tray_icon_theme(theme),
+            None => Err(io::Error::new(
+                io::ErrorKind::NotConnected,
+                "local SQLite display state is unavailable",
+            )
+            .into()),
+        };
+        match save_result {
+            Ok(()) => {
+                self.tray_icon_theme = theme;
+                self.tray
+                    .set_tray_icon_theme(self.active_config.tray_icon_theme.unwrap_or(theme));
+                self.record_event(
+                    LogLevel::Info,
+                    &format!("Tray icon theme set to {}", theme.as_str()),
+                )?;
+                self.refresh_visible_devices()?;
+            }
+            Err(error) => {
+                self.tray.set_tray_icon_theme(
+                    self.active_config
+                        .tray_icon_theme
+                        .unwrap_or(self.tray_icon_theme),
+                );
+                self.report_error("Tray display state error", &error.to_string())?;
+            }
+        }
+        Ok(())
+    }
+
     fn set_pinned_device(&mut self, identity: Option<&str>) -> Result<(), Box<dyn Error>> {
         if identity == self.pinned_device.as_deref() {
             self.tray
@@ -1047,6 +1092,7 @@ impl App {
             None => BTreeMap::new(),
         };
         self.tray_icon_style = TrayIconStyle::Battery;
+        self.tray_icon_theme = TrayIconTheme::System;
         self.pinned_device = None;
         self.tray.set_advanced_options_visible(false)?;
         self.advanced_options_visible = false;
@@ -1073,6 +1119,11 @@ impl App {
             self.active_config
                 .tray_icon_style
                 .unwrap_or(TrayIconStyle::Battery),
+        );
+        self.tray.set_tray_icon_theme(
+            self.active_config
+                .tray_icon_theme
+                .unwrap_or(TrayIconTheme::System),
         );
         self.tray.set_pinned_device_checked(None);
         let reset_status = self.notification_config_error.as_ref().map_or_else(
@@ -1159,6 +1210,8 @@ impl App {
         }
         self.tray
             .set_tray_icon_style(config.tray_icon_style.unwrap_or(self.tray_icon_style));
+        self.tray
+            .set_tray_icon_theme(config.tray_icon_theme.unwrap_or(self.tray_icon_theme));
         if let Err(error) = self.notifications.set_config(&config) {
             self.report_config_error(error.to_string())?;
             return Ok(false);

@@ -28,7 +28,15 @@ const WINDOWS_PERSONALIZATION_KEY: &str =
     "Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize";
 const SYSTEM_LIGHT_THEME_VALUE: &str = "SystemUsesLightTheme";
 
-fn current_icon_theme() -> Result<IconTheme, TrayError> {
+fn current_icon_theme(theme: TrayIconTheme) -> Result<IconTheme, TrayError> {
+    match theme {
+        TrayIconTheme::Light => Ok(IconTheme::Light),
+        TrayIconTheme::Dark => Ok(IconTheme::Dark),
+        TrayIconTheme::System => system_icon_theme(),
+    }
+}
+
+fn system_icon_theme() -> Result<IconTheme, TrayError> {
     let key = RegKey::predef(HKEY_CURRENT_USER)
         .open_subkey(WINDOWS_PERSONALIZATION_KEY)
         .map_err(|error| {
@@ -55,7 +63,11 @@ use tray_icon::{
     Icon, TrayIcon, TrayIconBuilder, TrayIconEvent,
 };
 
-use crate::{config::BatteryColorMap, state::TrayIconStyle, update::UpdateInfo};
+use crate::{
+    config::BatteryColorMap,
+    state::{TrayIconStyle, TrayIconTheme},
+    update::UpdateInfo,
+};
 
 const MAX_STATUS_CHARS: usize = 80;
 const MAX_TOOLTIP_UTF16_UNITS: usize = 127;
@@ -78,6 +90,9 @@ enum MenuItemId {
     TrayDisplay,
     TrayIconStyleBattery,
     TrayIconStylePercentage,
+    TrayIconThemeSystem,
+    TrayIconThemeLight,
+    TrayIconThemeDark,
     PinnedDeviceLowest,
     PinnedDevice(u64),
     CheckForUpdates,
@@ -105,6 +120,9 @@ impl MenuItemId {
             Self::TrayDisplay => "volty.tray-display".to_owned(),
             Self::TrayIconStyleBattery => "volty.tray-icon-style.battery".to_owned(),
             Self::TrayIconStylePercentage => "volty.tray-icon-style.percentage".to_owned(),
+            Self::TrayIconThemeSystem => "volty.tray-icon-theme.system".to_owned(),
+            Self::TrayIconThemeLight => "volty.tray-icon-theme.light".to_owned(),
+            Self::TrayIconThemeDark => "volty.tray-icon-theme.dark".to_owned(),
             Self::PinnedDeviceLowest => "volty.pinned-device.lowest".to_owned(),
             Self::PinnedDevice(sequence) => format!("volty.pinned-device.{sequence}"),
             Self::CheckForUpdates => "volty.check-for-updates".to_owned(),
@@ -129,6 +147,9 @@ impl MenuItemId {
             "volty.tray-display" => Some(Self::TrayDisplay),
             "volty.tray-icon-style.battery" => Some(Self::TrayIconStyleBattery),
             "volty.tray-icon-style.percentage" => Some(Self::TrayIconStylePercentage),
+            "volty.tray-icon-theme.system" => Some(Self::TrayIconThemeSystem),
+            "volty.tray-icon-theme.light" => Some(Self::TrayIconThemeLight),
+            "volty.tray-icon-theme.dark" => Some(Self::TrayIconThemeDark),
             "volty.pinned-device.lowest" => Some(Self::PinnedDeviceLowest),
             "volty.check-for-updates" => Some(Self::CheckForUpdates),
             "volty.about" => Some(Self::About),
@@ -190,6 +211,9 @@ pub enum TrayAction {
     SetTrayIconStyle {
         style: TrayIconStyle,
     },
+    SetTrayIconTheme {
+        theme: TrayIconTheme,
+    },
     SetPinnedDevice {
         identity: Option<String>,
     },
@@ -245,6 +269,7 @@ pub struct TrayController {
     next_pinned_device_menu_id: u64,
     pinned_device: Option<String>,
     tray_icon_style: TrayIconStyle,
+    tray_icon_theme: TrayIconTheme,
     start_on_boot_item: CheckMenuItem,
     check_for_updates_item: MenuItem,
     actions_tx: Sender<TrayAction>,
@@ -295,6 +320,9 @@ struct AdvancedMenuItems {
     tray_display_menu: Submenu,
     battery_style_item: CheckMenuItem,
     percentage_style_item: CheckMenuItem,
+    system_theme_item: CheckMenuItem,
+    light_theme_item: CheckMenuItem,
+    dark_theme_item: CheckMenuItem,
     pinned_lowest_item: CheckMenuItem,
     tray_display_separator: PredefinedMenuItem,
     discover_item: MenuItem,
@@ -325,6 +353,7 @@ impl AdvancedMenuItems {
 fn create_tray_menu(
     start_on_boot: bool,
     advanced_options_visible: bool,
+    tray_icon_theme: TrayIconTheme,
 ) -> Result<TrayMenu, TrayError> {
     let status_item = MenuItem::with_id(
         MenuItemId::Status.as_id(),
@@ -375,6 +404,27 @@ fn create_tray_menu(
         false,
         None,
     );
+    let system_theme_item = CheckMenuItem::with_id(
+        MenuItemId::TrayIconThemeSystem.as_id(),
+        "Theme: System",
+        true,
+        tray_icon_theme == TrayIconTheme::System,
+        None,
+    );
+    let light_theme_item = CheckMenuItem::with_id(
+        MenuItemId::TrayIconThemeLight.as_id(),
+        "Theme: Light",
+        true,
+        tray_icon_theme == TrayIconTheme::Light,
+        None,
+    );
+    let dark_theme_item = CheckMenuItem::with_id(
+        MenuItemId::TrayIconThemeDark.as_id(),
+        "Theme: Dark",
+        true,
+        tray_icon_theme == TrayIconTheme::Dark,
+        None,
+    );
     let pinned_lowest_item = CheckMenuItem::with_id(
         MenuItemId::PinnedDeviceLowest.as_id(),
         "Lowest battery (default)",
@@ -386,6 +436,9 @@ fn create_tray_menu(
     for (item, description) in [
         (&battery_style_item, "battery icon style"),
         (&percentage_style_item, "percentage icon style"),
+        (&system_theme_item, "system icon theme"),
+        (&light_theme_item, "light icon theme"),
+        (&dark_theme_item, "dark icon theme"),
         (&pinned_lowest_item, "lowest-battery pin"),
     ] {
         tray_display_menu
@@ -397,6 +450,9 @@ fn create_tray_menu(
         tray_display_menu,
         battery_style_item,
         percentage_style_item,
+        system_theme_item,
+        light_theme_item,
+        dark_theme_item,
         pinned_lowest_item,
         tray_display_separator: PredefinedMenuItem::separator(),
         discover_item: MenuItem::with_id(
@@ -554,12 +610,19 @@ impl TrayController {
     /// The Start on Boot state is initialized from the Windows Run key. On
     /// other platforms the check item starts unchecked and the action reports
     /// that autostart is unsupported when selected.
-    pub fn new(advanced_options_visible: bool) -> Result<Self, TrayError> {
+    pub fn new(
+        advanced_options_visible: bool,
+        tray_icon_theme: TrayIconTheme,
+    ) -> Result<Self, TrayError> {
         #[cfg(windows)]
         crate::win32::enable_system_dark_menus();
 
-        let tray_menu = create_tray_menu(start_on_boot_for_first_run()?, advanced_options_visible)?;
-        let icon_theme = current_icon_theme()?;
+        let tray_menu = create_tray_menu(
+            start_on_boot_for_first_run()?,
+            advanced_options_visible,
+            tray_icon_theme,
+        )?;
+        let icon_theme = current_icon_theme(tray_icon_theme)?;
         let icon = TrayIconBuilder::new()
             .with_tooltip("Volty — Searching for supported devices")
             .with_icon(unknown_battery_icon_at_size(ICON_SIZE, icon_theme)?)
@@ -589,6 +652,7 @@ impl TrayController {
             next_pinned_device_menu_id: 0,
             pinned_device: None,
             tray_icon_style: TrayIconStyle::Battery,
+            tray_icon_theme,
             start_on_boot_item: tray_menu.start_on_boot_item,
             check_for_updates_item: tray_menu.check_for_updates_item,
             actions_tx,
@@ -812,7 +876,7 @@ impl TrayController {
             self.replace_device_status_items(device_statuses)?;
             self.displayed_device_statuses = device_statuses.to_vec();
         }
-        let icon_theme = current_icon_theme()?;
+        let icon_theme = current_icon_theme(self.tray_icon_theme)?;
         let icon_key = (
             percentage,
             icon_size,
@@ -946,6 +1010,15 @@ impl TrayController {
             MenuItemId::TrayIconStylePercentage => Some(TrayAction::SetTrayIconStyle {
                 style: TrayIconStyle::Percentage,
             }),
+            MenuItemId::TrayIconThemeSystem => Some(TrayAction::SetTrayIconTheme {
+                theme: TrayIconTheme::System,
+            }),
+            MenuItemId::TrayIconThemeLight => Some(TrayAction::SetTrayIconTheme {
+                theme: TrayIconTheme::Light,
+            }),
+            MenuItemId::TrayIconThemeDark => Some(TrayAction::SetTrayIconTheme {
+                theme: TrayIconTheme::Dark,
+            }),
             MenuItemId::PinnedDeviceLowest => Some(TrayAction::SetPinnedDevice { identity: None }),
             MenuItemId::PinnedDevice(menu_id) => self
                 .pinned_device_items
@@ -1031,6 +1104,20 @@ impl TrayController {
             .set_checked(style == TrayIconStyle::Percentage);
     }
 
+    /// Applies a tray icon theme and clears the sibling check item.
+    pub fn set_tray_icon_theme(&mut self, theme: TrayIconTheme) {
+        self.tray_icon_theme = theme;
+        self.advanced_menu_items
+            .system_theme_item
+            .set_checked(theme == TrayIconTheme::System);
+        self.advanced_menu_items
+            .light_theme_item
+            .set_checked(theme == TrayIconTheme::Light);
+        self.advanced_menu_items
+            .dark_theme_item
+            .set_checked(theme == TrayIconTheme::Dark);
+    }
+
     /// Applies a persisted pinned device and clears the sibling check items.
     pub fn set_pinned_device_checked(&mut self, identity: Option<&str>) {
         self.pinned_device = identity.map(str::to_owned);
@@ -1056,7 +1143,7 @@ impl TrayController {
             return Ok(());
         }
         if let Some(percentage) = self.percentage {
-            let icon_theme = current_icon_theme()?;
+            let icon_theme = current_icon_theme(self.tray_icon_theme)?;
             let icon = self.render_icon(
                 Some(percentage),
                 ICON_SIZE,
@@ -1088,7 +1175,7 @@ impl TrayController {
             return Ok(());
         }
         if let Some(percentage) = self.percentage {
-            let icon_theme = current_icon_theme()?;
+            let icon_theme = current_icon_theme(self.tray_icon_theme)?;
             let icon = self.render_icon(
                 Some(percentage),
                 ICON_SIZE,
@@ -1209,6 +1296,38 @@ mod tests {
     use super::*;
 
     #[test]
+    fn fixed_icon_themes_do_not_depend_on_the_system_theme() {
+        assert_eq!(
+            current_icon_theme(TrayIconTheme::Light).unwrap(),
+            IconTheme::Light
+        );
+        assert_eq!(
+            current_icon_theme(TrayIconTheme::Dark).unwrap(),
+            IconTheme::Dark
+        );
+    }
+
+    #[test]
+    fn tray_theme_menu_checks_only_the_selected_option() {
+        for (theme, expected_checks) in [
+            (TrayIconTheme::System, [true, false, false]),
+            (TrayIconTheme::Light, [false, true, false]),
+            (TrayIconTheme::Dark, [false, false, true]),
+        ] {
+            let menu = create_tray_menu(false, false, theme).unwrap();
+            let items = &menu.advanced_menu_items;
+            assert_eq!(
+                [
+                    items.system_theme_item.is_checked(),
+                    items.light_theme_item.is_checked(),
+                    items.dark_theme_item.is_checked(),
+                ],
+                expected_checks
+            );
+        }
+    }
+
+    #[test]
     fn status_is_shortened_only_when_over_limit() {
         let short = "Battery status";
         assert_eq!(shorten_status(short), short);
@@ -1240,6 +1359,9 @@ mod tests {
             MenuItemId::TrayDisplay,
             MenuItemId::TrayIconStyleBattery,
             MenuItemId::TrayIconStylePercentage,
+            MenuItemId::TrayIconThemeSystem,
+            MenuItemId::TrayIconThemeLight,
+            MenuItemId::TrayIconThemeDark,
             MenuItemId::PinnedDeviceLowest,
             MenuItemId::PinnedDevice(7),
             MenuItemId::CheckForUpdates,
@@ -1278,7 +1400,7 @@ mod tests {
 
     #[test]
     fn advanced_options_are_hidden_by_default_and_toggle_in_place() {
-        let tray_menu = create_tray_menu(false, false).unwrap();
+        let tray_menu = create_tray_menu(false, false, TrayIconTheme::System).unwrap();
         let basic_ids = menu_item_ids(&tray_menu.menu);
         assert!(basic_ids.contains(&MenuItemId::ShowAdvancedOptions.as_id()));
         assert!(basic_ids.contains(&MenuItemId::MonitoredDevices.as_id()));
@@ -1353,7 +1475,7 @@ mod tests {
         remove_advanced_menu_items(&tray_menu.menu, &tray_menu.advanced_menu_items).unwrap();
         assert_eq!(menu_item_ids(&tray_menu.menu), basic_ids);
 
-        let restored_menu = create_tray_menu(false, true).unwrap();
+        let restored_menu = create_tray_menu(false, true, TrayIconTheme::System).unwrap();
         assert!(
             menu_item_ids(&restored_menu.menu).contains(&MenuItemId::SaveHardwareCapture.as_id())
         );
