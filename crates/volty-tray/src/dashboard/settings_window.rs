@@ -749,7 +749,7 @@ fn create_controls(
         instance,
         state,
         ControlRole::ColorMapDescription,
-        "Set cutoffs, choose colors, and preview the tray icon.",
+        "Set color blend points, choose colors, and preview the tray icon.",
         state.fonts.body_small,
     )?;
     add_label(
@@ -757,7 +757,7 @@ fn create_controls(
         instance,
         state,
         ControlRole::RedCutoffLabel,
-        "Red at or below (%)",
+        "Red through (%)",
         state.fonts.body_small,
     )?;
     add_label(
@@ -765,7 +765,7 @@ fn create_controls(
         instance,
         state,
         ControlRole::YellowCutoffLabel,
-        "Yellow through (%)",
+        "Yellow at (%)",
         state.fonts.body_small,
     )?;
     let red_cutoff = add_control(
@@ -2614,7 +2614,8 @@ mod tests {
         assert_eq!(map.yellow_max_percent, 30);
         assert_eq!(map.color_for(15), [210, 48, 48]);
         assert_eq!(map.color_for(30), [235, 190, 35]);
-        assert_eq!(map.color_for(31), [45, 170, 75]);
+        assert_eq!(map.color_for(31), [232, 190, 36]);
+        assert_eq!(map.color_for(100), [45, 170, 75]);
         assert_eq!(parse_hex_color("#123AbC"), Some([18, 58, 188]));
     }
 

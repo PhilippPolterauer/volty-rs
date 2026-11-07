@@ -746,7 +746,7 @@ mod tests {
     }
 
     #[test]
-    fn rgba_renderer_uses_custom_color_map_boundaries() {
+    fn rgba_renderer_blends_custom_color_map_between_percentage_anchors() {
         let map = BatteryColorMap {
             red_max_percent: 10,
             yellow_max_percent: 40,
@@ -762,9 +762,10 @@ mod tests {
         };
 
         assert_eq!(pixel(10), [1, 2, 3]);
-        assert_eq!(pixel(11), [4, 5, 6]);
+        assert_eq!(pixel(25), [3, 4, 5]);
         assert_eq!(pixel(40), [4, 5, 6]);
-        assert_eq!(pixel(41), [7, 8, 9]);
+        assert_eq!(pixel(70), [6, 7, 8]);
+        assert_eq!(pixel(100), [7, 8, 9]);
     }
 
     #[test]

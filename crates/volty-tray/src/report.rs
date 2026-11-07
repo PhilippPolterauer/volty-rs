@@ -108,7 +108,7 @@ fn render_diagnostic_report(
          Battery ETA window: {} minutes\n\
          Log level: {}\n\
          Low-battery notifications: {}\n\
-         Tray color map: red <= {}% ({}), yellow <= {}% ({}), green > {}% ({})\n\
+         Tray color map: red through {}% ({}), blends to yellow at {}% ({}), then to green at 100% ({})\n\
          \n\
          [Recent application log]\n\
          The log contains the latest {} events.\n",
@@ -133,7 +133,6 @@ fn render_diagnostic_report(
         format_color(config.battery_color_map.red),
         config.battery_color_map.yellow_max_percent,
         format_color(config.battery_color_map.yellow),
-        config.battery_color_map.yellow_max_percent,
         format_color(config.battery_color_map.green),
         log.len()
     );
@@ -240,7 +239,7 @@ mod tests {
         assert!(report.contains("Low-battery repeat cooldown: 120 minutes"));
         assert!(report.contains("Battery ETA window: 10 minutes"));
         assert!(report.contains(
-            "Tray color map: red <= 15% (#d23030), yellow <= 30% (#ebbe23), green > 30% (#2daa4b)"
+            "Tray color map: red through 15% (#d23030), blends to yellow at 30% (#ebbe23), then to green at 100% (#2daa4b)"
         ));
         assert!(report.contains("[Battery sources]"));
         if cfg!(feature = "bluetooth") {

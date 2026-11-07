@@ -73,15 +73,39 @@ pub struct BatteryColorMap {
 }
 
 impl BatteryColorMap {
-    pub const fn color_for(self, percentage: u8) -> [u8; 3] {
+    pub fn color_for(self, percentage: u8) -> [u8; 3] {
+        let percentage = percentage.min(100);
         if percentage <= self.red_max_percent {
             self.red
         } else if percentage <= self.yellow_max_percent {
-            self.yellow
+            interpolate_color(
+                self.red,
+                self.yellow,
+                u16::from(percentage - self.red_max_percent),
+                u16::from(self.yellow_max_percent - self.red_max_percent),
+            )
         } else {
-            self.green
+            interpolate_color(
+                self.yellow,
+                self.green,
+                u16::from(percentage - self.yellow_max_percent),
+                u16::from(100 - self.yellow_max_percent),
+            )
         }
     }
+}
+
+fn interpolate_color(start: [u8; 3], end: [u8; 3], position: u16, span: u16) -> [u8; 3] {
+    let channel = |from: u8, to: u8| {
+        let from = u16::from(from);
+        let to = u16::from(to);
+        ((from * (span - position) + to * position + span / 2) / span) as u8
+    };
+    [
+        channel(start[0], end[0]),
+        channel(start[1], end[1]),
+        channel(start[2], end[2]),
+    ]
 }
 
 impl Default for BatteryColorMap {
@@ -227,7 +251,8 @@ impl AppConfig {
              # Draw the percentage over the battery icon when its style is \"battery\".\n\
              # show_percentage_in_battery_icon = false\n\
              # Uncomment this table to override the default tray battery colors.\n\
-             # Thresholds are inclusive upper bounds; red must be below yellow.\n\
+             # Red stays solid through red_max_percent; yellow_max_percent is the yellow blend point.\n\
+             # Colors blend red to yellow, then yellow to green at 100%; red must be below yellow.\n\
              # [battery_color_map]\n\
              # red_max_percent = 15\n\
              # yellow_max_percent = 30\n\
@@ -997,9 +1022,11 @@ mod tests {
             }
         );
         assert_eq!(config.battery_color_map.color_for(10), [1, 2, 3]);
-        assert_eq!(config.battery_color_map.color_for(11), [171, 205, 239]);
+        assert_eq!(config.battery_color_map.color_for(11), [7, 9, 11]);
+        assert_eq!(config.battery_color_map.color_for(25), [86, 104, 121]);
         assert_eq!(config.battery_color_map.color_for(40), [171, 205, 239]);
-        assert_eq!(config.battery_color_map.color_for(41), [255, 255, 255]);
+        assert_eq!(config.battery_color_map.color_for(41), [172, 206, 239]);
+        assert_eq!(config.battery_color_map.color_for(100), [255, 255, 255]);
     }
 
     #[test]

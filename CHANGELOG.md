@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Tray icon colors now blend smoothly between the configured red, yellow, and green percentage points.
+
 ## [0.14.0] - 2026-11-07
 
 ### Added

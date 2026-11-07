@@ -24,8 +24,8 @@ tray_icon_style = "battery" # "battery" or "percentage"; overrides the saved tra
 tray_icon_theme = "system" # "system", "light", or "dark"; overrides the saved tray choice
 show_percentage_in_battery_icon = false # draw contrasting digits inside the battery
 
-# Optional tray color-map overrides. Thresholds are inclusive upper bounds.
-# red_max_percent must be below yellow_max_percent; colors use #RRGGBB.
+# Optional tray color-map overrides. Red stays solid through red_max_percent;
+# yellow_max_percent is the yellow blend point. Colors use #RRGGBB.
 # [battery_color_map]
 # red_max_percent = 15
 # yellow_max_percent = 30
@@ -42,9 +42,10 @@ the alert can repeat after each configured cooldown; `0` disables repeats.
 These values can be changed in the native **Settings...** window or in
 `config.toml`.
 
-The default tray colors are green above 30%, yellow from 16–30%, and red at 15%
-or below. Red and yellow cutoffs can be overridden (red: 0–99, yellow: 1–100)
-and must remain ordered. Omitted colors and thresholds retain their defaults.
+The default tray color is red through 15%, blends to yellow at 30%, then blends
+to green at 100%. `red_max_percent` and `yellow_max_percent` set those blend
+points (red: 0–99, yellow: 1–100); red must be below yellow. Omitted colors and
+blend points retain their defaults.
 `tray_icon_style` selects the battery glyph or percentage-only display; when it
 is set, it takes precedence over the saved style selected in **Settings...**.
 Enable `show_percentage_in_battery_icon` to draw the percentage over the battery
