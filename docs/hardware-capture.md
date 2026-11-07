@@ -9,10 +9,10 @@ same records can be replayed locally as regression fixtures for protocol and
 decoder tests.
 
 Captures are read-only evidence. Volty does not upload them, and creating one
-does not change device settings, pairing, or configuration. The current primary
-use case is the Logitech G502 X Superlight RGB; Bluetooth recording is enabled
-by default in the tray. Capture support overall is still experimental with
-limited hardware validation.
+does not change device settings, pairing, or configuration. Captures can include
+supported HID readings and Windows-exposed Bluetooth battery sources. Bluetooth
+recording is enabled in the default tray build; coverage depends on the data
+Windows exposes for each device.
 
 ## What is recorded
 
@@ -64,6 +64,20 @@ A capture must not contain any of the following:
 The capture file is created locally and is never uploaded automatically. It
 records observations only; it does not change device settings or run commands.
 
+## Format
+
+Snapshots use the `volty.capture/v2` schema as UTF-8 JSON Lines: each line is a
+JSON object, a `header` identifies the schema, and a `footer` closes a complete
+capture. Readings preserve percentage provenance as exact, estimated, or
+unavailable, separately from the raw level and protocol value. Bluetooth
+devices use capture-local `bt-N` identifiers rather than Windows device IDs or
+Bluetooth addresses.
+
+`volty capture inspect` validates a saved capture and prints a bounded summary.
+`volty capture replay` re-runs recorded evidence through the production
+decoders. Replay confirms that Volty can reproduce the captured decoding result;
+it does not establish how other devices or firmware behave.
+
 ## Generate a capture from the tray
 
 1. Right-click the Volty tray icon, select **Show Advanced Options**, then
@@ -98,8 +112,8 @@ volty capture --strict
 - `--strict` omits model-level manufacturer, product, and Bluetooth friendly
   names, keeping only numeric identifiers and protocol evidence.
 - Bluetooth records are added only when the executable was built with the tray
-  `bluetooth` feature. Default builds produce HID-only captures but can still
-  replay Bluetooth records from someone else's capture.
+  `bluetooth` feature. Builds using `--no-default-features` produce HID-only
+  captures but can still replay Bluetooth records from another capture.
 
 Inspect or replay a captured file without opening a device:
 
@@ -128,27 +142,22 @@ contain button or keyboard input. It is local-only, has a finite duration and
 payload limit, and requires an explicit acknowledgment:
 
 ```text
-volty hid inspect --vid 04b4 --pid 2412
-volty hid sniff --vid 04b4 --pid 2412 --interface 2 --duration-seconds 15 --output .\vader4pro.hidtrace.jsonl --include-input
-volty hid trace .\vader4pro.hidtrace.jsonl
+volty hid inspect
+volty hid trace .\device.hidtrace.jsonl
 ```
 
-`sniff` opens exactly one selected HID interface, records its input reports for
-1–120 seconds (10 seconds by default), and never sends a report. It refuses to
-overwrite an existing output file. The trace contains numeric interface
-metadata, report IDs, raw bytes, and relative timestamps; it excludes device
-paths and serial numbers. Review the file before sharing it.
+Use `inspect` to identify one interface, then run `sniff` with that interface's
+VID, PID, and interface number. Include `--include-input` to acknowledge that
+raw reports may contain user input. `sniff` records input reports for 1–120
+seconds (10 seconds by default), never sends a report, and refuses to overwrite
+an existing output file. The trace contains numeric interface metadata, report
+IDs, raw bytes, and relative timestamps; it excludes device paths and serial
+numbers. Review the file before sharing it.
 
 This is a user-mode HID report capture, not a USB bus sniffer: it does not see
 output or feature requests made by another application, nor USB control
-transfers. Volty's report transport can record input, output, and feature
-operations made by future Volty protocol probes, but `sniff` currently records
-passive input reports only. Capturing Flydigi Space Station's requests still
-requires an external bus capture such as
-[USBPcap with Wireshark](https://desowin.org/usbpcap/); Volty does not install
-a filter driver or require administrator access for its own trace. The USBPcap
-project page currently lists Windows 7, 8, and 10; it does not explicitly list
-Windows 11, so verify compatibility before installing it.
+transfers. Volty's `sniff` command records passive input reports only; it does
+not install a filter driver or require administrator access for its own trace.
 
 Raw HID traces use the separate `volty.hid_trace/v1` schema and are not accepted
 as battery snapshots or uploaded automatically. A validated trace can be
@@ -195,5 +204,5 @@ available in default builds and has been validated on the Baseus Bass BS2 Lite
 and Xiaomi J18. The BLE GATT capture path has not yet been tested on real
 hardware.
 
-For the record layout and replay details, see the
-[capture format reference](capture-format.md).
+The capture schema is versioned independently from raw HID traces, which use
+the separate `volty.hid_trace/v1` schema.

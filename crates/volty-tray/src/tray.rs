@@ -251,10 +251,18 @@ pub struct TrayController {
     actions_rx: Receiver<TrayAction>,
     percentage: Option<u8>,
     battery_color_map: BatteryColorMap,
+    show_percentage_in_battery_icon: bool,
     displayed_status: Option<String>,
     displayed_tooltip: Option<String>,
     displayed_device_statuses: Vec<String>,
-    displayed_icon: Option<(Option<u8>, u32, BatteryColorMap, TrayIconStyle, IconTheme)>,
+    displayed_icon: Option<(
+        Option<u8>,
+        u32,
+        BatteryColorMap,
+        TrayIconStyle,
+        bool,
+        IconTheme,
+    )>,
 }
 
 struct TrayMenu {
@@ -587,6 +595,7 @@ impl TrayController {
             actions_rx,
             percentage: None,
             battery_color_map: BatteryColorMap::default(),
+            show_percentage_in_battery_icon: false,
             displayed_status: None,
             displayed_tooltip: None,
             displayed_device_statuses: Vec::new(),
@@ -809,11 +818,17 @@ impl TrayController {
             icon_size,
             self.battery_color_map,
             self.tray_icon_style,
+            self.show_percentage_in_battery_icon,
             icon_theme,
         );
         if self.displayed_icon != Some(icon_key) {
-            let icon =
-                self.render_icon(percentage, icon_size, self.battery_color_map, icon_theme)?;
+            let icon = self.render_icon(
+                percentage,
+                icon_size,
+                self.battery_color_map,
+                icon_theme,
+                self.show_percentage_in_battery_icon,
+            )?;
             self.icon
                 .set_icon(Some(icon))
                 .map_err(|error| TrayError::new(format!("could not update tray icon: {error}")))?;
@@ -1042,8 +1057,13 @@ impl TrayController {
         }
         if let Some(percentage) = self.percentage {
             let icon_theme = current_icon_theme()?;
-            let icon =
-                self.render_icon(Some(percentage), ICON_SIZE, battery_color_map, icon_theme)?;
+            let icon = self.render_icon(
+                Some(percentage),
+                ICON_SIZE,
+                battery_color_map,
+                icon_theme,
+                self.show_percentage_in_battery_icon,
+            )?;
             self.icon
                 .set_icon(Some(icon))
                 .map_err(|error| TrayError::new(format!("could not update tray icon: {error}")))?;
@@ -1052,10 +1072,43 @@ impl TrayController {
                 ICON_SIZE,
                 battery_color_map,
                 self.tray_icon_style,
+                self.show_percentage_in_battery_icon,
                 icon_theme,
             ));
         }
         self.battery_color_map = battery_color_map;
+        Ok(())
+    }
+
+    pub fn set_show_percentage_in_battery_icon(
+        &mut self,
+        show_percentage: bool,
+    ) -> Result<(), TrayError> {
+        if self.show_percentage_in_battery_icon == show_percentage {
+            return Ok(());
+        }
+        if let Some(percentage) = self.percentage {
+            let icon_theme = current_icon_theme()?;
+            let icon = self.render_icon(
+                Some(percentage),
+                ICON_SIZE,
+                self.battery_color_map,
+                icon_theme,
+                show_percentage,
+            )?;
+            self.icon
+                .set_icon(Some(icon))
+                .map_err(|error| TrayError::new(format!("could not update tray icon: {error}")))?;
+            self.displayed_icon = Some((
+                Some(percentage),
+                ICON_SIZE,
+                self.battery_color_map,
+                self.tray_icon_style,
+                show_percentage,
+                icon_theme,
+            ));
+        }
+        self.show_percentage_in_battery_icon = show_percentage;
         Ok(())
     }
 
@@ -1065,16 +1118,23 @@ impl TrayController {
         icon_size: u32,
         battery_color_map: BatteryColorMap,
         icon_theme: IconTheme,
+        show_percentage: bool,
     ) -> Result<Icon, TrayError> {
         match percentage {
             Some(percentage) if self.tray_icon_style == TrayIconStyle::Percentage => {
-                percentage_icon_at_size_with_color_map(percentage, icon_size, battery_color_map)
+                percentage_icon_at_size_with_color_map(
+                    percentage,
+                    icon_size,
+                    battery_color_map,
+                    icon_theme,
+                )
             }
             Some(percentage) => battery_icon_at_size_with_color_map(
                 percentage,
                 icon_size,
                 battery_color_map,
                 icon_theme,
+                show_percentage,
             ),
             None => unknown_battery_icon_at_size(icon_size, icon_theme),
         }

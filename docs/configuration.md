@@ -15,6 +15,8 @@ battery_eta_window_minutes = 10 # 1-180 minutes of discharge history
 stale_after_minutes = 15 # 1-1440 minutes without a fresh reading before marking stale
 notifications_enabled = true
 log_level = "info" # error, warn, info, debug, or trace
+tray_icon_style = "battery" # "battery" or "percentage"; overrides the saved tray choice
+show_percentage_in_battery_icon = false # draw contrasting digits inside the battery
 
 # Optional tray color-map overrides. Thresholds are inclusive upper bounds.
 # red_max_percent must be below yellow_max_percent; colors use #RRGGBB.
@@ -35,6 +37,13 @@ configured cooldown; `0` disables repeats.
 The default tray colors are green above 30%, yellow from 16–30%, and red at 15%
 or below. Red and yellow cutoffs can be overridden (red: 0–99, yellow: 1–100)
 and must remain ordered. Omitted colors and thresholds retain their defaults.
+`tray_icon_style` selects the battery glyph or percentage-only display; when it
+is set, it takes precedence over the tray menu's saved style. Enable
+`show_percentage_in_battery_icon` to draw the percentage over the battery glyph.
+The overlay automatically chooses a contrasting text color and outline based
+on the active battery color. It does not add a background plate, so the battery
+fill and transparent taskbar background remain visible. The overlay has no
+effect with the percentage-only style.
 
 ## Battery estimates and stale readings
 

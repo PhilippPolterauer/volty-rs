@@ -27,7 +27,9 @@ Volty monitors supported devices while it runs. The icon shows the lowest
 reported battery level by default; you can pin a device or choose a numeric
 percentage icon. Hover over the icon for a compact line per device, including
 its name, percentage, estimated remaining time when available, and last-seen age.
-A reading is marked `stale` after the configured stale period.
+The battery icon adapts its outline for readability in light and dark Windows
+themes, and percentage digits use Segoe UI. A reading is marked `stale` after
+the configured stale period.
 
 ![Volty tray icon showing battery status](tray.png)
 
@@ -56,7 +58,24 @@ configuration and log access, hardware capture, diagnostics, and reset. The
 advanced-menu choice is saved locally; **Reset Volty** returns to the compact
 menu.
 
-![Volty tray menu](context.png)
+![Volty tray menu using the Windows light theme](context.png)
+
+The native tray menu follows the current Windows light or dark theme. The
+dashboard uses the same system-aware appearance.
+
+## Battery history dashboard
+
+Left-click the tray icon to open the local dashboard in a native WebView2
+window. It starts with a summary of tracked devices, data points, and online
+devices, followed by per-device battery details and history charts. Use the
+device selector or search field to narrow the view. In the native window, the
+Refresh button reloads the latest saved history. The layout adapts to narrow
+windows, and its colors follow the Windows light or dark theme. If WebView2 is
+unavailable, Volty opens a read-only HTML snapshot in your default browser.
+
+The native window also provides local history and diagnostic-file management.
+See [Dashboard options and data controls](diagnostics.md#battery-history-dashboard)
+for details.
 
 Unchecking a device in **Monitored Devices** excludes it from tray status,
 icon percentage, low-battery alerts, and battery history. Unlisted devices are

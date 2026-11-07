@@ -30,9 +30,9 @@ details.
 `volty-hid` owns HID interface matching and protocol behavior. The single
 `SUPPORTED_HID_DEVICES` catalog resolves each interface to no device, exactly
 one device, or an ambiguity error; catalog order never selects between
-overlapping matchers. Its current entries cover Logitech HID++ 2.0, Flydigi's
-vendor protocol, and generic standard HID battery reports. The generic matcher
-accepts only non-vendor usage pages and probes/caches a usable battery layout.
+overlapping matchers. The catalog includes device-specific backends and generic
+standard HID battery reports. The generic matcher accepts only non-vendor usage
+pages and probes/caches a usable battery layout.
 
 For protocol investigation, `volty-hid` also exposes report-level I/O and an
 opt-in recording wrapper. `volty-capture` stores those observations in a
@@ -47,10 +47,11 @@ usage page/usage, and (when present) a serial-number hash. The tray's device
 state, monitoring preferences, and low-battery de-duplication use a stable
 device identity plus HID++ slot.
 
-`volty-bluetooth` is separate from the HID backend and remains experimental. It
-is enabled by the tray crate's default features; build with
-`--no-default-features` to exclude it. See the
-[Bluetooth support notes](bluetooth-headphone-battery-support.md).
+`volty-bluetooth` is separate from the HID backend and is enabled by the tray
+crate's default features. Battery availability depends on the data Windows
+exposes for each device. Build with
+`--no-default-features` to exclude it. See [device support](device-support.md)
+for validated examples and limits.
 
 `volty-tray` owns polling, configuration, local state, notifications, and tray
 presentation. A new provider implements `BatteryProvider`; new HID protocols
@@ -61,8 +62,7 @@ full 90%). Providers preserve whether a percentage was reported or estimated;
 estimates can drive the tray icon and color, but do not feed ETA, discharge-rate
 learning, percentage history, or numeric low-battery thresholds.
 The XInput player slot is the best available device identity. See
-[Generic HID battery support](hid-battery-support.md) and
-[Adding a Logitech HID++ device](adding-mice.md).
+[HID support and adding devices](hid-battery-support.md).
 
 The Windows tray crate centralizes executable-resource icon loading, native
 window icons, the WebView window icon, and the dashboard favicon in

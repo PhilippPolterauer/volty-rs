@@ -38,7 +38,10 @@ WebView2 window. The Microsoft WebView2 Runtime is required for the native
 window; if it is unavailable, Volty writes the HTML file and opens it in the
 default browser. Left-click the Volty tray icon to open the same native window.
 Only one native dashboard window can be open at a time; opening it again brings
-the existing window to the foreground and refreshes its data.
+the existing window to the foreground and refreshes its data. The dashboard has
+a responsive, summary-first layout with device filtering, history charts, and
+per-device battery and ETA cards. Its light or dark colors follow the system
+appearance.
 The native window supports filtering by device, previewing age- and inactivity-
 based history cleanup, forgetting one device's history or Volty preferences,
 and pausing or resuming future history recording without changing monitoring.
@@ -78,8 +81,7 @@ the normal tray app.
 volty hid inspect
 volty hid inspect --vid 0x046d --pid 0xc547 --usage-page 0xff00 --usage 0x0002
 volty hid features --vid 0x046d --pid 0xc547 --usage-page 0xff00 --usage 0x0002 --device-index 0x01
-volty hid sniff --vid 0x04b4 --pid 0x2412 --interface 2 --duration-seconds 15 --output .\vader4pro.hidtrace.jsonl --include-input
-volty hid trace .\vader4pro.hidtrace.jsonl
+volty hid trace .\device.hidtrace.jsonl
 ```
 
 `inspect` lists matching interface IDs, usage page/usage, interface number,
@@ -103,11 +105,14 @@ It requires `--include-input` because raw reports can contain buttons or
 keystrokes, runs for at most 120 seconds, and refuses to overwrite a file.
 `trace` validates the JSONL file and summarizes its report IDs and sizes. The
 trace omits interface paths and serial numbers but must still be reviewed
-before sharing. It sees input reports available to Volty, not USB traffic or
+before sharing. To record a trace, first identify one interface with `inspect`,
+then run `sniff` using that interface's selectors and explicitly include input
+reports. It sees input reports available to Volty, not USB traffic or
 output/feature requests made by another application; see
 [raw HID report traces](hardware-capture.md#raw-hid-report-traces).
 
-For a worked Logitech example, see [Adding a Logitech HID++ device](adding-mice.md).
+For a worked Logitech example and device-development guidance, see
+[HID support and adding devices](hid-battery-support.md).
 For a battery support report, use the
 [Hardware report issue template](https://github.com/PhilippPolterauer/volty-rs/issues/new?template=hardware-report.yml)
 and attach a reviewed capture.

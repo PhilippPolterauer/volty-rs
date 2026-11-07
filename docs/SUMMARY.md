@@ -6,21 +6,12 @@
 
 - [Install and run](installation.md)
 - [Configuration and data](configuration.md)
+- [Supported devices and limits](device-support.md)
 - [Troubleshooting and diagnostics](diagnostics.md)
-- [Device support](device-support.md)
-- [Vader 4 Pro investigation findings](vader-4-pro-findings.md)
-- [Hardware captures](hardware-capture.md)
+- [Hardware captures and replay](hardware-capture.md)
 
-# Technical reference
+# Developer guide
 
 - [Architecture](architecture.md)
-- [Capture format and replay](capture-format.md)
-- [Generic HID battery support](hid-battery-support.md)
-- [Adding a Logitech HID++ device](adding-mice.md)
-- [Bluetooth headphone support](bluetooth-headphone-battery-support.md)
+- [HID support and adding devices](hid-battery-support.md)
 - [Build and test](development.md)
-- [Sustained-run performance](performance-assessment.md)
-
-# Project
-
-- [Releases and changelog](releases.md)

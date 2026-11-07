@@ -1,4 +1,4 @@
-# Generic HID battery-level support
+# HID battery support and adding devices
 
 Volty's goal is to monitor battery levels from HID peripherals across vendors
 and protocols. HID describes how a device exposes reports; it does not mean
@@ -6,20 +6,16 @@ every device reports battery state in the same format. A battery reading may
 come from a standardized HID report or a vendor-specific protocol, and each
 format needs a supported discovery and decoding path.
 
-**Current implementation:** two HID battery device families are registered in
-`SUPPORTED_HID_DEVICES`: Logitech HID++ 2.0 and generic standard HID battery
-reports. The generic path covers any HID interface whose report descriptor
-declares a usable battery level (Generic Device Controls *Battery Strength*,
-Battery System relative/absolute state of charge, or remaining and full-charge
-capacity) and reads it through the Windows HID parser, showing the reading as
-"HID Battery". The Logitech HID++ path reads Unified Battery (`0x1004`), then
-legacy Battery Status (`0x1000`), then Battery Voltage (`0x1001`). A device
-that exposes its battery only through a vendor-defined report still needs its
-own protocol adapter.
-
-**Current use case:** The project owner's current primary use case is the
-Logitech G502 X Superlight RGB; device support remains best-effort and hardware
-validation is limited.
+**Current implementation:** `SUPPORTED_HID_DEVICES` registers Logitech HID++,
+generic standard HID, and a vendor-specific controller backend. The generic
+path reads report descriptors that declare a usable battery level (Generic
+Device Controls *Battery Strength* or Battery System state of charge/capacity)
+through the Windows HID parser. The Logitech path reads Unified Battery
+(`0x1004`) and legacy Battery Status (`0x1000`); a vendor-defined report needs
+its own protocol adapter. The vendor-specific controller backend has no
+hardware-validated device and is therefore omitted from the tested-device
+list. Device validation status is listed in
+[Supported devices and limits](device-support.md).
 
 ## Battery-reading flow
 
@@ -60,7 +56,7 @@ The workspace has two user-facing paths today:
 
 | Path | What it does | Current scope |
 | --- | --- | --- |
-| Tray polling | Queries a battery through the built-in API, then updates the icon and notifications. | Logitech HID++ Unified Battery (`0x1004`), legacy Battery Status (`0x1000`), and Battery Voltage (`0x1001`) fallback, plus standard HID battery usages (Generic Device Controls *Battery Strength* and Battery System state of charge or capacity). |
+| Tray polling | Queries supported HID interfaces, then updates the icon and notifications. | Registered device-specific backends and standard HID battery usages (Generic Device Controls *Battery Strength* and Battery System state of charge or capacity). |
 | HID diagnostics CLI | Inspects interfaces and HID++ feature mappings for on-demand diagnostics. | HID++ 2.0 diagnostics; separate from tray polling. Standard HID battery descriptors are exercised through the tray path instead. |
 
 On-demand diagnostics do not select a tray backend or add device support.
@@ -90,16 +86,13 @@ catalog order decide. `HidBatteryDevice::matches` defaults to the selected backe
 used for the query; Volty does not try every protocol or choose a backend
 from diagnostic input.
 
-`SUPPORTED_HID_DEVICES` currently has two entries. The Logitech HID++ 2.0
-device matcher selects vendor ID `0x046d`, usage page `0xff00`, and usage
-`0x0002`; after selection, runtime feature discovery and battery decoding
-determine whether a supported battery feature is available. The generic HID
-battery device matcher accepts only non-vendor usage pages whose report
-descriptor declares a usable battery field; it probes and caches the parsed
-layout per interface, and an interface without a readable battery level does
-not match. The two matchers are non-overlapping: the generic matcher never
-accepts usage page `0xff00` or any other vendor-defined page, while the
-Logitech matcher requires the Logitech vendor ID and usage page `0xff00`.
+The Logitech HID++ 2.0 matcher selects vendor ID `0x046d`, usage page `0xff00`,
+and usage `0x0002`; runtime feature discovery then checks for a supported
+battery feature. The generic HID matcher accepts only non-vendor usage pages
+whose report descriptor declares a readable battery field, and caches the
+parsed layout per interface. The vendor-specific backend has its own matcher.
+If multiple catalog entries match an interface, resolution fails rather than
+choosing one by catalog order.
 
 Polling keeps every successful interface/device-index reading, so one matching
 interface is a candidate rather than proof that it reports a supported battery.
@@ -160,10 +153,11 @@ No additional tray/UI trait is required: once `query_battery` returns a valid
 `BatteryStatus`, the existing app updates status text and the tray icon. Its
 percentage provenance determines which calculations and alerts are eligible.
 
-`logitech_hidpp.rs` and `generic_battery.rs` are the two protocol backends. The
-generic backend reads one directly addressed interface (`0xff`) through the
-Windows HID parser and does not enumerate paired-device slots. The tray consumes
-the protocol and device traits rather than selecting a vendor directly.
+The HID crate contains Logitech HID++, generic HID, and vendor-protocol
+backends. The generic backend reads one directly addressed interface (`0xff`)
+through the Windows HID parser and does not enumerate paired-device slots.
+The tray consumes the protocol and device traits rather than selecting a
+vendor directly.
 
 ### Battery Voltage fallback (`0x1001`)
 
@@ -199,11 +193,11 @@ low at 20 or below, good below 100, and full at 100. The reading sets
 `"HID++ Battery Voltage (estimated)"`, and keeps the measured value in
 `BatteryStatus::voltage_mv`.
 
-**This path is implemented but NOT hardware-validated.** No device exposing
-only `0x1001` was available, so it is exercised only by unit tests and synthetic
-HID++ frames. The percentage is an estimate from voltage and may differ from
-the vendor's own curve, especially under load, at temperature extremes, or on
-non-LiPo cells. Treat it as a best-effort indicator; the raw millivolts in
+This path is covered by unit tests and synthetic HID++ frames, but has not been
+validated with a device exposing only `0x1001`. The percentage is an estimate
+from voltage and may differ from the vendor's curve, especially under load, at
+temperature extremes, or on non-LiPo cells. Treat it as a best-effort
+indicator; the raw millivolts in
 `BatteryStatus` are the unmodified device reading. Captures retain that raw
 voltage in `BatterySnapshot::voltage_mv`, and capture replay decodes `0x1001`
 exchanges with the same decoder as the tray. All `0x1001` evidence remains
@@ -218,9 +212,23 @@ device, register a backend, or change which battery query the tray runs. It
 does not inspect standard HID battery descriptors; the generic path is
 exercised through tray polling.
 
-See [Adding a Logitech mouse](./adding-mice.md) for the Logitech backend's
-worked example: interface selection, feature discovery, tray validation, and
-the Rust changes required for a new battery encoding.
+## Logitech HID++ example
+
+List candidate Logitech interfaces, then query the selected device index for
+its supported features:
+
+```powershell
+cargo run --release --package volty-tray -- hid inspect --vid 0x046d
+cargo run --release --package volty-tray -- hid features --device-index 0x01 --vid 0x046d --pid 0xc547 --usage-page 0xff00 --usage 0x0002
+```
+
+Use the VID, PID, usage, and interface values reported by `inspect` for the
+target device. Do not confuse the USB interface number with the HID++ device
+index: `0xFF` addresses a directly connected device or receiver endpoint, while
+`1`–`6` address paired slots behind a receiver. Look for logical feature
+`0x1004` or `0x1000`; Root assigns runtime feature indexes per device. A
+diagnostic feature listing does not prove that the tray receives a battery
+reading, so verify the result through normal tray polling.
 
 ## Adding another HID battery source
 
@@ -260,12 +268,7 @@ ratios, and charging/discharging mapping are unit-tested in `generic_battery.rs`
 descriptor probing and report reads require Windows HID APIs and hardware.
 HID++ Unified Battery, legacy Battery Status, and the Battery Voltage fallback
 are unit-tested with synthetic frames, including the voltage curve, clamping,
-and monotonicity. Battery Voltage support has not been validated on hardware
-because no device exposing only `0x1001` was available; its synthetic capture
-fixture exercises Root discovery, the voltage read, feature-table verification,
-and reading comparison including raw voltage during offline replay. On-demand
-diagnostics can verify a HID++ interface or feature mapping, but tray support
-must be tested through its own polling path; a successful standalone diagnostic
-query does not prove that the tray consumes that reading. The current primary
-use case is the Logitech G502 X Superlight RGB, and hardware validation remains
-limited; do not infer support for every model from one working device.
+and monotonicity. The Battery Voltage path has not been validated on hardware.
+On-demand diagnostics can verify a HID++ interface or feature mapping, but tray
+support must be tested through its own polling path; a successful standalone
+diagnostic query does not prove that the tray consumes that reading.

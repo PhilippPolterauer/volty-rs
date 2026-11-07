@@ -5,7 +5,7 @@
 </p>
 
 <p align="center">
-  <strong>A Windows system-tray battery monitor for supported HID devices, written in Rust.</strong>
+  <strong>A Windows system-tray battery monitor for supported HID devices, XInput gamepads, and Bluetooth devices, written in Rust.</strong>
 </p>
 
 <p align="center">
@@ -15,15 +15,14 @@
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="MIT license"></a>
 </p>
 
-Your mouse battery, always one glance away. Volty sits in the Windows
-notification area, shows the live charge level on the tray icon, and warns you
-before your device dies. It reads supported Logitech HID++ and standard HID
-battery reports on Windows 10/11, and includes experimental Bluetooth battery
-monitoring by default. The Baseus Bass BS2 Lite and Xiaomi J18 are validated;
-other Bluetooth device coverage remains limited.
+Your device batteries, always one glance away. Volty sits in the Windows
+notification area, shows the live charge level on a theme-aware tray icon, and
+warns you before a device dies. It reads supported Logitech HID++, standard HID
+battery reports, and coarse XInput gamepad levels on Windows 10/11. Bluetooth
+battery readings are available when Windows exposes a supported source.
 
 <p align="center">
-  <img src="docs/hero.png" alt="Volty tray icon with battery tooltip, right-click menu, and low-battery notification" width="100%">
+  <img src="docs/hero.png" alt="Volty overview with live tray icon options, low-battery alerts, and a battery history dashboard" width="100%">
 </p>
 
 > **Project status:** Volty is a hobby project with limited hardware testing. It
@@ -44,30 +43,38 @@ and development guides.
 
 ## Highlights
 
-- **Live tray icon:** battery level and charging state at a glance; hover for
-  device name, percentage, and status.
-- **Right-click menu:** per-device status, refresh, configuration, log file,
-  diagnostics, and start on boot.
+- **Theme-aware tray:** the battery icon stays readable in light and dark
+  Windows themes, and the tray menu follows the system appearance. Hover for
+  device name, percentage, estimated time remaining, and status.
+- **Tray controls:** manage monitored devices, customize the tray display,
+  configure alerts, open diagnostics, and control Start on Boot.
 - **Low-battery alerts:** native Windows notifications before you run dry.
-- **Left-click dashboard:** local battery history and estimated remaining time
-  in a native WebView2 window (browser fallback). Nothing is uploaded.
+- **Battery dashboard:** a responsive, summary-first view of local history,
+  battery level, estimated time remaining, and drain rate. Its colors follow
+  the system light or dark theme; the native window requires WebView2 and has a
+  browser fallback. Nothing is uploaded.
 
 <p align="center">
-  <img src="docs/dashboard.png" alt="Volty dashboard showing 47% battery, 5d 13h remaining, drain rate and history chart" width="720">
+  <img src="docs/dashboard.png" alt="Volty battery dashboard in dark theme with synthetic demo data, summary cards, battery levels, drain rate, and history charts" width="720">
 </p>
 
-- **Customizable:** per-device controls and tray display options.
+- **Local data controls:** filter devices, export history as CSV, pause
+  recording, and review cleanup before removing stored data.
+- **Updates:** get notified when a stable release is available; Volty verifies
+  the download before asking to install it.
 - **Diagnostics:** read-only hardware captures with local inspection and
   replay; nothing is uploaded automatically.
 - **Modular Rust workspace:** separate battery, HID, Bluetooth, capture, and
   tray crates.
 
+<p align="center">
+  <img src="docs/tray-display.png" alt="Volty battery, battery with percentage, and percentage-only tray icons at critical, low, medium, and full charge in light and dark themes" width="900">
+</p>
+
 Device support is best-effort beyond the hardware listed in the
 [device support guide](https://philipppolterauer.github.io/volty-rs/device-support.html).
-Bluetooth is enabled in default builds but remains experimental with limited
-hardware validation. See the
-[Bluetooth validation notes](https://philipppolterauer.github.io/volty-rs/bluetooth-headphone-battery-support.html)
-for current limitations.
+Bluetooth support depends on the battery data Windows exposes for each device;
+the support guide lists validated examples and current limitations.
 
 ## Build and test
 

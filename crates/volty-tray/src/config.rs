@@ -8,6 +8,8 @@ use std::{
 
 use toml_edit::DocumentMut;
 
+use crate::state::TrayIconStyle;
+
 pub const DEFAULT_LOW_BATTERY_THRESHOLDS: &[u8] = &[20, 10, 5];
 pub const DEFAULT_LOW_BATTERY_COOLDOWN_MINUTES: u64 = 120;
 pub const DEFAULT_POLL_INTERVAL_SECONDS: u64 = 120;
@@ -95,6 +97,8 @@ pub struct AppConfig {
     pub notifications_enabled: bool,
     pub log_level: LogLevel,
     pub battery_color_map: BatteryColorMap,
+    pub tray_icon_style: Option<TrayIconStyle>,
+    pub show_percentage_in_battery_icon: bool,
 }
 
 impl Default for AppConfig {
@@ -109,6 +113,8 @@ impl Default for AppConfig {
             notifications_enabled: true,
             log_level: LogLevel::Info,
             battery_color_map: BatteryColorMap::default(),
+            tray_icon_style: None,
+            show_percentage_in_battery_icon: false,
         }
     }
 }
@@ -164,6 +170,10 @@ impl AppConfig {
              # notifications_enabled = {}\n\
              # error, warn, info, debug, or trace.\n\
              # log_level = \"{}\"\n\
+             # Tray icon style: \"battery\" or \"percentage\". Overrides the saved tray choice.\n\
+             # tray_icon_style = \"battery\"\n\
+             # Draw the percentage over the battery icon when its style is \"battery\".\n\
+             # show_percentage_in_battery_icon = false\n\
              # Uncomment this table to override the default tray battery colors.\n\
              # Thresholds are inclusive upper bounds; red must be below yellow.\n\
              # [battery_color_map]\n\
@@ -474,6 +484,28 @@ fn parse_toml(contents: &str, path: &Path) -> Result<AppConfig, ConfigError> {
                     ))
                 })?;
             }
+            "tray_icon_style" => {
+                let style = value.as_str().ok_or_else(|| {
+                    ConfigError::new(format!(
+                        "invalid configuration {}: tray_icon_style must be a string",
+                        path.display()
+                    ))
+                })?;
+                config.tray_icon_style = Some(TrayIconStyle::parse(style).ok_or_else(|| {
+                    ConfigError::new(format!(
+                        "invalid configuration {}: tray_icon_style must be \"battery\" or \"percentage\"",
+                        path.display()
+                    ))
+                })?);
+            }
+            "show_percentage_in_battery_icon" => {
+                config.show_percentage_in_battery_icon = value.as_bool().ok_or_else(|| {
+                    ConfigError::new(format!(
+                        "invalid configuration {}: show_percentage_in_battery_icon must be a boolean",
+                        path.display()
+                    ))
+                })?;
+            }
             "battery_color_map" => {
                 config.battery_color_map =
                     parse_battery_color_map(value, config.battery_color_map, path)?;
@@ -666,6 +698,8 @@ mod tests {
                 notifications_enabled: false,
                 log_level: LogLevel::Debug,
                 battery_color_map: BatteryColorMap::default(),
+                tray_icon_style: None,
+                show_percentage_in_battery_icon: false,
             }
         );
         assert_eq!(
@@ -716,6 +750,22 @@ mod tests {
             assert!(parse_toml(invalid, path).is_err(), "{invalid}");
         }
         assert!(parse_toml("stale_after_minutes = \"15\"\n", path).is_err());
+    }
+
+    #[test]
+    fn toml_config_accepts_tray_icon_settings() {
+        let config = parse_toml(
+            "tray_icon_style = \"percentage\"\nshow_percentage_in_battery_icon = true\n",
+            Path::new("config.toml"),
+        )
+        .unwrap();
+        assert_eq!(config.tray_icon_style, Some(TrayIconStyle::Percentage));
+        assert!(config.show_percentage_in_battery_icon);
+
+        let config =
+            parse_toml("tray_icon_style = \"battery\"\n", Path::new("config.toml")).unwrap();
+        assert_eq!(config.tray_icon_style, Some(TrayIconStyle::Battery));
+        assert!(!config.show_percentage_in_battery_icon);
     }
 
     #[test]
@@ -772,6 +822,9 @@ mod tests {
             "notifications_enabled = \"true\"",
             "log_level = 5",
             "log_level = \"verbose\"",
+            "tray_icon_style = 5",
+            "tray_icon_style = \"digits\"",
+            "show_percentage_in_battery_icon = \"true\"",
             "battery_color_map = \"invalid\"",
             "[battery_color_map]\nred_max_percent = -1",
             "[battery_color_map]\nred_max_percent = 100",

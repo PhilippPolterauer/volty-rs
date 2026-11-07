@@ -154,7 +154,15 @@ impl App {
 
         let mut tray = TrayController::new(startup.advanced_options_visible)?;
         tray.set_battery_color_map(startup.active_config.battery_color_map)?;
-        tray.set_tray_icon_style(startup.tray_display.icon_style);
+        tray.set_show_percentage_in_battery_icon(
+            startup.active_config.show_percentage_in_battery_icon,
+        )?;
+        tray.set_tray_icon_style(
+            startup
+                .active_config
+                .tray_icon_style
+                .unwrap_or(startup.tray_display.icon_style),
+        );
         tray.set_pinned_device_checked(startup.tray_display.pinned_device.as_deref());
         tray.update_status("", "Searching for supported devices", None)?;
         let config_watch = watch_config_file()?;
@@ -908,7 +916,8 @@ impl App {
 
     fn set_tray_icon_style(&mut self, style: TrayIconStyle) -> Result<(), Box<dyn Error>> {
         if style == self.tray_icon_style {
-            self.tray.set_tray_icon_style(style);
+            self.tray
+                .set_tray_icon_style(self.active_config.tray_icon_style.unwrap_or(style));
             return Ok(());
         }
 
@@ -923,7 +932,8 @@ impl App {
         match save_result {
             Ok(()) => {
                 self.tray_icon_style = style;
-                self.tray.set_tray_icon_style(style);
+                self.tray
+                    .set_tray_icon_style(self.active_config.tray_icon_style.unwrap_or(style));
                 self.record_event(
                     LogLevel::Info,
                     &format!("Tray icon style set to {}", style.as_str()),
@@ -931,7 +941,11 @@ impl App {
                 self.refresh_visible_devices()?;
             }
             Err(error) => {
-                self.tray.set_tray_icon_style(self.tray_icon_style);
+                self.tray.set_tray_icon_style(
+                    self.active_config
+                        .tray_icon_style
+                        .unwrap_or(self.tray_icon_style),
+                );
                 self.report_error("Tray display state error", &error.to_string())?;
             }
         }
@@ -1052,7 +1066,14 @@ impl App {
         self.config_reload_due = None;
         self.tray
             .set_battery_color_map(self.active_config.battery_color_map)?;
-        self.tray.set_tray_icon_style(TrayIconStyle::Battery);
+        self.tray.set_show_percentage_in_battery_icon(
+            self.active_config.show_percentage_in_battery_icon,
+        )?;
+        self.tray.set_tray_icon_style(
+            self.active_config
+                .tray_icon_style
+                .unwrap_or(TrayIconStyle::Battery),
+        );
         self.tray.set_pinned_device_checked(None);
         let reset_status = self.notification_config_error.as_ref().map_or_else(
             || "Searching for supported devices".to_owned(),
@@ -1129,6 +1150,15 @@ impl App {
             self.report_config_error(error.to_string())?;
             return Ok(false);
         }
+        if let Err(error) = self
+            .tray
+            .set_show_percentage_in_battery_icon(config.show_percentage_in_battery_icon)
+        {
+            self.report_config_error(error.to_string())?;
+            return Ok(false);
+        }
+        self.tray
+            .set_tray_icon_style(config.tray_icon_style.unwrap_or(self.tray_icon_style));
         if let Err(error) = self.notifications.set_config(&config) {
             self.report_config_error(error.to_string())?;
             return Ok(false);
