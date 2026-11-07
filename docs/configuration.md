@@ -1,8 +1,13 @@
 # Configuration and local data
 
 Volty stores settings per Windows user and does not require administrator
-privileges. Use **Show Advanced Options → Open Configuration** to create or
-open `%APPDATA%\Volty\config.toml`. Volty watches the file for changes, and
+privileges. Choose **Settings...** from the tray icon to edit alert levels,
+notification timing, tray icon appearance, the device shown in the tray, and
+whether Volty starts with Windows. Use **Send a test notification** to check
+that Windows notifications are working. For polling intervals, log detail,
+custom battery colors, and other advanced options, choose **Show Advanced
+Options → Open Configuration** to create or open
+`%APPDATA%\Volty\config.toml`. Volty watches the file for changes, and
 **Discover Devices Now** also reloads it. If a new configuration is invalid,
 Volty reports the error and keeps the last valid settings active.
 
@@ -31,20 +36,23 @@ show_percentage_in_battery_icon = false # draw contrasting digits inside the bat
 
 The old singular `low_battery_threshold` key is not accepted; replace it with
 `low_battery_thresholds`. Thresholds are constrained to 1–100, deduplicated,
-and sorted from highest to lowest. Each threshold fires once per discharge
-cycle. After the lowest threshold fires, the alert can repeat after each
-configured cooldown; `0` disables repeats.
+sorted from highest to lowest, and always allow at least one threshold. Each
+threshold fires once per discharge cycle. After the lowest threshold fires,
+the alert can repeat after each configured cooldown; `0` disables repeats.
+These values can be changed in the native **Settings...** window or in
+`config.toml`.
 
 The default tray colors are green above 30%, yellow from 16–30%, and red at 15%
 or below. Red and yellow cutoffs can be overridden (red: 0–99, yellow: 1–100)
 and must remain ordered. Omitted colors and thresholds retain their defaults.
 `tray_icon_style` selects the battery glyph or percentage-only display; when it
-is set, it takes precedence over the tray menu's saved style. Enable
-`show_percentage_in_battery_icon` to draw the percentage over the battery glyph.
+is set, it takes precedence over the saved style selected in **Settings...**.
+Enable `show_percentage_in_battery_icon` to draw the percentage over the battery
+glyph; the same option is available in the **Settings...** window.
 `tray_icon_theme` selects the colors used to render the icon: `system` follows
 the Windows theme and is the default, while `light` and `dark` force that
-appearance. When set, it takes precedence over the saved choice in the
-advanced **Tray Display** menu.
+appearance. When set, it takes precedence over the saved choice on the
+**Settings...** window.
 The overlay automatically chooses a contrasting text color and outline based
 on the active battery color. It does not add a background plate, so the battery
 fill and transparent taskbar background remain visible. The overlay has no

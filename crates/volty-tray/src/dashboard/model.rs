@@ -14,6 +14,21 @@ pub(super) struct DashboardData {
     pub(super) management_allowed: bool,
     pub(super) devices: Vec<DashboardDevice>,
     pub(super) inventory: Vec<DashboardInventoryDevice>,
+    pub(super) settings: Option<DashboardSettings>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub(super) struct DashboardSettings {
+    pub(super) low_battery_thresholds: Vec<u8>,
+    pub(super) low_battery_cooldown_minutes: u64,
+    pub(super) notifications_enabled: bool,
+    pub(super) tray_icon_style: String,
+    pub(super) tray_icon_theme: String,
+    pub(super) show_percentage_in_battery_icon: bool,
+    pub(super) pinned_device: Option<String>,
+    pub(super) start_on_boot: Option<bool>,
+    pub(super) config_error: Option<String>,
+    pub(super) startup_error: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -119,6 +134,7 @@ pub(super) fn build_data(
         management_allowed,
         devices,
         inventory,
+        settings: None,
     })
 }
 

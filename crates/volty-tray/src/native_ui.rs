@@ -24,16 +24,25 @@ pub struct FontSet {
 
 impl FontSet {
     pub fn new() -> io::Result<Self> {
-        let body = create_font(-16, NORMAL_FONT_WEIGHT, "Segoe UI")?;
-        let body_small = match create_font(-14, NORMAL_FONT_WEIGHT, "Segoe UI") {
-            Ok(font) => font,
-            Err(error) => {
-                // SAFETY: this newly created font has not been selected into a device context.
-                delete_font(body);
-                return Err(error);
-            }
-        };
-        let heading = match create_font(-27, SEMIBOLD_FONT_WEIGHT, "Segoe UI") {
+        Self::new_for_dpi(96)
+    }
+
+    pub fn new_for_dpi(dpi: u32) -> io::Result<Self> {
+        let body = create_font(scale_font_height(-16, dpi), NORMAL_FONT_WEIGHT, "Segoe UI")?;
+        let body_small =
+            match create_font(scale_font_height(-14, dpi), NORMAL_FONT_WEIGHT, "Segoe UI") {
+                Ok(font) => font,
+                Err(error) => {
+                    // SAFETY: this newly created font has not been selected into a device context.
+                    delete_font(body);
+                    return Err(error);
+                }
+            };
+        let heading = match create_font(
+            scale_font_height(-27, dpi),
+            SEMIBOLD_FONT_WEIGHT,
+            "Segoe UI",
+        ) {
             Ok(font) => font,
             Err(error) => {
                 delete_font(body);
@@ -41,15 +50,16 @@ impl FontSet {
                 return Err(error);
             }
         };
-        let monospace = match create_font(-15, NORMAL_FONT_WEIGHT, "Consolas") {
-            Ok(font) => font,
-            Err(error) => {
-                delete_font(body);
-                delete_font(body_small);
-                delete_font(heading);
-                return Err(error);
-            }
-        };
+        let monospace =
+            match create_font(scale_font_height(-15, dpi), NORMAL_FONT_WEIGHT, "Consolas") {
+                Ok(font) => font,
+                Err(error) => {
+                    delete_font(body);
+                    delete_font(body_small);
+                    delete_font(heading);
+                    return Err(error);
+                }
+            };
 
         Ok(Self {
             body,
@@ -58,6 +68,10 @@ impl FontSet {
             monospace,
         })
     }
+}
+
+fn scale_font_height(height: i32, dpi: u32) -> i32 {
+    ((i64::from(height) * i64::from(dpi)) / 96) as i32
 }
 
 impl Drop for FontSet {

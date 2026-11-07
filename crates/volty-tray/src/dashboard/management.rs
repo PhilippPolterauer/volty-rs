@@ -9,11 +9,12 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::{
+    config::AppConfig,
     history::{unix_now, HistoryDeletion, HistoryRangePreview, HistoryStore},
-    state::{DeviceState, ForgottenDevicePreferences},
+    state::{DeviceState, ForgottenDevicePreferences, TrayIconStyle, TrayIconTheme},
 };
 
-use super::model::{build_data, DashboardData, DashboardInventoryDevice};
+use super::model::{build_data, DashboardData, DashboardInventoryDevice, DashboardSettings};
 
 const SECONDS_PER_DAY: i64 = 86_400;
 const MAX_DASHBOARD_DAYS: u32 = u32::MAX;
@@ -50,6 +51,7 @@ impl DashboardBackend {
             None => Vec::new(),
         };
         let state = DeviceState::open_local()?;
+        let tray_display = state.tray_display()?;
         let inventory = build_inventory(
             history
                 .as_ref()
@@ -58,9 +60,48 @@ impl DashboardBackend {
                 .unwrap_or_default(),
             state.monitored_devices()?,
             state.history_recording_preferences()?,
-            state.tray_display()?.pinned_device,
+            tray_display.pinned_device.clone(),
         );
-        self.build_dashboard_data(samples, days, generated_at, window_start, inventory)
+        let mut data =
+            self.build_dashboard_data(samples, days, generated_at, window_start, inventory)?;
+        if self.mutations_allowed {
+            data.settings = Some(self.load_settings(tray_display)?);
+        }
+        Ok(data)
+    }
+
+    fn load_settings(
+        &self,
+        tray_display: crate::state::TrayDisplaySettings,
+    ) -> Result<DashboardSettings, Box<dyn std::error::Error>> {
+        let (config, config_error) = match AppConfig::load() {
+            Ok(config) => (config, None),
+            Err(error) => (AppConfig::default(), Some(error.to_string())),
+        };
+        let (start_on_boot, startup_error) = match crate::tray::start_on_boot_enabled() {
+            Ok(enabled) => (Some(enabled), None),
+            Err(error) => (None, Some(error.to_string())),
+        };
+        Ok(DashboardSettings {
+            low_battery_thresholds: config.low_battery_thresholds,
+            low_battery_cooldown_minutes: config.low_battery_cooldown_minutes,
+            notifications_enabled: config.notifications_enabled,
+            tray_icon_style: config
+                .tray_icon_style
+                .unwrap_or(tray_display.icon_style)
+                .as_str()
+                .to_owned(),
+            tray_icon_theme: config
+                .tray_icon_theme
+                .unwrap_or(tray_display.icon_theme)
+                .as_str()
+                .to_owned(),
+            show_percentage_in_battery_icon: config.show_percentage_in_battery_icon,
+            pinned_device: tray_display.pinned_device,
+            start_on_boot,
+            config_error,
+            startup_error,
+        })
     }
 
     fn build_dashboard_data(
@@ -222,6 +263,74 @@ impl DashboardBackend {
             enabled,
             monitoring_unchanged: true,
         })
+    }
+
+    pub(super) fn update_settings(
+        &self,
+        update: &crate::config::DashboardSettingsUpdate,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        self.require_mutations()?;
+        validate_identity(update.pinned_device.as_deref())?;
+        crate::config::update_dashboard_settings(update)?;
+
+        let mut state = DeviceState::open_local().map_err(|error| {
+            io::Error::other(format!(
+                "configuration was saved, but pinned-device state could not be opened: {error}"
+            ))
+        })?;
+        match update.pinned_device.as_deref() {
+            Some(identity) => {
+                state.set_pinned_device(identity).map_err(|error| {
+                    io::Error::other(format!(
+                        "configuration was saved, but the pinned device could not be updated: {error}"
+                    ))
+                })?;
+            }
+            None => state.clear_pinned_device().map_err(|error| {
+                io::Error::other(format!(
+                    "configuration was saved, but the pinned device could not be cleared: {error}"
+                ))
+            })?,
+        }
+        let style = TrayIconStyle::parse(&update.tray_icon_style)
+            .ok_or_else(|| io::Error::other("invalid tray icon style"))?;
+        state.set_tray_icon_style(style).map_err(|error| {
+            io::Error::other(format!(
+                "configuration was saved, but tray icon style could not be stored: {error}"
+            ))
+        })?;
+        let theme = TrayIconTheme::parse(&update.tray_icon_theme)
+            .ok_or_else(|| io::Error::other("invalid tray icon theme"))?;
+        state.set_tray_icon_theme(theme).map_err(|error| {
+            io::Error::other(format!(
+                "configuration was saved, but tray icon theme could not be stored: {error}"
+            ))
+        })?;
+
+        if let Some(enabled) = update.start_on_boot {
+            crate::tray::set_start_on_boot_enabled(enabled).map_err(|error| {
+                io::Error::other(format!(
+                    "configuration and pinned-device settings were saved, but Windows startup could not be updated: {error}"
+                ))
+            })?;
+        }
+        Ok(())
+    }
+
+    pub(super) fn test_notification(&self) -> Result<(), Box<dyn std::error::Error>> {
+        self.require_mutations()?;
+        crate::notify::show_low_battery_notification("Volty test", 15)?;
+        Ok(())
+    }
+
+    pub(super) fn open_settings(&self) -> Result<(), Box<dyn std::error::Error>> {
+        let executable = env::current_exe()?;
+        use std::os::windows::process::CommandExt;
+        std::process::Command::new(executable)
+            .args(["dashboard", "--settings"])
+            .creation_flags(windows_sys::Win32::System::Threading::CREATE_NO_WINDOW)
+            .spawn()?;
+        Ok(())
     }
 
     pub(super) fn list_artifacts(

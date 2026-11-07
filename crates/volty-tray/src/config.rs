@@ -6,6 +6,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use serde::Deserialize;
 use toml_edit::DocumentMut;
 
 use crate::state::{TrayIconStyle, TrayIconTheme};
@@ -16,6 +17,19 @@ pub const DEFAULT_POLL_INTERVAL_SECONDS: u64 = 120;
 pub const DEFAULT_RETRY_INTERVAL_SECONDS: u64 = 15;
 pub const DEFAULT_BATTERY_ETA_WINDOW_MINUTES: u64 = 10;
 pub const DEFAULT_STALE_AFTER_MINUTES: u64 = 15;
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct DashboardSettingsUpdate {
+    pub low_battery_thresholds: Vec<u8>,
+    pub low_battery_cooldown_minutes: u64,
+    pub notifications_enabled: bool,
+    pub tray_icon_style: String,
+    pub tray_icon_theme: String,
+    pub show_percentage_in_battery_icon: bool,
+    pub pinned_device: Option<String>,
+    pub start_on_boot: Option<bool>,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BatteryColorMap {
@@ -340,6 +354,65 @@ pub fn remove_legacy_monitored_devices() -> Result<(), ConfigError> {
         return Ok(());
     };
     remove_legacy_monitored_devices_from(path)
+}
+
+pub fn update_dashboard_settings(settings: &DashboardSettingsUpdate) -> Result<(), ConfigError> {
+    let path = config_path()
+        .ok_or_else(|| ConfigError::new("could not determine the user configuration folder"))?;
+    update_dashboard_settings_at(path, settings)
+}
+
+fn update_dashboard_settings_at(
+    path: impl AsRef<Path>,
+    settings: &DashboardSettingsUpdate,
+) -> Result<(), ConfigError> {
+    let thresholds = normalize_low_battery_thresholds(&settings.low_battery_thresholds)?;
+    let cooldown = i64::try_from(settings.low_battery_cooldown_minutes).map_err(|_| {
+        ConfigError::new("low_battery_cooldown_minutes must not exceed 9223372036854775807")
+    })?;
+    let style = TrayIconStyle::parse(&settings.tray_icon_style)
+        .ok_or_else(|| ConfigError::new("tray_icon_style must be battery or percentage"))?;
+    let theme = TrayIconTheme::parse(&settings.tray_icon_theme)
+        .ok_or_else(|| ConfigError::new("tray_icon_theme must be system, light, or dark"))?;
+    update_config_document(path, |document| {
+        let mut values = toml_edit::Array::new();
+        for threshold in &thresholds {
+            values.push(i64::from(*threshold));
+        }
+        document["low_battery_thresholds"] = toml_edit::value(values);
+        document["low_battery_cooldown_minutes"] = toml_edit::value(cooldown);
+        document["notifications_enabled"] = toml_edit::value(settings.notifications_enabled);
+        document["tray_icon_style"] = toml_edit::value(style.as_str());
+        document["tray_icon_theme"] = toml_edit::value(theme.as_str());
+        document["show_percentage_in_battery_icon"] =
+            toml_edit::value(settings.show_percentage_in_battery_icon);
+    })
+}
+
+fn update_config_document(
+    path: impl AsRef<Path>,
+    update: impl FnOnce(&mut DocumentMut),
+) -> Result<(), ConfigError> {
+    let path = AppConfig::ensure_config_file_at(path)?;
+    let contents = fs::read_to_string(&path).map_err(|error| {
+        ConfigError::new(format!(
+            "could not read configuration {}: {error}",
+            path.display()
+        ))
+    })?;
+    parse_toml(&contents, &path)?;
+    let mut document = contents.parse::<DocumentMut>().map_err(|error| {
+        ConfigError::new(format!("invalid configuration {}: {error}", path.display()))
+    })?;
+    update(&mut document);
+    let updated = document.to_string();
+    parse_toml(&updated, &path)?;
+    fs::write(&path, updated).map_err(|error| {
+        ConfigError::new(format!(
+            "could not update configuration {}: {error}",
+            path.display()
+        ))
+    })
 }
 
 fn remove_legacy_monitored_devices_from(path: impl AsRef<Path>) -> Result<(), ConfigError> {
@@ -915,6 +988,88 @@ mod tests {
         assert!(recreated_contents.lines().all(|line| line.starts_with('#')));
         assert!(recreated_contents.contains("# low_battery_thresholds = [20, 10, 5]"));
 
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn dashboard_settings_update_persists_values_and_preserves_unrelated_config() {
+        let directory = std::env::temp_dir().join(format!(
+            "volty-dashboard-settings-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let path = directory.join("config.toml");
+        fs::create_dir_all(&directory).unwrap();
+        fs::write(
+            &path,
+            "# Keep this comment\npoll_interval_seconds = 300\n\n[battery_color_map]\nred_max_percent = 12\n",
+        )
+        .unwrap();
+
+        update_dashboard_settings_at(
+            &path,
+            &DashboardSettingsUpdate {
+                low_battery_thresholds: vec![5, 15, 15],
+                low_battery_cooldown_minutes: 45,
+                notifications_enabled: false,
+                tray_icon_style: "percentage".to_owned(),
+                tray_icon_theme: "dark".to_owned(),
+                show_percentage_in_battery_icon: true,
+                pinned_device: Some("hid:mouse".to_owned()),
+                start_on_boot: Some(true),
+            },
+        )
+        .unwrap();
+
+        let config = AppConfig::load_from(&path).unwrap();
+        assert_eq!(config.low_battery_thresholds, [15, 5]);
+        assert_eq!(config.low_battery_cooldown_minutes, 45);
+        assert!(!config.notifications_enabled);
+        assert_eq!(config.tray_icon_style, Some(TrayIconStyle::Percentage));
+        assert_eq!(config.tray_icon_theme, Some(TrayIconTheme::Dark));
+        assert!(config.show_percentage_in_battery_icon);
+        assert_eq!(config.poll_interval_seconds, 300);
+        assert_eq!(config.battery_color_map.red_max_percent, 12);
+        let contents = fs::read_to_string(&path).unwrap();
+        assert!(contents.contains("# Keep this comment"));
+
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn invalid_dashboard_settings_do_not_change_config() {
+        let directory = std::env::temp_dir().join(format!(
+            "volty-invalid-dashboard-settings-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let path = directory.join("config.toml");
+        fs::create_dir_all(&directory).unwrap();
+        let original = "# Keep this comment\npoll_interval_seconds = 300\n";
+        fs::write(&path, original).unwrap();
+
+        let result = update_dashboard_settings_at(
+            &path,
+            &DashboardSettingsUpdate {
+                low_battery_thresholds: vec![0],
+                low_battery_cooldown_minutes: 45,
+                notifications_enabled: true,
+                tray_icon_style: "battery".to_owned(),
+                tray_icon_theme: "system".to_owned(),
+                show_percentage_in_battery_icon: false,
+                pinned_device: None,
+                start_on_boot: None,
+            },
+        );
+
+        assert!(result.is_err());
+        assert_eq!(fs::read_to_string(&path).unwrap(), original);
         fs::remove_dir_all(directory).unwrap();
     }
 

@@ -29,8 +29,8 @@ pub fn start_on_boot_enabled() -> Result<bool, TrayError> {
     }
 }
 
-#[cfg(windows)]
-pub(super) fn start_on_boot_for_first_run() -> Result<bool, TrayError> {
+pub(super) fn ensure_startup_command_current() -> Result<(), TrayError> {
+    #[cfg(windows)]
     if let Some(configured_command) = startup_command_from_registry()? {
         let executable = std::env::current_exe().map_err(|error| {
             TrayError::new(format!("could not locate the running executable: {error}"))
@@ -43,33 +43,8 @@ pub(super) fn start_on_boot_for_first_run() -> Result<bool, TrayError> {
         {
             set_start_on_boot_enabled(true)?;
         }
-        return Ok(true);
     }
-    if startup_prompt_shown()? {
-        return Ok(false);
-    }
-
-    let text = "Would you like Volty to start automatically when you sign in to Windows?\n\n\
-         If you choose Yes, Windows will start Volty from this executable's current location. \
-         Keep the file there. You can change this later from the tray menu.";
-    let response = crate::app_icon::show_message_box(
-        text,
-        "Start Volty with Windows?",
-        windows_sys::Win32::UI::WindowsAndMessaging::MB_DEFBUTTON2
-            | windows_sys::Win32::UI::WindowsAndMessaging::MB_YESNO,
-    );
-    if response == 0 {
-        return Err(TrayError::new(format!(
-            "could not show first-run startup prompt: {}",
-            io::Error::last_os_error()
-        )));
-    }
-    let enable_startup = response == windows_sys::Win32::UI::WindowsAndMessaging::IDYES;
-    if enable_startup {
-        set_start_on_boot_enabled(true)?;
-    }
-    set_startup_prompt_shown()?;
-    Ok(enable_startup)
+    Ok(())
 }
 
 #[cfg(windows)]
@@ -131,27 +106,6 @@ fn confirm_startup_executable_change(
             "startup executable confirmation returned unexpected response {response}"
         ))),
     }
-}
-
-#[cfg(windows)]
-fn startup_prompt_shown() -> Result<bool, TrayError> {
-    Ok(read_registry_value(
-        APP_SETTINGS_KEY,
-        "could not read first-run startup preference",
-        |key| key.get_value::<u32, _>(STARTUP_PROMPT_VALUE),
-    )?
-    .is_some_and(|value| value != 0))
-}
-
-#[cfg(windows)]
-fn set_startup_prompt_shown() -> Result<(), TrayError> {
-    let key = create_registry_key(
-        APP_SETTINGS_KEY,
-        "could not save first-run startup preference",
-    )?;
-    write_registry_value(&key, "could not save first-run startup preference", |key| {
-        key.set_value(STARTUP_PROMPT_VALUE, &1u32)
-    })
 }
 
 #[cfg(windows)]
@@ -219,7 +173,9 @@ pub fn set_start_on_boot_enabled(enabled: bool) -> Result<(), TrayError> {
     #[cfg(not(windows))]
     {
         let _ = enabled;
-        Err(TrayError::new("Start on Boot is only supported on Windows"))
+        Err(TrayError::new(
+            "Start with Windows is only supported on Windows",
+        ))
     }
 }
 

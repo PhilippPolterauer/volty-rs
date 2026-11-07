@@ -1,6 +1,8 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::config::DashboardSettingsUpdate;
+
 use super::management::{CleanupKind, DashboardBackend};
 
 #[derive(Debug, Deserialize)]
@@ -37,6 +39,11 @@ enum IpcCommand {
         identity: String,
         enabled: bool,
     },
+    UpdateSettings {
+        settings: DashboardSettingsUpdate,
+    },
+    OpenSettings {},
+    TestNotification {},
     ListArtifacts {},
     DeleteArtifact {
         id: String,
@@ -118,6 +125,18 @@ fn dispatch(request: IpcRequest, backend: &DashboardBackend) -> Result<Value, St
                 .map_err(display_error)?,
         )
         .map_err(display_error),
+        IpcCommand::UpdateSettings { settings } => {
+            serde_json::to_value(backend.update_settings(&settings).map_err(display_error)?)
+                .map_err(display_error)
+        }
+        IpcCommand::OpenSettings {} => {
+            backend.open_settings().map_err(display_error)?;
+            Ok(Value::Null)
+        }
+        IpcCommand::TestNotification {} => {
+            backend.test_notification().map_err(display_error)?;
+            Ok(Value::Null)
+        }
         IpcCommand::ListArtifacts {} => {
             serde_json::to_value(backend.list_artifacts().map_err(display_error)?)
                 .map_err(display_error)
@@ -209,6 +228,20 @@ mod tests {
             .as_str()
             .unwrap()
             .contains("invalid dashboard IPC request"));
+    }
+
+    #[test]
+    fn settings_ipc_requires_the_complete_supported_settings_shape() {
+        let valid = serde_json::from_str::<IpcRequest>(
+            r#"{"id":"settings","command":"update_settings","payload":{"settings":{"low_battery_thresholds":[20,10,5],"low_battery_cooldown_minutes":120,"notifications_enabled":true,"tray_icon_style":"battery","tray_icon_theme":"system","show_percentage_in_battery_icon":false,"pinned_device":null,"start_on_boot":true}}}"#,
+        )
+        .unwrap();
+        assert!(matches!(valid.command, IpcCommand::UpdateSettings { .. }));
+
+        let invalid = serde_json::from_str::<IpcRequest>(
+            r#"{"id":"settings","command":"update_settings","payload":{"settings":{"low_battery_thresholds":[20],"low_battery_cooldown_minutes":120,"notifications_enabled":true,"tray_icon_style":"battery","tray_icon_theme":"system","show_percentage_in_battery_icon":false,"pinned_device":null,"start_on_boot":true,"unexpected":true}}}"#,
+        );
+        assert!(invalid.is_err());
     }
 
     #[test]

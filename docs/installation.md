@@ -10,16 +10,17 @@ the executable's SHA-256 checksum. Volty is a standalone executable; no
 installer or additional runtime file is needed.
 
 Save the executable where you want to keep it, then double-click it. Volty
-starts in the Windows notification area. On first launch, choose whether to
-start Volty automatically when you sign in. This setting applies to the current
-Windows user, does not require administrator privileges, and can be changed
-later from the tray menu. If enabled, Windows starts Volty from the executable's
-current location, so keep the file there. If you launch a different Volty copy
-while Start on Boot is enabled, Volty asks whether to change the startup entry
-to that executable; declining leaves the existing entry unchanged. If you
-manually install a newer release in a different location, launch it and confirm
-the change. The in-app updater replaces the executable in place, preserving the
-startup path; its restart does not show a second confirmation.
+starts in the Windows notification area. To start it automatically when you
+sign in, open **Settings...** from the tray icon and enable **Start with
+Windows**. This setting applies to the current Windows user and does not
+require administrator privileges. If enabled, Windows starts Volty from the
+executable's current location, so keep the file there. If you launch a
+different Volty copy while startup is enabled, Volty asks whether to change the
+startup entry to that executable; declining leaves the existing entry
+unchanged. If you manually install a newer release in a different location,
+launch it and confirm the change. The in-app updater replaces the executable
+in place, preserving the startup path; its restart does not show a second
+confirmation.
 
 ## Use the tray app
 
@@ -52,26 +53,24 @@ cooldown are configurable.
 
 ![Volty low-battery notification](notification.png)
 
-Right-click the icon for the compact menu: manage **Monitored Devices**, toggle
-**Start on Boot**, check for updates, open **About Volty**, or quit. Volty checks
+Right-click the icon for the compact menu: manage **Monitored Devices**, open
+**Settings...**, check for updates, open **About Volty**, or quit. Volty checks
 for updates on startup and once per day while running. When a stable GitHub
 release is available, Windows shows a notification and the tray item changes to
 **Update available!**; selecting it asks before downloading. You can also select
 **Check for Updates...** to check manually. Volty verifies the executable
 against the release's SHA-256 file, then restarts through a temporary helper that
-replaces the executable at its current location. The existing **Start on Boot**
-entry keeps pointing to that same path. The destination folder must be writable
-by your Windows user; if an update cannot be installed, Volty restarts the
-previous version and reports the error. Existing installations must install the
-first release that includes this updater manually; later releases can be
-installed from the tray menu.
+replaces the executable at its current location. The existing startup entry
+keeps pointing to that same path. The destination folder must be writable by
+your Windows user; if an update cannot be installed, Volty restarts the previous
+version and reports the error. Existing installations must install the first
+release that includes this updater manually; later releases can be installed
+from the tray menu.
 
-**Show Advanced Options** reveals manual discovery, tray customization,
-configuration and log access, hardware capture, diagnostics, and reset. The
+**Show Advanced Options** reveals manual discovery, advanced configuration
+and log access, hardware capture, diagnostics, and reset. The
 advanced-menu choice is saved locally; **Reset Volty** returns to the compact
 menu.
-
-![Volty tray menu using the Windows light theme](context.png)
 
 The native tray menu follows the current Windows light or dark theme. The
 dashboard uses the same system-aware appearance.
@@ -86,6 +85,11 @@ Refresh button reloads the latest saved history. The layout adapts to narrow
 windows, and its colors follow the Windows light or dark theme. If WebView2 is
 unavailable, Volty opens a read-only HTML snapshot in your default browser.
 
+Choose **Settings** in the dashboard or **Settings...** from the tray menu to
+open a dedicated native window for low-battery thresholds, repeat timing,
+notifications, tray icon style and theme, pinned device, and Windows startup.
+Use **Send a test notification** to verify Windows alerts.
+
 The native window also provides local history and diagnostic-file management.
 See [Dashboard options and data controls](diagnostics.md#battery-history-dashboard)
 for details.
@@ -94,28 +98,30 @@ Unchecking a device in **Monitored Devices** excludes it from tray status,
 icon percentage, low-battery alerts, and battery history. Unlisted devices are
 monitored by default.
 
-## Tray display
+## Tray icon settings
 
-Under **Show Advanced Options → Tray Display**, choose:
+Choose **Settings...** from the tray menu, then set the tray icon contents:
 
 - **Battery** (default): a battery glyph filled to the percentage.
 - **Percentage**: the number drawn using a built-in pixel font. The icon shows
   the number without a percent sign; unknown levels use the neutral battery
   icon.
 
-The same submenu can pin the icon to a discovered device. **Lowest battery**
-restores the default. If a pinned device is missing or unchecked, Volty falls
-back to the lowest monitored percentage and reports **Pinned device
+The same window can pin the icon to a discovered device. **Lowest monitored
+battery** restores the default. If a pinned device is missing or unchecked,
+Volty falls back to the lowest monitored percentage and reports **Pinned device
 unavailable**. The pin remains saved and takes effect again if the device
 returns.
 
-Display mode and pin are stored in
-`%LOCALAPPDATA%\Volty\device-state.sqlite3`, not in `config.toml`.
+The window also offers a **Match Windows**, **Light**, or **Dark** icon theme and
+an optional percentage overlay. The theme and icon style are saved in
+`%APPDATA%\Volty\config.toml`; the pinned device remains in
+`%LOCALAPPDATA%\Volty\device-state.sqlite3`.
 
 ## Reset Volty
 
 **Reset Volty** asks for confirmation, deletes `%APPDATA%\Volty\config.toml` and
-`%LOCALAPPDATA%\Volty\device-state.sqlite3`, disables **Start on Boot**, and
-clears the first-run startup preference. Volty then reinitializes with fresh
-defaults, including the compact tray menu. The startup prompt appears again on
-the next launch. Logs and the battery history database are retained.
+`%LOCALAPPDATA%\Volty\device-state.sqlite3`, disables Windows startup, and
+clears the old first-run startup preference. Volty then reinitializes with
+fresh defaults, including the compact tray menu. Logs and the battery history
+database are retained.

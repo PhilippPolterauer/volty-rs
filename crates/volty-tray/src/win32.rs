@@ -10,10 +10,10 @@ use windows_sys::Win32::{
         Shell::ShellExecuteW,
         WindowsAndMessaging::{
             CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetMessageW,
-            GetWindowLongPtrW, PostQuitMessage, RegisterClassExW, SetForegroundWindow,
-            SetWindowLongPtrW, SetWindowTextW, ShowWindow, TranslateMessage, BS_PUSHBUTTON,
-            CREATESTRUCTW, GWLP_USERDATA, MSG, SW_SHOWNORMAL, WNDCLASSEXW, WS_CHILD, WS_TABSTOP,
-            WS_VISIBLE,
+            GetWindowLongPtrW, IsDialogMessageW, PostQuitMessage, RegisterClassExW,
+            SetForegroundWindow, SetWindowLongPtrW, SetWindowTextW, ShowWindow, TranslateMessage,
+            BS_PUSHBUTTON, CREATESTRUCTW, GWLP_USERDATA, MSG, SW_SHOWNORMAL, WNDCLASSEXW, WS_CHILD,
+            WS_TABSTOP, WS_VISIBLE,
         },
     },
 };
@@ -255,7 +255,14 @@ pub fn run_message_loop<T>(
     state: Box<T>,
     set_create_complete: impl Fn(&mut T, bool),
 ) -> io::Result<()> {
-    run_message_loop_inner(window, show_command, state, false, set_create_complete)
+    run_message_loop_inner(
+        window,
+        show_command,
+        state,
+        false,
+        false,
+        set_create_complete,
+    )
 }
 
 pub fn run_foreground_message_loop<T>(
@@ -264,7 +271,23 @@ pub fn run_foreground_message_loop<T>(
     state: Box<T>,
     set_create_complete: impl Fn(&mut T, bool),
 ) -> io::Result<()> {
-    run_message_loop_inner(window, show_command, state, true, set_create_complete)
+    run_message_loop_inner(
+        window,
+        show_command,
+        state,
+        true,
+        false,
+        set_create_complete,
+    )
+}
+
+pub fn run_dialog_message_loop<T>(
+    window: HWND,
+    show_command: i32,
+    state: Box<T>,
+    set_create_complete: impl Fn(&mut T, bool),
+) -> io::Result<()> {
+    run_message_loop_inner(window, show_command, state, true, true, set_create_complete)
 }
 
 fn run_message_loop_inner<T>(
@@ -272,6 +295,7 @@ fn run_message_loop_inner<T>(
     show_command: i32,
     mut state: Box<T>,
     foreground: bool,
+    dialog_navigation: bool,
     set_create_complete: impl Fn(&mut T, bool),
 ) -> io::Result<()> {
     // SAFETY: window is the live HWND created by the caller on this thread.
@@ -290,10 +314,18 @@ fn run_message_loop_inner<T>(
             -1 => break Some(io::Error::last_os_error()),
             0 => break None,
             // SAFETY: a positive GetMessageW result initialized message for these APIs.
-            _ => unsafe {
-                TranslateMessage(ptr::addr_of!(message));
-                DispatchMessageW(ptr::addr_of!(message));
-            },
+            _ => {
+                // SAFETY: GetMessageW initialized this MSG for the current thread queue.
+                let handled = dialog_navigation
+                    && unsafe { IsDialogMessageW(window, ptr::addr_of_mut!(message)) } != 0;
+                if !handled {
+                    // SAFETY: GetMessageW initialized message for these APIs.
+                    unsafe {
+                        TranslateMessage(ptr::addr_of!(message));
+                        DispatchMessageW(ptr::addr_of!(message));
+                    }
+                }
+            }
         }
     };
 

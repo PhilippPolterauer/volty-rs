@@ -3,7 +3,6 @@ use crate::{
         config_path, load_legacy_monitored_devices, remove_legacy_monitored_devices, AppConfig,
     },
     state::{DeviceState, TrayDisplaySettings},
-    tray::{set_start_on_boot_enabled, start_on_boot_enabled},
 };
 use notify::{Event, RecommendedWatcher, RecursiveMode, Watcher};
 use std::{
@@ -234,11 +233,6 @@ pub(super) fn remove_reset_files(
         }
     }
     Ok(())
-}
-pub(super) fn toggle_start_on_boot() -> Result<bool, Box<dyn Error>> {
-    let enabled = !start_on_boot_enabled()?;
-    set_start_on_boot_enabled(enabled)?;
-    Ok(enabled)
 }
 #[cfg(test)]
 mod tests {

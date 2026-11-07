@@ -4,6 +4,7 @@ mod ipc;
 mod management;
 mod model;
 mod render;
+mod settings_window;
 mod window;
 
 use std::{
@@ -21,13 +22,19 @@ const DEFAULT_DAYS: u32 = 7;
 const SECONDS_PER_DAY: i64 = 86_400;
 const EMPTY_MESSAGE: &str = "No battery history recorded yet.";
 
+#[cfg(windows)]
+pub(crate) fn settings_instance_mutex_name() -> &'static str {
+    settings_window::instance_mutex_name()
+}
+
 const DASHBOARD_USAGE: &str =
-    "Usage: volty dashboard [--window] [--days N] [--database PATH] [--output PATH] [--no-open]
+    "Usage: volty dashboard [--window | --settings] [--days N] [--database PATH] [--output PATH] [--no-open]
 
 Generates a self-contained local battery-history dashboard. Nothing is uploaded.
 
 Options:
-  --window         Show the dashboard in a native WebView2 window
+  --window         Show the battery dashboard in a native WebView2 window
+  --settings       Open native Windows settings
   --days N          Number of days to include (default 7)
   --database PATH   Read a specific SQLite database instead of the default
   --output PATH     Write the HTML file to PATH (default %TEMP%\\volty-dashboard.html)
@@ -40,6 +47,7 @@ struct DashboardOptions {
     output: Option<PathBuf>,
     no_open: bool,
     window: bool,
+    settings: bool,
     help: bool,
 }
 
@@ -51,6 +59,7 @@ impl Default for DashboardOptions {
             output: None,
             no_open: false,
             window: false,
+            settings: false,
             help: false,
         }
     }
@@ -62,7 +71,6 @@ pub fn run_cli(args: &[String]) -> Result<(), Box<dyn Error>> {
         println!("{DASHBOARD_USAGE}");
         return Ok(());
     }
-
     let database = match &options.database {
         Some(path) => path.clone(),
         None => HistoryStore::local_path()?,
@@ -71,9 +79,15 @@ pub fn run_cli(args: &[String]) -> Result<(), Box<dyn Error>> {
         .output
         .unwrap_or_else(|| std::env::temp_dir().join("volty-dashboard.html"));
 
+    if options.settings {
+        let backend = DashboardBackend::new(database, options.database.is_none());
+        return settings_window::open_settings_window(backend, options.days, options.database);
+    }
+
     if options.window {
         let backend = DashboardBackend::new(database, options.database.is_none());
-        let data = backend.get_dashboard_data(options.days)?;
+        let mut data = backend.get_dashboard_data(options.days)?;
+        data.settings = None;
         let html = render_dashboard_data(&data)?;
         if let Err(error) = window::open_dashboard_window(&html, backend) {
             eprintln!(
@@ -134,6 +148,7 @@ fn parse_args(args: &[String]) -> Result<DashboardOptions, Box<dyn Error>> {
             "-h" | "--help" | "help" => options.help = true,
             "--no-open" => options.no_open = true,
             "--window" => options.window = true,
+            "--settings" => options.settings = true,
             "--days" => {
                 index += 1;
                 let value = args
@@ -203,5 +218,13 @@ mod tests {
 
         assert!(options.window);
         assert_eq!(options.days, 14);
+    }
+
+    #[test]
+    fn settings_option_selects_the_native_settings_window() {
+        let options = parse_args(&["--settings".to_owned()]).unwrap();
+
+        assert!(options.settings);
+        assert!(!options.window);
     }
 }

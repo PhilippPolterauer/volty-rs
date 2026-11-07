@@ -19,8 +19,7 @@ use poll::PollUpdate;
 use session::DeviceSession;
 use startup::{
     load_startup_state, open_capture_file, open_configuration, open_log_file,
-    process_windows_messages, remove_reset_files, toggle_start_on_boot, watch_config_file,
-    ConfigWatch,
+    process_windows_messages, remove_reset_files, watch_config_file, ConfigWatch,
 };
 use std::{
     collections::{BTreeMap, VecDeque},
@@ -45,8 +44,7 @@ use crate::{
     report::generate_diagnostic_report,
     state::{local_state_path, DeviceState, TrayIconStyle, TrayIconTheme},
     tray::{
-        confirm_reset, reset_startup_preferences, start_on_boot_enabled, TrayAction,
-        TrayController, UpdateCheckOrigin,
+        confirm_reset, reset_startup_preferences, TrayAction, TrayController, UpdateCheckOrigin,
     },
 };
 
@@ -81,6 +79,9 @@ struct App {
     notification_config_error: Option<String>,
     notifications: DeviceNotifications,
     session: DeviceSession,
+    dashboard_shutdown_event: crate::DashboardShutdownEvent,
+    settings_shutdown_event: crate::DashboardSettingsShutdownEvent,
+    about_window_open: bool,
     config_reload_due: Option<Instant>,
     next_ui_refresh: Instant,
     liveness: Liveness,
@@ -95,14 +96,35 @@ pub fn run() -> Result<(), Box<dyn Error>> {
     let mut app = App::start()?;
     app.start_update_check(UpdateCheckOrigin::Automatic)?;
     let result = app.run_loop();
+    let dashboard_shutdown = app.dashboard_shutdown_event.signal();
+    let settings_shutdown = app.settings_shutdown_event.signal();
+    if let Err(error) = &dashboard_shutdown {
+        let message = format!("Could not close the dashboard during shutdown: {error}");
+        if let Err(log_error) = app.record_event(LogLevel::Error, &message) {
+            eprintln!("{message}; could not record the error: {log_error}");
+        }
+    }
+    if let Err(error) = &settings_shutdown {
+        let message = format!("Could not close Settings during shutdown: {error}");
+        if let Err(log_error) = app.record_event(LogLevel::Error, &message) {
+            eprintln!("{message}; could not record the error: {log_error}");
+        }
+    }
     let _ = app.record_event(LogLevel::Info, "Volty stopped");
     app.liveness.clean_exit();
     let flushed = app.flush_discharge_rates(true);
-    result.and(flushed.map_err(Into::into))
+    result
+        .and(flushed.map_err(Into::into))
+        .and(dashboard_shutdown.map_err(Into::into))
+        .and(settings_shutdown.map_err(Into::into))
 }
 impl App {
     fn start() -> Result<Self, Box<dyn Error>> {
         wake::init()?;
+        let dashboard_shutdown_event = crate::DashboardShutdownEvent::create()?;
+        let settings_shutdown_event = crate::DashboardSettingsShutdownEvent::create()?;
+        dashboard_shutdown_event.reset()?;
+        settings_shutdown_event.reset()?;
         let started = Instant::now();
         let mut startup = load_startup_state();
         let mut diagnostic_log = VecDeque::new();
@@ -243,6 +265,9 @@ impl App {
             notification_config_error: startup.notification_config_error,
             notifications,
             session,
+            dashboard_shutdown_event,
+            settings_shutdown_event,
+            about_window_open: false,
             config_reload_due: None,
             next_ui_refresh: Instant::now() + UI_REFRESH_INTERVAL,
             liveness,
@@ -348,37 +373,8 @@ impl App {
 
     fn handle_tray_action(&mut self, action: TrayAction) -> Result<bool, Box<dyn Error>> {
         match action {
-            TrayAction::OpenDashboard => {
-                let action_sender = self.tray.action_sender();
-                if let Err(error) = std::thread::Builder::new()
-                    .name("volty-dashboard".to_owned())
-                    .spawn(move || {
-                        use std::os::windows::process::CommandExt;
-
-                        let result = (|| {
-                            std::process::Command::new(std::env::current_exe()?)
-                                .args(["dashboard", "--window", "--days", "7"])
-                                .creation_flags(
-                                    windows_sys::Win32::System::Threading::CREATE_NO_WINDOW,
-                                )
-                                .spawn()
-                                .map(|_| ())
-                        })()
-                        .map_err(|error: io::Error| error.to_string());
-                        if action_sender
-                            .send(TrayAction::DashboardResult(result))
-                            .is_ok()
-                        {
-                            wake::signal();
-                        }
-                    })
-                {
-                    self.report_error(
-                        "Dashboard error",
-                        &format!("could not start dashboard worker thread: {error}"),
-                    )?;
-                }
-            }
+            TrayAction::OpenDashboard => self.launch_dashboard(false)?,
+            TrayAction::OpenSettings => self.launch_dashboard(true)?,
             TrayAction::DashboardResult(Ok(())) => {}
             TrayAction::DashboardResult(Err(error)) => {
                 self.report_error("Dashboard error", &error)?;
@@ -388,7 +384,6 @@ impl App {
             TrayAction::SaveHardwareCapture => self.save_hardware_capture()?,
             TrayAction::OpenConfiguration => self.open_configuration()?,
             TrayAction::Diagnose => self.show_diagnostic_report()?,
-            TrayAction::ToggleStartOnBoot => self.toggle_start_on_boot()?,
             TrayAction::SetAdvancedOptionsVisible { visible } => {
                 self.set_advanced_options_visible(visible)?
             }
@@ -399,11 +394,6 @@ impl App {
                 identity,
                 monitored,
             } => self.set_device_monitored(&identity, monitored)?,
-            TrayAction::SetTrayIconStyle { style } => self.set_tray_icon_style(style)?,
-            TrayAction::SetTrayIconTheme { theme } => self.set_tray_icon_theme(theme)?,
-            TrayAction::SetPinnedDevice { identity } => {
-                self.set_pinned_device(identity.as_deref())?
-            }
             TrayAction::CheckForUpdates => self.start_update_check(UpdateCheckOrigin::Manual)?,
             TrayAction::UpdateCheckResult { result, origin } => {
                 self.handle_update_check_result(result, origin)?
@@ -425,8 +415,34 @@ impl App {
                 );
             }
             TrayAction::About => {
-                if let Err(error) = show_about_window() {
-                    self.report_error("About window error", &error.to_string())?;
+                if !self.about_window_open {
+                    self.about_window_open = true;
+                    let action_sender = self.tray.action_sender();
+                    if let Err(error) =
+                        thread::Builder::new()
+                            .name("volty-about".to_owned())
+                            .spawn(move || {
+                                let result = show_about_window().map_err(|error| error.to_string());
+                                if action_sender
+                                    .send(TrayAction::AboutWindowResult(result))
+                                    .is_ok()
+                                {
+                                    wake::signal();
+                                }
+                            })
+                    {
+                        self.about_window_open = false;
+                        self.report_error(
+                            "About window error",
+                            &format!("could not start the About window thread: {error}"),
+                        )?;
+                    }
+                }
+            }
+            TrayAction::AboutWindowResult(result) => {
+                self.about_window_open = false;
+                if let Err(error) = result {
+                    self.report_error("About window error", &error)?;
                 }
             }
             TrayAction::ResetVolty => self.reset_volty()?,
@@ -437,6 +453,42 @@ impl App {
             }
         }
         Ok(true)
+    }
+
+    fn launch_dashboard(&mut self, settings_page: bool) -> Result<(), Box<dyn Error>> {
+        let action_sender = self.tray.action_sender();
+        if let Err(error) = thread::Builder::new()
+            .name("volty-dashboard".to_owned())
+            .spawn(move || {
+                use std::os::windows::process::CommandExt;
+
+                let args = if settings_page {
+                    vec!["dashboard", "--settings", "--days", "7"]
+                } else {
+                    vec!["dashboard", "--window", "--days", "7"]
+                };
+                let result = (|| {
+                    std::process::Command::new(std::env::current_exe()?)
+                        .args(args)
+                        .creation_flags(windows_sys::Win32::System::Threading::CREATE_NO_WINDOW)
+                        .spawn()
+                        .map(|_| ())
+                })()
+                .map_err(|error: io::Error| error.to_string());
+                if action_sender
+                    .send(TrayAction::DashboardResult(result))
+                    .is_ok()
+                {
+                    wake::signal();
+                }
+            })
+        {
+            self.report_error(
+                "Dashboard error",
+                &format!("could not start dashboard worker thread: {error}"),
+            )?;
+        }
+        Ok(())
     }
 
     fn start_update_check(&mut self, origin: UpdateCheckOrigin) -> Result<(), Box<dyn Error>> {
@@ -818,14 +870,6 @@ impl App {
         Ok(())
     }
 
-    fn toggle_start_on_boot(&mut self) -> Result<(), Box<dyn Error>> {
-        match toggle_start_on_boot() {
-            Ok(enabled) => self.tray.set_start_on_boot_checked(enabled),
-            Err(error) => self.report_error("Start on Boot error", &error.to_string())?,
-        }
-        Ok(())
-    }
-
     fn set_advanced_options_visible(&mut self, visible: bool) -> Result<(), Box<dyn Error>> {
         if visible == self.advanced_options_visible {
             self.tray.set_advanced_options_visible(visible)?;
@@ -921,128 +965,6 @@ impl App {
         Ok(())
     }
 
-    fn set_tray_icon_style(&mut self, style: TrayIconStyle) -> Result<(), Box<dyn Error>> {
-        if style == self.tray_icon_style {
-            self.tray
-                .set_tray_icon_style(self.active_config.tray_icon_style.unwrap_or(style));
-            return Ok(());
-        }
-
-        let save_result = match self.monitor_state.as_mut() {
-            Some(state) => state.set_tray_icon_style(style),
-            None => Err(io::Error::new(
-                io::ErrorKind::NotConnected,
-                "local SQLite display state is unavailable",
-            )
-            .into()),
-        };
-        match save_result {
-            Ok(()) => {
-                self.tray_icon_style = style;
-                self.tray
-                    .set_tray_icon_style(self.active_config.tray_icon_style.unwrap_or(style));
-                self.record_event(
-                    LogLevel::Info,
-                    &format!("Tray icon style set to {}", style.as_str()),
-                )?;
-                self.refresh_visible_devices()?;
-            }
-            Err(error) => {
-                self.tray.set_tray_icon_style(
-                    self.active_config
-                        .tray_icon_style
-                        .unwrap_or(self.tray_icon_style),
-                );
-                self.report_error("Tray display state error", &error.to_string())?;
-            }
-        }
-        Ok(())
-    }
-
-    fn set_tray_icon_theme(&mut self, theme: TrayIconTheme) -> Result<(), Box<dyn Error>> {
-        if theme == self.tray_icon_theme {
-            self.tray
-                .set_tray_icon_theme(self.active_config.tray_icon_theme.unwrap_or(theme));
-            return Ok(());
-        }
-
-        let save_result = match self.monitor_state.as_mut() {
-            Some(state) => state.set_tray_icon_theme(theme),
-            None => Err(io::Error::new(
-                io::ErrorKind::NotConnected,
-                "local SQLite display state is unavailable",
-            )
-            .into()),
-        };
-        match save_result {
-            Ok(()) => {
-                self.tray_icon_theme = theme;
-                self.tray
-                    .set_tray_icon_theme(self.active_config.tray_icon_theme.unwrap_or(theme));
-                self.record_event(
-                    LogLevel::Info,
-                    &format!("Tray icon theme set to {}", theme.as_str()),
-                )?;
-                self.refresh_visible_devices()?;
-            }
-            Err(error) => {
-                self.tray.set_tray_icon_theme(
-                    self.active_config
-                        .tray_icon_theme
-                        .unwrap_or(self.tray_icon_theme),
-                );
-                self.report_error("Tray display state error", &error.to_string())?;
-            }
-        }
-        Ok(())
-    }
-
-    fn set_pinned_device(&mut self, identity: Option<&str>) -> Result<(), Box<dyn Error>> {
-        if identity == self.pinned_device.as_deref() {
-            self.tray
-                .set_pinned_device_checked(self.pinned_device.as_deref());
-            return Ok(());
-        }
-
-        let save_result = match self.monitor_state.as_mut() {
-            Some(state) => match identity {
-                Some(identity) => state.set_pinned_device(identity),
-                None => state.clear_pinned_device(),
-            },
-            None => Err(io::Error::new(
-                io::ErrorKind::NotConnected,
-                "local SQLite display state is unavailable",
-            )
-            .into()),
-        };
-        match save_result {
-            Ok(()) => {
-                self.pinned_device = identity.map(str::to_owned);
-                self.tray
-                    .set_pinned_device_checked(self.pinned_device.as_deref());
-                let message = match identity {
-                    Some(identity) => {
-                        let name = self
-                            .session
-                            .device_name(identity)
-                            .unwrap_or(identity)
-                            .to_owned();
-                        format!("Tray icon pinned to {name}")
-                    }
-                    None => "Tray icon shows the lowest battery".to_owned(),
-                };
-                self.record_event(LogLevel::Info, &message)?;
-                self.refresh_visible_devices()?;
-            }
-            Err(error) => {
-                self.tray
-                    .set_pinned_device_checked(self.pinned_device.as_deref());
-                self.report_error("Tray display state error", &error.to_string())?;
-            }
-        }
-        Ok(())
-    }
-
     fn reset_volty(&mut self) -> Result<(), Box<dyn Error>> {
         let configuration_file = config_path()
             .ok_or_else(|| io::Error::other("could not determine the user configuration folder"))?;
@@ -1058,10 +980,6 @@ impl App {
         let mut startup_reset_errors = Vec::new();
         if let Err(error) = reset_startup_preferences() {
             startup_reset_errors.push(error.to_string());
-        }
-        match start_on_boot_enabled() {
-            Ok(enabled) => self.tray.set_start_on_boot_checked(enabled),
-            Err(error) => startup_reset_errors.push(error.to_string()),
         }
         self.session.shutdown("during reset")?;
         drop(self.monitor_state.take());
@@ -1197,6 +1115,16 @@ impl App {
                 return Ok(false);
             }
         };
+        if let Some(state) = self.monitor_state.as_ref() {
+            let display = state.tray_display().map_err(|error| {
+                io::Error::other(format!("could not refresh saved tray settings: {error}"))
+            })?;
+            self.tray_icon_style = display.icon_style;
+            self.tray_icon_theme = display.icon_theme;
+            self.pinned_device = display.pinned_device;
+            self.tray
+                .set_pinned_device_checked(self.pinned_device.as_deref());
+        }
         if let Err(error) = self.tray.set_battery_color_map(config.battery_color_map) {
             self.report_config_error(error.to_string())?;
             return Ok(false);
@@ -1260,6 +1188,16 @@ impl App {
 
     fn refresh_visible_devices(&mut self) -> io::Result<()> {
         let stale_after = self.stale_after();
+        if let Some(state) = self.monitor_state.as_ref() {
+            let display = state.tray_display().map_err(|error| {
+                io::Error::other(format!("could not refresh saved tray settings: {error}"))
+            })?;
+            self.tray_icon_style = display.icon_style;
+            self.tray_icon_theme = display.icon_theme;
+            self.pinned_device = display.pinned_device;
+            self.tray
+                .set_pinned_device_checked(self.pinned_device.as_deref());
+        }
         self.session.retain_monitored(&self.monitored_devices);
         update_monitored_device_menu(
             &mut self.tray,

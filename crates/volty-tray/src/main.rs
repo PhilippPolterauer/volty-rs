@@ -56,7 +56,7 @@ fn main() {
     #[cfg(windows)]
     let dashboard_window_mode = std::env::args()
         .skip(2)
-        .any(|argument| argument == "--window")
+        .any(|argument| argument == "--window" || argument == "--settings")
         && std::env::args().nth(1).as_deref() == Some("dashboard");
 
     #[cfg(windows)]
@@ -251,13 +251,28 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 
 #[cfg(windows)]
 fn run_dashboard_cli(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
+    if args.iter().any(|argument| argument == "--settings") {
+        let _shutdown_event = DashboardSettingsShutdownEvent::create()?;
+        let activation_event = DashboardSettingsActivationEvent::create()?;
+        let _single_instance =
+            SingleInstance::acquire_named(dashboard::settings_instance_mutex_name())?;
+        if !_single_instance.is_first() {
+            activation_event.signal()?;
+            return Ok(());
+        }
+        _shutdown_event.reset()?;
+        return dashboard::run_cli(args);
+    }
+
     if args.iter().any(|argument| argument == "--window") {
+        let _shutdown_event = DashboardShutdownEvent::create()?;
         let activation_event = DashboardActivationEvent::create()?;
         let _single_instance = SingleInstance::acquire_named(DASHBOARD_INSTANCE_MUTEX)?;
         if !_single_instance.is_first() {
             activation_event.signal()?;
             return Ok(());
         }
+        _shutdown_event.reset()?;
         return dashboard::run_cli(args);
     }
 
@@ -269,6 +284,183 @@ const DASHBOARD_INSTANCE_MUTEX: &str = "Local\\VoltyDashboard";
 
 #[cfg(windows)]
 const DASHBOARD_ACTIVATION_EVENT: &str = "Local\\VoltyDashboardActivate";
+
+#[cfg(windows)]
+const DASHBOARD_SHUTDOWN_EVENT: &str = "Local\\VoltyDashboardShutdown";
+
+#[cfg(windows)]
+const DASHBOARD_SETTINGS_ACTIVATION_EVENT: &str = "Local\\VoltySettingsActivate";
+
+#[cfg(windows)]
+const DASHBOARD_SETTINGS_SHUTDOWN_EVENT: &str = "Local\\VoltySettingsShutdown";
+
+#[cfg(windows)]
+pub(crate) struct DashboardShutdownEvent(windows_sys::Win32::Foundation::HANDLE);
+
+#[cfg(windows)]
+impl DashboardShutdownEvent {
+    pub(crate) fn create() -> std::io::Result<Self> {
+        use windows_sys::Win32::System::Threading::CreateEventW;
+
+        let name = crate::win32::to_wide(DASHBOARD_SHUTDOWN_EVENT);
+        // SAFETY: name is NUL-terminated and the null security attributes request default access.
+        let handle = unsafe { CreateEventW(std::ptr::null(), 0, 0, name.as_ptr()) };
+        if handle.is_null() {
+            return Err(std::io::Error::last_os_error());
+        }
+        Ok(Self(handle))
+    }
+
+    pub(crate) fn signal(&self) -> std::io::Result<()> {
+        use windows_sys::Win32::System::Threading::SetEvent;
+
+        // SAFETY: this wrapper owns the valid event handle returned by CreateEventW.
+        if unsafe { SetEvent(self.0) } == 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        Ok(())
+    }
+
+    pub(crate) fn reset(&self) -> std::io::Result<()> {
+        use windows_sys::Win32::System::Threading::ResetEvent;
+
+        // SAFETY: this wrapper owns the valid event handle returned by CreateEventW.
+        if unsafe { ResetEvent(self.0) } == 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        Ok(())
+    }
+}
+
+#[cfg(windows)]
+impl Drop for DashboardShutdownEvent {
+    fn drop(&mut self) {
+        // SAFETY: this wrapper uniquely owns the valid handle returned by CreateEventW.
+        if unsafe { windows_sys::Win32::Foundation::CloseHandle(self.0) } == 0 {
+            eprintln!(
+                "Volty could not close its dashboard shutdown event: {}",
+                std::io::Error::last_os_error()
+            );
+        }
+    }
+}
+
+#[cfg(windows)]
+pub(crate) struct DashboardSettingsShutdownEvent(windows_sys::Win32::Foundation::HANDLE);
+
+#[cfg(windows)]
+impl DashboardSettingsShutdownEvent {
+    pub(crate) fn create() -> std::io::Result<Self> {
+        use windows_sys::Win32::System::Threading::CreateEventW;
+
+        let name = crate::win32::to_wide(DASHBOARD_SETTINGS_SHUTDOWN_EVENT);
+        // SAFETY: name is NUL-terminated and the null security attributes request default access.
+        let handle = unsafe { CreateEventW(std::ptr::null(), 0, 0, name.as_ptr()) };
+        if handle.is_null() {
+            return Err(std::io::Error::last_os_error());
+        }
+        Ok(Self(handle))
+    }
+
+    pub(crate) fn signal(&self) -> std::io::Result<()> {
+        use windows_sys::Win32::System::Threading::SetEvent;
+
+        // SAFETY: this wrapper owns the valid event handle returned by CreateEventW.
+        if unsafe { SetEvent(self.0) } == 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        Ok(())
+    }
+
+    pub(crate) fn reset(&self) -> std::io::Result<()> {
+        use windows_sys::Win32::System::Threading::ResetEvent;
+
+        // SAFETY: this wrapper owns the valid event handle returned by CreateEventW.
+        if unsafe { ResetEvent(self.0) } == 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        Ok(())
+    }
+}
+
+#[cfg(windows)]
+impl Drop for DashboardSettingsShutdownEvent {
+    fn drop(&mut self) {
+        // SAFETY: this wrapper uniquely owns the valid event handle returned by CreateEventW.
+        if unsafe { windows_sys::Win32::Foundation::CloseHandle(self.0) } == 0 {
+            eprintln!(
+                "Volty could not close its Settings shutdown event: {}",
+                std::io::Error::last_os_error()
+            );
+        }
+    }
+}
+
+#[cfg(windows)]
+struct DashboardSettingsActivationEvent(windows_sys::Win32::Foundation::HANDLE);
+
+#[cfg(windows)]
+impl DashboardSettingsActivationEvent {
+    fn create() -> std::io::Result<Self> {
+        use windows_sys::Win32::System::Threading::CreateEventW;
+
+        let name = crate::win32::to_wide(DASHBOARD_SETTINGS_ACTIVATION_EVENT);
+        // SAFETY: name is NUL-terminated and the null security attributes request default access.
+        let handle = unsafe { CreateEventW(std::ptr::null(), 0, 0, name.as_ptr()) };
+        if handle.is_null() {
+            return Err(std::io::Error::last_os_error());
+        }
+        Ok(Self(handle))
+    }
+
+    fn signal(&self) -> std::io::Result<()> {
+        use windows_sys::Win32::System::Threading::SetEvent;
+        use windows_sys::Win32::UI::WindowsAndMessaging::{
+            AllowSetForegroundWindow, FindWindowW, GetWindowThreadProcessId, SetForegroundWindow,
+            ShowWindow, SW_RESTORE,
+        };
+
+        let title = crate::win32::to_wide("Volty Settings");
+        // SAFETY: title is NUL-terminated; a null class name searches by title.
+        let window = unsafe { FindWindowW(std::ptr::null(), title.as_ptr()) };
+        if !window.is_null() {
+            // SAFETY: window is the live HWND returned by FindWindowW.
+            unsafe { ShowWindow(window, SW_RESTORE) };
+            let mut process_id = 0;
+            // SAFETY: window is the live HWND returned by FindWindowW.
+            unsafe { GetWindowThreadProcessId(window, &mut process_id) };
+            if process_id != 0 {
+                // SAFETY: the target PID belongs to the Settings window found above.
+                if unsafe { AllowSetForegroundWindow(process_id) } == 0 {
+                    eprintln!("Windows did not grant foreground permission to Settings");
+                }
+            }
+            // SAFETY: window is the live HWND returned by FindWindowW.
+            if unsafe { SetForegroundWindow(window) } == 0 {
+                eprintln!("Windows did not allow Settings to become the foreground window");
+            }
+        }
+
+        // SAFETY: this wrapper owns the valid event handle returned by CreateEventW.
+        if unsafe { SetEvent(self.0) } == 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        Ok(())
+    }
+}
+
+#[cfg(windows)]
+impl Drop for DashboardSettingsActivationEvent {
+    fn drop(&mut self) {
+        // SAFETY: this wrapper uniquely owns the valid event handle returned by CreateEventW.
+        if unsafe { windows_sys::Win32::Foundation::CloseHandle(self.0) } == 0 {
+            eprintln!(
+                "Volty could not close its Settings activation event: {}",
+                std::io::Error::last_os_error()
+            );
+        }
+    }
+}
 
 #[cfg(windows)]
 struct DashboardActivationEvent(windows_sys::Win32::Foundation::HANDLE);

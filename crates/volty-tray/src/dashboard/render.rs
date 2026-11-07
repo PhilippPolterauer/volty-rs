@@ -51,6 +51,7 @@ mod tests {
             management_allowed: false,
             devices: Vec::new(),
             inventory: Vec::new(),
+            settings: None,
         })
         .unwrap();
 

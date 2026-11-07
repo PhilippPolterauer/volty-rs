@@ -23,13 +23,7 @@ such as:
 - Clear labels separating measured readings from estimates, with an indication
   of confidence or available evidence.
 
-## 3. Make settings easier to discover
-
-- Consider a small settings experience for alert thresholds and percentage
-  overlays that currently require editing `config.toml`.
-- Explain the effect of each setting without exposing implementation details.
-
-## 4. Keep diagnostics clear and private
+## 3. Keep diagnostics clear and private
 
 - Make it easy to understand why a device is not reporting a battery level.
 - Keep diagnostic captures local and reviewable before users share them.
