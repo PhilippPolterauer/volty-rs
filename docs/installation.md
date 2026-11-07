@@ -33,6 +33,19 @@ the configured stale period.
 
 ![Volty tray icon showing battery status](tray.png)
 
+### If no battery reading appears
+
+The tray status **No battery readings · check Monitored Devices** means Volty
+has no battery readings from monitored devices right now. Right-click the icon
+and open **Monitored Devices**: checked devices are monitored; uncheck a device
+to exclude it, or check it to include it.
+
+If your device is missing from the list, make sure it is on and connected, then
+right-click **Show Advanced Options → Discover Devices Now** to scan again.
+Volty can only read battery data that Windows exposes through a supported
+interface. If the device still does not appear, check the
+[tested devices and limitations](device-support.md).
+
 Low-battery alerts are Windows notifications. They are enabled by default and
 fire at 20%, 10%, and 5% once per discharge cycle. Their thresholds and repeat
 cooldown are configurable.

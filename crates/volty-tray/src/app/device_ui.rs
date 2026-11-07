@@ -184,6 +184,8 @@ fn tray_status_view(
             "Pinned device unavailable · {device_count} device{} monitored",
             if device_count == 1 { "" } else { "s" }
         )
+    } else if device_count == 0 {
+        "No battery readings · check Monitored Devices".to_owned()
     } else if device_count == 1 {
         compact_statuses[0].clone()
     } else {
@@ -712,10 +714,10 @@ mod tests {
     }
 
     #[test]
-    fn no_devices_keep_the_placeholder_row() {
+    fn no_devices_prompt_to_check_monitored_devices() {
         let (summary, rows, tooltip) = status_view(&[], None);
 
-        assert_eq!(summary, "0 devices monitored");
+        assert_eq!(summary, "No battery readings · check Monitored Devices");
         assert_eq!(rows, vec!["No device status available".to_owned()]);
         assert!(tooltip.is_empty());
     }

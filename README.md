@@ -47,6 +47,11 @@ and history stay on your PC.
 - **Alerts:** Windows notifications appear at 20%, 10%, and 5% by default.
 - **History:** left-click the icon to open the local battery dashboard.
 
+If no reading appears, right-click **Monitored Devices** to see which devices
+Volty found and which are enabled. To scan again, use **Show Advanced Options →
+Discover Devices Now**. Volty can only read battery data exposed by Windows
+from supported devices.
+
 Volty supports Windows 10/11, but device compatibility varies. See the
 [tested devices and limitations](https://philipppolterauer.github.io/volty-rs/device-support.html)
 before relying on it. Volty is an independent hobby project and is not
