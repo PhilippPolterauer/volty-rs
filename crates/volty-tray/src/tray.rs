@@ -10,7 +10,7 @@ mod startup;
 
 use icon::{
     battery_icon_at_size_with_color_map, percentage_icon_at_size_with_color_map,
-    unknown_battery_icon_at_size, validate_icon_size, ICON_SIZE,
+    unknown_battery_icon_at_size, validate_icon_size, IconTheme, ICON_SIZE,
 };
 #[cfg(windows)]
 pub use startup::reset_startup_preferences;
@@ -22,6 +22,33 @@ use std::{
     path::PathBuf,
     sync::mpsc::{self, Receiver, Sender, TryRecvError},
 };
+use winreg::{enums::HKEY_CURRENT_USER, RegKey};
+
+const WINDOWS_PERSONALIZATION_KEY: &str =
+    "Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize";
+const SYSTEM_LIGHT_THEME_VALUE: &str = "SystemUsesLightTheme";
+
+fn current_icon_theme() -> Result<IconTheme, TrayError> {
+    let key = RegKey::predef(HKEY_CURRENT_USER)
+        .open_subkey(WINDOWS_PERSONALIZATION_KEY)
+        .map_err(|error| {
+            TrayError::new(format!(
+                "could not read Windows theme settings for tray icon: {error}"
+            ))
+        })?;
+    let is_light = key
+        .get_value::<u32, _>(SYSTEM_LIGHT_THEME_VALUE)
+        .map_err(|error| {
+            TrayError::new(format!(
+                "could not read the Windows system theme for tray icon: {error}"
+            ))
+        })?;
+    Ok(if is_light == 0 {
+        IconTheme::Dark
+    } else {
+        IconTheme::Light
+    })
+}
 
 use tray_icon::{
     menu::{CheckMenuItem, Menu, MenuEvent, MenuItem, PredefinedMenuItem, Submenu},
@@ -227,7 +254,7 @@ pub struct TrayController {
     displayed_status: Option<String>,
     displayed_tooltip: Option<String>,
     displayed_device_statuses: Vec<String>,
-    displayed_icon: Option<(Option<u8>, u32, BatteryColorMap, TrayIconStyle)>,
+    displayed_icon: Option<(Option<u8>, u32, BatteryColorMap, TrayIconStyle, IconTheme)>,
 }
 
 struct TrayMenu {
@@ -524,9 +551,10 @@ impl TrayController {
         crate::win32::enable_system_dark_menus();
 
         let tray_menu = create_tray_menu(start_on_boot_for_first_run()?, advanced_options_visible)?;
+        let icon_theme = current_icon_theme()?;
         let icon = TrayIconBuilder::new()
             .with_tooltip("Volty — Searching for supported devices")
-            .with_icon(unknown_battery_icon_at_size(ICON_SIZE)?)
+            .with_icon(unknown_battery_icon_at_size(ICON_SIZE, icon_theme)?)
             .with_menu(Box::new(tray_menu.menu.clone()))
             .with_menu_on_left_click(false)
             .build()
@@ -775,14 +803,17 @@ impl TrayController {
             self.replace_device_status_items(device_statuses)?;
             self.displayed_device_statuses = device_statuses.to_vec();
         }
+        let icon_theme = current_icon_theme()?;
         let icon_key = (
             percentage,
             icon_size,
             self.battery_color_map,
             self.tray_icon_style,
+            icon_theme,
         );
         if self.displayed_icon != Some(icon_key) {
-            let icon = self.render_icon(percentage, icon_size, self.battery_color_map)?;
+            let icon =
+                self.render_icon(percentage, icon_size, self.battery_color_map, icon_theme)?;
             self.icon
                 .set_icon(Some(icon))
                 .map_err(|error| TrayError::new(format!("could not update tray icon: {error}")))?;
@@ -1010,7 +1041,9 @@ impl TrayController {
             return Ok(());
         }
         if let Some(percentage) = self.percentage {
-            let icon = self.render_icon(Some(percentage), ICON_SIZE, battery_color_map)?;
+            let icon_theme = current_icon_theme()?;
+            let icon =
+                self.render_icon(Some(percentage), ICON_SIZE, battery_color_map, icon_theme)?;
             self.icon
                 .set_icon(Some(icon))
                 .map_err(|error| TrayError::new(format!("could not update tray icon: {error}")))?;
@@ -1019,6 +1052,7 @@ impl TrayController {
                 ICON_SIZE,
                 battery_color_map,
                 self.tray_icon_style,
+                icon_theme,
             ));
         }
         self.battery_color_map = battery_color_map;
@@ -1030,15 +1064,19 @@ impl TrayController {
         percentage: Option<u8>,
         icon_size: u32,
         battery_color_map: BatteryColorMap,
+        icon_theme: IconTheme,
     ) -> Result<Icon, TrayError> {
         match percentage {
             Some(percentage) if self.tray_icon_style == TrayIconStyle::Percentage => {
                 percentage_icon_at_size_with_color_map(percentage, icon_size, battery_color_map)
             }
-            Some(percentage) => {
-                battery_icon_at_size_with_color_map(percentage, icon_size, battery_color_map)
-            }
-            None => unknown_battery_icon_at_size(icon_size),
+            Some(percentage) => battery_icon_at_size_with_color_map(
+                percentage,
+                icon_size,
+                battery_color_map,
+                icon_theme,
+            ),
+            None => unknown_battery_icon_at_size(icon_size, icon_theme),
         }
     }
     fn update_percentage(

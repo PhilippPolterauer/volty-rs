@@ -1,3 +1,6 @@
+use std::{path::PathBuf, sync::OnceLock};
+
+use fontdue::Font;
 use image::{Rgba, RgbaImage};
 use tray_icon::Icon;
 
@@ -5,19 +8,42 @@ use super::TrayError;
 use crate::config::BatteryColorMap;
 
 pub(super) const ICON_SIZE: u32 = 16;
+static PERCENTAGE_FONT: OnceLock<Result<Font, String>> = OnceLock::new();
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum IconTheme {
+    Light,
+    Dark,
+}
+
+impl IconTheme {
+    const fn outline_color(self) -> [u8; 4] {
+        match self {
+            Self::Light => [24, 28, 32, 255],
+            Self::Dark => [245, 247, 250, 255],
+        }
+    }
+}
+
 /// Renders an RGBA battery-level icon. Supported sizes are 16 and 32 pixels square.
 #[cfg(test)]
 fn battery_rgba(percentage: u8, size: u32) -> Result<Vec<u8>, TrayError> {
-    battery_rgba_with_color_map(percentage, size, BatteryColorMap::default())
+    battery_rgba_with_color_map(
+        percentage,
+        size,
+        BatteryColorMap::default(),
+        IconTheme::Light,
+    )
 }
 
 fn battery_rgba_with_color_map(
     percentage: u8,
     size: u32,
     battery_color_map: BatteryColorMap,
+    theme: IconTheme,
 ) -> Result<Vec<u8>, TrayError> {
     validate_icon_size(size)?;
-    Ok(render_battery(percentage, size, battery_color_map).into_raw())
+    Ok(render_battery(percentage, size, battery_color_map, theme).into_raw())
 }
 
 /// Produces a battery-level icon at 16×16 or 32×32 pixels.
@@ -32,13 +58,19 @@ pub(super) fn battery_icon_at_size_with_color_map(
     percentage: u8,
     size: u32,
     battery_color_map: BatteryColorMap,
+    theme: IconTheme,
 ) -> Result<Icon, TrayError> {
-    let rgba = battery_rgba_with_color_map(percentage, size, battery_color_map)?;
+    let rgba = battery_rgba_with_color_map(percentage, size, battery_color_map, theme)?;
     Icon::from_rgba(rgba, size, size)
         .map_err(|error| TrayError::new(format!("could not create battery icon: {error}")))
 }
 
-fn render_battery(percentage: u8, size: u32, battery_color_map: BatteryColorMap) -> RgbaImage {
+fn render_battery(
+    percentage: u8,
+    size: u32,
+    battery_color_map: BatteryColorMap,
+    theme: IconTheme,
+) -> RgbaImage {
     let percentage = percentage.min(100);
     let scale = size as f32 * SUPERSAMPLE as f32 / ICON_SIZE as f32;
     let mut image =
@@ -60,24 +92,10 @@ fn render_battery(percentage: u8, size: u32, battery_color_map: BatteryColorMap)
             Rgba([fill_color[0], fill_color[1], fill_color[2], 255]),
         );
     }
-    draw_battery_shell(&mut image, scale, Rgba([232, 238, 243, 255]));
+    draw_battery_shell(&mut image, scale, Rgba(theme.outline_color()));
 
     downsample_icon(image, size)
 }
-
-/// 4×7 bitmap glyphs for the digits 0-9. Bit 3 is the leftmost column.
-const DIGIT_GLYPHS: [[u8; 7]; 10] = [
-    [0b0110, 0b1001, 0b1001, 0b1001, 0b1001, 0b1001, 0b0110],
-    [0b0010, 0b0110, 0b0010, 0b0010, 0b0010, 0b0010, 0b0111],
-    [0b0110, 0b1001, 0b0001, 0b0010, 0b0100, 0b1000, 0b1111],
-    [0b1110, 0b0001, 0b0001, 0b0110, 0b0001, 0b0001, 0b1110],
-    [0b0010, 0b0110, 0b1010, 0b1010, 0b1111, 0b0010, 0b0010],
-    [0b1111, 0b1000, 0b1110, 0b0001, 0b0001, 0b1001, 0b0110],
-    [0b0110, 0b1000, 0b1000, 0b1110, 0b1001, 0b1001, 0b0110],
-    [0b1111, 0b0001, 0b0010, 0b0010, 0b0100, 0b0100, 0b0100],
-    [0b0110, 0b1001, 0b1001, 0b0110, 0b1001, 0b1001, 0b0110],
-    [0b0110, 0b1001, 0b1001, 0b0111, 0b0001, 0b0001, 0b0110],
-];
 
 pub(super) fn percentage_icon_at_size_with_color_map(
     percentage: u8,
@@ -85,75 +103,157 @@ pub(super) fn percentage_icon_at_size_with_color_map(
     battery_color_map: BatteryColorMap,
 ) -> Result<Icon, TrayError> {
     validate_icon_size(size)?;
-    let rgba = render_percentage(percentage, size, battery_color_map).into_raw();
+    let rgba = render_percentage(percentage, size, battery_color_map)?.into_raw();
     Icon::from_rgba(rgba, size, size)
         .map_err(|error| TrayError::new(format!("could not create percentage icon: {error}")))
 }
 
-/// Renders the percentage as number-only digits with no percent sign: at 16 px
-/// a mark would crowd out the third digit of `100`. Glyph pixels are one screen
-/// pixel at 16×16 and two screen pixels at 32×32, with a transparent background.
-fn render_percentage(percentage: u8, size: u32, battery_color_map: BatteryColorMap) -> RgbaImage {
+/// Renders number-only digits using the Windows Segoe UI font.
+fn render_percentage(
+    percentage: u8,
+    size: u32,
+    battery_color_map: BatteryColorMap,
+) -> Result<RgbaImage, TrayError> {
     let percentage = percentage.min(100);
     let mut image = RgbaImage::from_pixel(size, size, Rgba([0, 0, 0, 0]));
     let fill_color = battery_color_map.color_for(percentage);
     let color = Rgba([fill_color[0], fill_color[1], fill_color[2], 255]);
 
     let text = percentage.to_string();
-    let scale = size / ICON_SIZE;
-    let glyph_width = 4 * scale;
-    let gap = scale;
-    let digit_count = text.len() as u32;
-    let text_width = digit_count * glyph_width + (digit_count - 1) * gap;
-    let text_height = 7 * scale;
-    let origin_x = (size - text_width) / 2;
-    let origin_y = (size - text_height) / 2;
+    let font = percentage_font()?;
+    let base_font_size = if text.len() == 3 { 8.0 } else { 11.5 };
+    let font_size = base_font_size * (size as f32 / ICON_SIZE as f32);
+    let mut glyphs = Vec::with_capacity(text.len());
+    let mut pen_x = 0.0;
+    let mut previous = None;
+    let mut left = f32::INFINITY;
+    let mut top = f32::INFINITY;
+    let mut right = f32::NEG_INFINITY;
+    let mut bottom = f32::NEG_INFINITY;
 
-    for (index, digit) in text.bytes().enumerate() {
-        let glyph = DIGIT_GLYPHS[usize::from(digit - b'0')];
-        let digit_x = origin_x + index as u32 * (glyph_width + gap);
-        for (row, bits) in glyph.iter().enumerate() {
-            for column in 0..4 {
-                if bits & (0b1000 >> column) == 0 {
+    for character in text.chars() {
+        if let Some(previous) = previous {
+            pen_x += font
+                .horizontal_kern(previous, character, font_size)
+                .unwrap_or(0.0);
+        }
+        let (metrics, bitmap) = font.rasterize(character, font_size);
+        let glyph_left = pen_x + metrics.xmin as f32;
+        let glyph_top = -metrics.ymin as f32 - metrics.height as f32;
+        left = left.min(glyph_left);
+        top = top.min(glyph_top);
+        right = right.max(glyph_left + metrics.width as f32);
+        bottom = bottom.max(glyph_top + metrics.height as f32);
+        glyphs.push((metrics, bitmap, pen_x));
+        pen_x += metrics.advance_width;
+        previous = Some(character);
+    }
+
+    let origin_x = (size as f32 - (right - left)) / 2.0 - left;
+    let origin_y = (size as f32 - (bottom - top)) / 2.0 - top;
+    for (metrics, bitmap, pen_x) in glyphs {
+        let glyph_x = (origin_x + pen_x + metrics.xmin as f32).round() as i32;
+        let glyph_y = (origin_y - metrics.ymin as f32 - metrics.height as f32).round() as i32;
+        for row in 0..metrics.height {
+            for column in 0..metrics.width {
+                let alpha = bitmap[row * metrics.width + column];
+                if alpha == 0 {
                     continue;
                 }
-                let pixel_x = digit_x + column * scale;
-                let pixel_y = origin_y + row as u32 * scale;
-                for offset_y in 0..scale {
-                    for offset_x in 0..scale {
-                        image.put_pixel(pixel_x + offset_x, pixel_y + offset_y, color);
-                    }
+                let pixel_x = glyph_x + column as i32;
+                let pixel_y = glyph_y + row as i32;
+                if pixel_x >= 0 && pixel_x < size as i32 && pixel_y >= 0 && pixel_y < size as i32 {
+                    image.put_pixel(
+                        pixel_x as u32,
+                        pixel_y as u32,
+                        Rgba([color[0], color[1], color[2], alpha]),
+                    );
                 }
             }
         }
     }
 
-    image
+    Ok(center_opaque_pixels(image))
+}
+
+fn center_opaque_pixels(image: RgbaImage) -> RgbaImage {
+    let (width, height) = image.dimensions();
+    let mut bounds = [width, height, 0, 0];
+    for (x, y, pixel) in image.enumerate_pixels() {
+        if pixel[3] > 0 {
+            bounds[0] = bounds[0].min(x);
+            bounds[1] = bounds[1].min(y);
+            bounds[2] = bounds[2].max(x);
+            bounds[3] = bounds[3].max(y);
+        }
+    }
+
+    if bounds[0] == width {
+        return image;
+    }
+
+    let shift_x = ((width - 1) as i32 - (bounds[0] + bounds[2]) as i32) / 2;
+    let shift_y = ((height - 1) as i32 - (bounds[1] + bounds[3]) as i32) / 2;
+    let mut centered = RgbaImage::from_pixel(width, height, Rgba([0, 0, 0, 0]));
+    for (x, y, pixel) in image.enumerate_pixels() {
+        if pixel[3] == 0 {
+            continue;
+        }
+        let x = x as i32 + shift_x;
+        let y = y as i32 + shift_y;
+        if x >= 0 && x < width as i32 && y >= 0 && y < height as i32 {
+            centered.put_pixel(x as u32, y as u32, *pixel);
+        }
+    }
+
+    centered
+}
+
+fn percentage_font() -> Result<&'static Font, TrayError> {
+    PERCENTAGE_FONT
+        .get_or_init(load_percentage_font)
+        .as_ref()
+        .map_err(|error| {
+            TrayError::new(format!(
+                "could not load Segoe UI for tray percentage icon: {error}"
+            ))
+        })
+}
+
+fn load_percentage_font() -> Result<Font, String> {
+    let windows_directory = std::env::var_os("WINDIR")
+        .map(PathBuf::from)
+        .ok_or_else(|| "WINDIR environment variable is not set".to_owned())?;
+    let font_path = windows_directory.join("Fonts").join("segoeui.ttf");
+    let font_bytes = std::fs::read(&font_path)
+        .map_err(|error| format!("could not read {}: {error}", font_path.display()))?;
+    Font::from_bytes(font_bytes, fontdue::FontSettings::default())
+        .map_err(|error| format!("could not parse {}: {error:?}", font_path.display()))
 }
 
 #[cfg(test)]
 fn percentage_rgba(percentage: u8, size: u32) -> Result<Vec<u8>, TrayError> {
     validate_icon_size(size)?;
-    Ok(render_percentage(percentage, size, BatteryColorMap::default()).into_raw())
+    Ok(render_percentage(percentage, size, BatteryColorMap::default())?.into_raw())
 }
 
 /// Renders the neutral unknown/error icon as an RGBA buffer (16×16 or 32×32).
-pub(super) fn unknown_battery_rgba(size: u32) -> Result<Vec<u8>, TrayError> {
+pub(super) fn unknown_battery_rgba(size: u32, theme: IconTheme) -> Result<Vec<u8>, TrayError> {
     validate_icon_size(size)?;
-    Ok(render_unknown_battery(size).into_raw())
+    Ok(render_unknown_battery(size, theme).into_raw())
 }
 
-pub(super) fn unknown_battery_icon_at_size(size: u32) -> Result<Icon, TrayError> {
-    let rgba = unknown_battery_rgba(size)?;
+pub(super) fn unknown_battery_icon_at_size(size: u32, theme: IconTheme) -> Result<Icon, TrayError> {
+    let rgba = unknown_battery_rgba(size, theme)?;
     Icon::from_rgba(rgba, size, size)
         .map_err(|error| TrayError::new(format!("could not create unknown battery icon: {error}")))
 }
 
-fn render_unknown_battery(size: u32) -> RgbaImage {
+fn render_unknown_battery(size: u32, theme: IconTheme) -> RgbaImage {
     let scale = size as f32 * SUPERSAMPLE as f32 / ICON_SIZE as f32;
     let mut image =
         RgbaImage::from_pixel(size * SUPERSAMPLE, size * SUPERSAMPLE, Rgba([0, 0, 0, 0]));
-    let outline = Rgba([232, 238, 243, 255]);
+    let outline = Rgba(theme.outline_color());
     draw_battery_shell(&mut image, scale, outline);
 
     let question_mark = [
@@ -206,7 +306,7 @@ fn draw_battery_shell(image: &mut RgbaImage, scale: f32, color: Rgba<u8>) {
             height: 12.9,
             radius: 2.4,
         },
-        1.3,
+        1.6,
         color,
     );
     fill_rounded_rect(
@@ -409,7 +509,7 @@ mod tests {
                 (size * size * 4) as usize
             );
             assert_eq!(
-                unknown_battery_rgba(size).unwrap().len(),
+                unknown_battery_rgba(size, IconTheme::Light).unwrap().len(),
                 (size * size * 4) as usize
             );
         }
@@ -420,13 +520,27 @@ mod tests {
     fn rgba_renderers_antialias_icon_edges() {
         for rgba in [
             battery_rgba(85, ICON_SIZE).unwrap(),
-            unknown_battery_rgba(ICON_SIZE).unwrap(),
+            unknown_battery_rgba(ICON_SIZE, IconTheme::Light).unwrap(),
         ] {
             assert!(rgba
                 .iter()
                 .skip(3)
                 .step_by(4)
                 .any(|alpha| *alpha > 0 && *alpha < 255));
+        }
+    }
+
+    #[test]
+    fn battery_shell_uses_an_outline_visible_in_each_theme() {
+        let map = BatteryColorMap::default();
+        for (theme, expected) in [
+            (IconTheme::Light, [24, 28, 32, 255]),
+            (IconTheme::Dark, [245, 247, 250, 255]),
+        ] {
+            let rgba = battery_rgba_with_color_map(85, ICON_SIZE, map, theme).unwrap();
+            assert!(opaque_pixels(&rgba).contains(&expected));
+            let unknown = unknown_battery_rgba(ICON_SIZE, theme).unwrap();
+            assert!(opaque_pixels(&unknown).contains(&expected));
         }
     }
 
@@ -460,7 +574,8 @@ mod tests {
             green: [7, 8, 9],
         };
         let pixel = |percentage| {
-            let rgba = battery_rgba_with_color_map(percentage, ICON_SIZE, map).unwrap();
+            let rgba =
+                battery_rgba_with_color_map(percentage, ICON_SIZE, map, IconTheme::Light).unwrap();
             let index = ((10 * ICON_SIZE + 3) * 4) as usize;
             [rgba[index], rgba[index + 1], rgba[index + 2]]
         };
@@ -478,26 +593,6 @@ mod tests {
             .filter(|pixel| pixel[3] > 0)
             .map(|pixel| [pixel[0], pixel[1], pixel[2], pixel[3]])
             .collect()
-    }
-
-    #[test]
-    fn digit_glyphs_are_complete_and_distinct() {
-        for (digit, glyph) in DIGIT_GLYPHS.iter().enumerate() {
-            assert!(glyph.iter().any(|row| *row != 0), "digit {digit} is blank");
-            assert!(
-                glyph.iter().all(|row| row & !0b1111 == 0),
-                "digit {digit} exceeds four columns"
-            );
-            assert!(
-                glyph.iter().map(|row| row.count_ones()).sum::<u32>() >= 7,
-                "digit {digit} is too sparse"
-            );
-        }
-        for (left, glyph) in DIGIT_GLYPHS.iter().enumerate() {
-            for other in DIGIT_GLYPHS.iter().skip(left + 1) {
-                assert_ne!(glyph, other);
-            }
-        }
     }
 
     #[test]
@@ -519,17 +614,17 @@ mod tests {
     fn percentage_icon_uses_the_active_color_band() {
         let map = BatteryColorMap::default();
         for (percentage, expected) in [(10, map.red), (20, map.yellow), (60, map.green)] {
-            let rgba = render_percentage(percentage, 32, map).into_raw();
+            let rgba = render_percentage(percentage, 32, map).unwrap().into_raw();
             let opaque = opaque_pixels(&rgba);
             assert!(!opaque.is_empty());
-            for pixel in opaque {
-                assert_eq!(pixel[3], 255);
+            for pixel in &opaque {
                 assert_eq!(
                     &pixel[..3],
                     &expected,
                     "{percentage}% used the wrong color band"
                 );
             }
+            assert!(opaque.iter().any(|pixel| pixel[3] < 255));
         }
     }
 
@@ -545,23 +640,22 @@ mod tests {
     }
 
     #[test]
-    fn percentage_digits_fill_more_of_the_icon() {
-        let rgba = percentage_rgba(100, ICON_SIZE).unwrap();
-        let mut bounds = [ICON_SIZE, ICON_SIZE, 0, 0];
-
-        for y in 0..ICON_SIZE {
-            for x in 0..ICON_SIZE {
-                let alpha_index = ((y * ICON_SIZE + x) * 4 + 3) as usize;
-                if rgba[alpha_index] > 0 {
-                    bounds[0] = bounds[0].min(x);
-                    bounds[1] = bounds[1].min(y);
-                    bounds[2] = bounds[2].max(x);
-                    bounds[3] = bounds[3].max(y);
-                }
-            }
+    fn three_digit_percentage_is_centered() {
+        for size in [16, 32] {
+            let rgba = percentage_rgba(100, size).unwrap();
+            assert_centered(opaque_bounds(&rgba, size), size);
         }
+    }
 
-        assert_eq!(bounds, [2, 4, 14, 10]);
+    #[test]
+    fn two_digit_percentage_is_larger_and_centered() {
+        for size in [16, 32] {
+            let rgba = percentage_rgba(94, size).unwrap();
+            let bounds = opaque_bounds(&rgba, size);
+            assert!(bounds[2] - bounds[0] + 1 >= 10 * size / ICON_SIZE);
+            assert!(bounds[3] - bounds[1] + 1 >= 7 * size / ICON_SIZE);
+            assert_centered(bounds, size);
+        }
     }
 
     #[test]
@@ -570,5 +664,34 @@ mod tests {
         let large = percentage_rgba(85, 32).unwrap();
         assert_ne!(small, large);
         assert!(large.len() > small.len());
+    }
+
+    fn opaque_bounds(rgba: &[u8], size: u32) -> [u32; 4] {
+        let mut bounds = [size, size, 0, 0];
+        for y in 0..size {
+            for x in 0..size {
+                let alpha_index = ((y * size + x) * 4 + 3) as usize;
+                if rgba[alpha_index] > 0 {
+                    bounds[0] = bounds[0].min(x);
+                    bounds[1] = bounds[1].min(y);
+                    bounds[2] = bounds[2].max(x);
+                    bounds[3] = bounds[3].max(y);
+                }
+            }
+        }
+        bounds
+    }
+
+    fn assert_centered(bounds: [u32; 4], size: u32) {
+        let horizontal_center_twice = bounds[0] + bounds[2];
+        let vertical_center_twice = bounds[1] + bounds[3];
+        assert!(
+            horizontal_center_twice.abs_diff(size - 1) <= 1,
+            "horizontal bounds {bounds:?} are not centered in {size}px"
+        );
+        assert!(
+            vertical_center_twice.abs_diff(size - 1) <= 1,
+            "vertical bounds {bounds:?} are not centered in {size}px"
+        );
     }
 }
