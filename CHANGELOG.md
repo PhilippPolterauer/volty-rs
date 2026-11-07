@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.14.0] - 2026-11-07
+
+### Added
+
+- Added a native Settings window for battery alerts, tray icon options, selected battery, and Windows startup behavior.
+- Added System, Light, and Dark app themes, editable battery color cutoffs and colors, and a live tray icon preview.
+
+### Fixed
+
+- Clarified what to check when Volty has no battery readings.
+- Limited settings preview redraws to the affected color map and icon areas while adjusting the preview.
+
 ## [0.13.0] - 2026-11-07
 
 ### Added
