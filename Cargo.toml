@@ -15,7 +15,7 @@ toml = "1.1"
 volty-battery = { path = "crates/volty-battery" }
 
 [workspace.package]
-version = "0.11.0"
+version = "0.12.0"
 edition = "2021"
 license = "MIT"
 rust-version = "1.99"

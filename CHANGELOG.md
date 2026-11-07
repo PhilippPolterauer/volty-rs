@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.12.0] - 2026-11-07
+
+### Changed
+
+- Improved tray battery icon readability in light and dark themes with theme-aware outlines and Segoe UI percentage digits.
+
 ## [0.11.0] - 2026-11-06
 
 ### Added
