@@ -35,6 +35,8 @@ notify = "9.0.0-rc.7"
 windows-sys = { version = "0.61", features = [
     "Win32_Foundation",
     "Win32_Graphics_Gdi",
+    "Win32_Graphics_Dwm",
+    "Win32_UI_Accessibility",
     "Win32_Security",
     "Win32_Storage_FileSystem",
     "Win32_System_Console",
@@ -46,6 +48,7 @@ windows-sys = { version = "0.61", features = [
     "Win32_System_LibraryLoader",
     "Win32_System_Memory",
     "Win32_UI_Controls",
+    "Win32_UI_Controls_Dialogs",
     "Win32_UI_HiDpi",
     "Win32_UI_WindowsAndMessaging",
     "Win32_UI_Shell",

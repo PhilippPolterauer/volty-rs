@@ -18,9 +18,41 @@ pub const DEFAULT_RETRY_INTERVAL_SECONDS: u64 = 15;
 pub const DEFAULT_BATTERY_ETA_WINDOW_MINUTES: u64 = 10;
 pub const DEFAULT_STALE_AFTER_MINUTES: u64 = 15;
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum AppTheme {
+    #[default]
+    System,
+    Light,
+    Dark,
+}
+
+impl AppTheme {
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "system" => Some(Self::System),
+            "light" => Some(Self::Light),
+            "dark" => Some(Self::Dark),
+            _ => None,
+        }
+    }
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::System => "system",
+            Self::Light => "light",
+            Self::Dark => "dark",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct DashboardSettingsUpdate {
+    pub app_theme: String,
+    pub battery_color_red_max_percent: u8,
+    pub battery_color_yellow_max_percent: u8,
+    pub battery_color_red: String,
+    pub battery_color_yellow: String,
+    pub battery_color_green: String,
     pub low_battery_thresholds: Vec<u8>,
     pub low_battery_cooldown_minutes: u64,
     pub notifications_enabled: bool,
@@ -102,6 +134,7 @@ impl LogLevel {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AppConfig {
+    pub app_theme: AppTheme,
     pub low_battery_thresholds: Vec<u8>,
     pub low_battery_cooldown_minutes: u64,
     pub poll_interval_seconds: u64,
@@ -130,6 +163,7 @@ impl Default for AppConfig {
             battery_color_map: BatteryColorMap::default(),
             tray_icon_style: None,
             tray_icon_theme: None,
+            app_theme: AppTheme::System,
             show_percentage_in_battery_icon: false,
         }
     }
@@ -370,6 +404,24 @@ fn update_dashboard_settings_at(
     let cooldown = i64::try_from(settings.low_battery_cooldown_minutes).map_err(|_| {
         ConfigError::new("low_battery_cooldown_minutes must not exceed 9223372036854775807")
     })?;
+    let color_map = BatteryColorMap {
+        red_max_percent: settings.battery_color_red_max_percent,
+        yellow_max_percent: settings.battery_color_yellow_max_percent,
+        red: parse_dashboard_hex_color(&settings.battery_color_red, "red")?,
+        yellow: parse_dashboard_hex_color(&settings.battery_color_yellow, "yellow")?,
+        green: parse_dashboard_hex_color(&settings.battery_color_green, "green")?,
+    };
+    if color_map.red_max_percent > 99
+        || color_map.yellow_max_percent == 0
+        || color_map.yellow_max_percent > 100
+        || color_map.red_max_percent >= color_map.yellow_max_percent
+    {
+        return Err(ConfigError::new(
+            "battery color cutoffs must satisfy 0 ≤ red < yellow ≤ 100",
+        ));
+    }
+    let app_theme = AppTheme::parse(&settings.app_theme)
+        .ok_or_else(|| ConfigError::new("app_theme must be system, light, or dark"))?;
     let style = TrayIconStyle::parse(&settings.tray_icon_style)
         .ok_or_else(|| ConfigError::new("tray_icon_style must be battery or percentage"))?;
     let theme = TrayIconTheme::parse(&settings.tray_icon_theme)
@@ -384,9 +436,38 @@ fn update_dashboard_settings_at(
         document["notifications_enabled"] = toml_edit::value(settings.notifications_enabled);
         document["tray_icon_style"] = toml_edit::value(style.as_str());
         document["tray_icon_theme"] = toml_edit::value(theme.as_str());
+        document["app_theme"] = toml_edit::value(app_theme.as_str());
+        let table = document
+            .entry("battery_color_map")
+            .or_insert(toml_edit::Item::Table(toml_edit::Table::new()))
+            .as_table_mut()
+            .expect("validated battery color map is a table");
+        table["red_max_percent"] = toml_edit::value(i64::from(color_map.red_max_percent));
+        table["yellow_max_percent"] = toml_edit::value(i64::from(color_map.yellow_max_percent));
+        for (name, color) in [
+            ("red", color_map.red),
+            ("yellow", color_map.yellow),
+            ("green", color_map.green),
+        ] {
+            table[name] =
+                toml_edit::value(format!("#{:02X}{:02X}{:02X}", color[0], color[1], color[2]));
+        }
         document["show_percentage_in_battery_icon"] =
             toml_edit::value(settings.show_percentage_in_battery_icon);
     })
+}
+
+fn parse_dashboard_hex_color(value: &str, name: &str) -> Result<[u8; 3], ConfigError> {
+    if value.len() != 7 || !value.starts_with('#') {
+        return Err(ConfigError::new(format!(
+            "battery {name} must use #RRGGBB format"
+        )));
+    }
+    let channel = |range| {
+        u8::from_str_radix(&value[range], 16)
+            .map_err(|_| ConfigError::new(format!("battery {name} must use #RRGGBB format")))
+    };
+    Ok([channel(1..3)?, channel(3..5)?, channel(5..7)?])
 }
 
 fn update_config_document(
@@ -575,6 +656,10 @@ fn parse_toml(contents: &str, path: &Path) -> Result<AppConfig, ConfigError> {
                     ))
                 })?);
             }
+            "app_theme" => {
+                config.app_theme = value.as_str().and_then(AppTheme::parse)
+                    .ok_or_else(|| ConfigError::new("app_theme must be system, light, or dark"))?;
+            }
             "tray_icon_theme" => {
                 let theme = value.as_str().ok_or_else(|| {
                     ConfigError::new(format!(
@@ -744,6 +829,27 @@ mod tests {
     use super::*;
 
     #[test]
+    fn app_theme_defaults_to_system_and_validates_config_values() {
+        let path = Path::new("config.toml");
+        assert_eq!(parse_toml("", path).unwrap().app_theme, AppTheme::System);
+        for (value, expected) in [
+            ("system", AppTheme::System),
+            ("light", AppTheme::Light),
+            ("dark", AppTheme::Dark),
+        ] {
+            assert_eq!(
+                parse_toml(&format!("app_theme = {value:?}"), path)
+                    .unwrap()
+                    .app_theme,
+                expected
+            );
+        }
+        for invalid in ["app_theme = 1", "app_theme = \"blue\""] {
+            assert!(parse_toml(invalid, path).is_err());
+        }
+    }
+
+    #[test]
     fn toml_config_accepts_defaults_and_threshold_values() {
         let path = Path::new("config.toml");
         assert_eq!(AppConfig::default().battery_eta_window_minutes, 10);
@@ -789,6 +895,7 @@ mod tests {
                 notifications_enabled: false,
                 log_level: LogLevel::Debug,
                 battery_color_map: BatteryColorMap::default(),
+                app_theme: AppTheme::System,
                 tray_icon_style: None,
                 tray_icon_theme: None,
                 show_percentage_in_battery_icon: false,
@@ -853,6 +960,7 @@ mod tests {
         .unwrap();
         assert_eq!(config.tray_icon_style, Some(TrayIconStyle::Percentage));
         assert_eq!(config.tray_icon_theme, Some(TrayIconTheme::Dark));
+        assert_eq!(config.app_theme, AppTheme::System);
         assert!(config.show_percentage_in_battery_icon);
 
         let config = parse_toml(
@@ -1012,6 +1120,12 @@ mod tests {
         update_dashboard_settings_at(
             &path,
             &DashboardSettingsUpdate {
+                app_theme: "dark".to_owned(),
+                battery_color_red_max_percent: 15,
+                battery_color_yellow_max_percent: 30,
+                battery_color_red: "#D23030".to_owned(),
+                battery_color_yellow: "#EBBE23".to_owned(),
+                battery_color_green: "#2DAA4B".to_owned(),
                 low_battery_thresholds: vec![5, 15, 15],
                 low_battery_cooldown_minutes: 45,
                 notifications_enabled: false,
@@ -1030,9 +1144,14 @@ mod tests {
         assert!(!config.notifications_enabled);
         assert_eq!(config.tray_icon_style, Some(TrayIconStyle::Percentage));
         assert_eq!(config.tray_icon_theme, Some(TrayIconTheme::Dark));
+        assert_eq!(config.app_theme, AppTheme::Dark);
         assert!(config.show_percentage_in_battery_icon);
         assert_eq!(config.poll_interval_seconds, 300);
-        assert_eq!(config.battery_color_map.red_max_percent, 12);
+        assert_eq!(config.battery_color_map.red_max_percent, 15);
+        assert_eq!(config.battery_color_map.yellow_max_percent, 30);
+        assert_eq!(config.battery_color_map.red, [210, 48, 48]);
+        assert_eq!(config.battery_color_map.yellow, [235, 190, 35]);
+        assert_eq!(config.battery_color_map.green, [45, 170, 75]);
         let contents = fs::read_to_string(&path).unwrap();
         assert!(contents.contains("# Keep this comment"));
 
@@ -1057,6 +1176,12 @@ mod tests {
         let result = update_dashboard_settings_at(
             &path,
             &DashboardSettingsUpdate {
+                app_theme: "dark".to_owned(),
+                battery_color_red_max_percent: 15,
+                battery_color_yellow_max_percent: 30,
+                battery_color_red: "#D23030".to_owned(),
+                battery_color_yellow: "#EBBE23".to_owned(),
+                battery_color_green: "#2DAA4B".to_owned(),
                 low_battery_thresholds: vec![0],
                 low_battery_cooldown_minutes: 45,
                 notifications_enabled: true,

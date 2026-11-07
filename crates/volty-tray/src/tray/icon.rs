@@ -58,6 +58,29 @@ fn battery_rgba_with_percentage(
         .map(RgbaImage::into_raw)
 }
 
+pub(super) fn preview_rgba(
+    percentage: u8,
+    size: u32,
+    battery_color_map: BatteryColorMap,
+    theme: IconTheme,
+    style: crate::state::TrayIconStyle,
+    show_percentage: bool,
+) -> Result<Vec<u8>, TrayError> {
+    validate_icon_size(size)?;
+    match style {
+        crate::state::TrayIconStyle::Battery => battery_rgba_with_percentage(
+            percentage,
+            size,
+            battery_color_map,
+            theme,
+            show_percentage,
+        ),
+        crate::state::TrayIconStyle::Percentage => {
+            Ok(render_percentage(percentage, size, battery_color_map, theme)?.into_raw())
+        }
+    }
+}
+
 /// Produces a battery-level icon at 16×16 or 32×32 pixels.
 #[cfg(test)]
 fn battery_icon_at_size(percentage: u8, size: u32) -> Result<Icon, TrayError> {

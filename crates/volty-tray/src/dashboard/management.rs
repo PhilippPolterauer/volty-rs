@@ -83,6 +83,27 @@ impl DashboardBackend {
             Err(error) => (None, Some(error.to_string())),
         };
         Ok(DashboardSettings {
+            app_theme: config.app_theme.as_str().to_owned(),
+            battery_color_red_max_percent: config.battery_color_map.red_max_percent,
+            battery_color_yellow_max_percent: config.battery_color_map.yellow_max_percent,
+            battery_color_red: format!(
+                "#{:02X}{:02X}{:02X}",
+                config.battery_color_map.red[0],
+                config.battery_color_map.red[1],
+                config.battery_color_map.red[2]
+            ),
+            battery_color_yellow: format!(
+                "#{:02X}{:02X}{:02X}",
+                config.battery_color_map.yellow[0],
+                config.battery_color_map.yellow[1],
+                config.battery_color_map.yellow[2]
+            ),
+            battery_color_green: format!(
+                "#{:02X}{:02X}{:02X}",
+                config.battery_color_map.green[0],
+                config.battery_color_map.green[1],
+                config.battery_color_map.green[2]
+            ),
             low_battery_thresholds: config.low_battery_thresholds,
             low_battery_cooldown_minutes: config.low_battery_cooldown_minutes,
             notifications_enabled: config.notifications_enabled,

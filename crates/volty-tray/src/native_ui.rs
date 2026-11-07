@@ -20,6 +20,7 @@ pub struct FontSet {
     pub body_small: HFONT,
     pub heading: HFONT,
     pub monospace: HFONT,
+    pub section: HFONT,
 }
 
 impl FontSet {
@@ -41,7 +42,7 @@ impl FontSet {
         let heading = match create_font(
             scale_font_height(-27, dpi),
             SEMIBOLD_FONT_WEIGHT,
-            "Segoe UI",
+            "Segoe UI Semibold",
         ) {
             Ok(font) => font,
             Err(error) => {
@@ -61,11 +62,26 @@ impl FontSet {
                 }
             };
 
+        let section = match create_font(
+            scale_font_height(-18, dpi),
+            SEMIBOLD_FONT_WEIGHT,
+            "Segoe UI Semibold",
+        ) {
+            Ok(font) => font,
+            Err(error) => {
+                delete_font(body);
+                delete_font(body_small);
+                delete_font(heading);
+                delete_font(monospace);
+                return Err(error);
+            }
+        };
         Ok(Self {
             body,
             body_small,
             heading,
             monospace,
+            section,
         })
     }
 }
@@ -80,6 +96,7 @@ impl Drop for FontSet {
         delete_font(self.body_small);
         delete_font(self.heading);
         delete_font(self.monospace);
+        delete_font(self.section);
     }
 }
 

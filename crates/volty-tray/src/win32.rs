@@ -23,6 +23,7 @@ use crate::app_icon::class_icons;
 mod dark_mode;
 
 pub(crate) use dark_mode::{allow_dark_mode_for_current_thread_windows, enable_system_dark_menus};
+pub(crate) use dark_mode::{configure_app_dark_mode, set_window_dark_mode};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ControlRect {

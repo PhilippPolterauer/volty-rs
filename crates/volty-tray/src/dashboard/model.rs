@@ -19,6 +19,12 @@ pub(super) struct DashboardData {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub(super) struct DashboardSettings {
+    pub(super) app_theme: String,
+    pub(super) battery_color_red_max_percent: u8,
+    pub(super) battery_color_yellow_max_percent: u8,
+    pub(super) battery_color_red: String,
+    pub(super) battery_color_yellow: String,
+    pub(super) battery_color_green: String,
     pub(super) low_battery_thresholds: Vec<u8>,
     pub(super) low_battery_cooldown_minutes: u64,
     pub(super) notifications_enabled: bool,

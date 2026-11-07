@@ -110,3 +110,10 @@ case-insensitive substring of device identity or name; `--database <path>` reads
 a different database. CSV columns are
 `timestamp_utc,identity,name,percent,charging,voltage_mv`; unreported percent or
 voltage values are empty.
+
+### Settings appearance
+
+`app_theme = "system"` follows the Windows app color mode and updates while Settings is open.
+Use `"light"` or `"dark"` for a fixed appearance, or choose **App theme** in Settings.
+The choice is saved with **Save changes**. Windows high-contrast colors take precedence.
+This preference is independent of `tray_icon_theme`.

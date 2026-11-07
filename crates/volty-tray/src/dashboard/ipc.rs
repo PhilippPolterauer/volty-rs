@@ -233,13 +233,13 @@ mod tests {
     #[test]
     fn settings_ipc_requires_the_complete_supported_settings_shape() {
         let valid = serde_json::from_str::<IpcRequest>(
-            r#"{"id":"settings","command":"update_settings","payload":{"settings":{"low_battery_thresholds":[20,10,5],"low_battery_cooldown_minutes":120,"notifications_enabled":true,"tray_icon_style":"battery","tray_icon_theme":"system","show_percentage_in_battery_icon":false,"pinned_device":null,"start_on_boot":true}}}"#,
+            r##"{"id":"settings","command":"update_settings","payload":{"settings":{"app_theme":"system","battery_color_red_max_percent":15,"battery_color_yellow_max_percent":30,"battery_color_red":"#D23030","battery_color_yellow":"#EBBE23","battery_color_green":"#2DAA4B","low_battery_thresholds":[20,10,5],"low_battery_cooldown_minutes":120,"notifications_enabled":true,"tray_icon_style":"battery","tray_icon_theme":"system","show_percentage_in_battery_icon":false,"pinned_device":null,"start_on_boot":true}}}"##,
         )
         .unwrap();
         assert!(matches!(valid.command, IpcCommand::UpdateSettings { .. }));
 
         let invalid = serde_json::from_str::<IpcRequest>(
-            r#"{"id":"settings","command":"update_settings","payload":{"settings":{"low_battery_thresholds":[20],"low_battery_cooldown_minutes":120,"notifications_enabled":true,"tray_icon_style":"battery","tray_icon_theme":"system","show_percentage_in_battery_icon":false,"pinned_device":null,"start_on_boot":true,"unexpected":true}}}"#,
+            r##"{"id":"settings","command":"update_settings","payload":{"settings":{"app_theme":"system","battery_color_red_max_percent":15,"battery_color_yellow_max_percent":30,"battery_color_red":"#D23030","battery_color_yellow":"#EBBE23","battery_color_green":"#2DAA4B","low_battery_thresholds":[20],"low_battery_cooldown_minutes":120,"notifications_enabled":true,"tray_icon_style":"battery","tray_icon_theme":"system","show_percentage_in_battery_icon":false,"pinned_device":null,"start_on_boot":true,"unexpected":true}}}"##,
         );
         assert!(invalid.is_err());
     }

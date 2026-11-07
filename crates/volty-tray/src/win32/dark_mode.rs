@@ -100,6 +100,26 @@ pub(crate) fn enable_system_dark_menus() {
     }
 }
 
+pub(crate) fn configure_app_dark_mode(dark: bool) {
+    if let Some(api) = dark_mode_api() {
+        // SAFETY: the resolved export accepts ForceDark (2) and ForceLight (3).
+        unsafe {
+            (api.set_preferred_app_mode)(if dark { 2 } else { 3 });
+        }
+    }
+}
+
+pub(crate) fn set_window_dark_mode(window: HWND, dark: bool) {
+    if let Some(api) = dark_mode_api() {
+        if let Some(allow) = api.allow_dark_mode_for_window {
+            // SAFETY: the caller supplies a live window or control HWND.
+            unsafe {
+                allow(window, i32::from(dark));
+            }
+        }
+    }
+}
+
 pub(crate) fn allow_dark_mode_for_current_thread_windows() {
     let Some(api) = dark_mode_api() else {
         return;

@@ -69,6 +69,26 @@ use crate::{
     update::UpdateInfo,
 };
 
+pub(crate) fn render_settings_preview(
+    percentage: u8,
+    size: u32,
+    battery_color_map: BatteryColorMap,
+    theme: TrayIconTheme,
+    style: TrayIconStyle,
+    show_percentage: bool,
+) -> Result<Vec<u8>, String> {
+    let theme = current_icon_theme(theme).map_err(|error| error.to_string())?;
+    icon::preview_rgba(
+        percentage,
+        size,
+        battery_color_map,
+        theme,
+        style,
+        show_percentage,
+    )
+    .map_err(|error| error.to_string())
+}
+
 const MAX_STATUS_CHARS: usize = 80;
 const MAX_TOOLTIP_UTF16_UNITS: usize = 127;
 const MENU_ITEMS_AFTER_ADVANCED_OPTIONS: usize = 4; // Check for Updates, About, separator, Quit.

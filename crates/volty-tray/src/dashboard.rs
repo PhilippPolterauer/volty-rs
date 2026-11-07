@@ -81,7 +81,7 @@ pub fn run_cli(args: &[String]) -> Result<(), Box<dyn Error>> {
 
     if options.settings {
         let backend = DashboardBackend::new(database, options.database.is_none());
-        return settings_window::open_settings_window(backend, options.days, options.database);
+        return settings_window::open_settings_window(backend, options.days);
     }
 
     if options.window {

@@ -1,8 +1,6 @@
 use std::{
     error::Error,
-    io,
-    process::Command,
-    ptr,
+    io, ptr,
     sync::{
         atomic::{AtomicBool, Ordering},
         Arc,
@@ -11,27 +9,34 @@ use std::{
 };
 
 use windows_sys::Win32::{
-    Foundation::{HWND, LPARAM, LRESULT, WAIT_FAILED, WAIT_OBJECT_0, WAIT_TIMEOUT, WPARAM},
+    Foundation::{
+        COLORREF, HWND, LPARAM, LRESULT, WAIT_FAILED, WAIT_OBJECT_0, WAIT_TIMEOUT, WPARAM,
+    },
     System::LibraryLoader::GetModuleHandleW,
     UI::{
-        Controls::{BST_CHECKED, BST_UNCHECKED, EM_LIMITTEXT},
+        Controls::Dialogs::{ChooseColorW, CC_FULLOPEN, CC_RGBINIT, CHOOSECOLORW},
+        Controls::{
+            InitCommonControlsEx, BST_CHECKED, BST_UNCHECKED, EM_LIMITTEXT, ICC_BAR_CLASSES,
+            INITCOMMONCONTROLSEX, TBM_SETPOS, TBM_SETRANGEMAX, TBM_SETRANGEMIN,
+        },
         Input::KeyboardAndMouse::{EnableWindow, SetFocus},
         WindowsAndMessaging::{
             CreateWindowExW, GetClientRect, GetWindowTextLengthW, GetWindowTextW, MessageBoxW,
-            MoveWindow, PostMessageW, SendMessageW, SetWindowTextW, ShowWindow, BM_GETCHECK,
+            PostMessageW, SendMessageW, SetWindowPos, SetWindowTextW, ShowWindow, BM_GETCHECK,
             BM_SETCHECK, BS_AUTOCHECKBOX, BS_DEFPUSHBUTTON, BS_PUSHBUTTON, CBS_DROPDOWNLIST,
             CBS_HASSTRINGS, CB_ADDSTRING, CB_GETCURSEL, CB_SETCURSEL, ES_AUTOHSCROLL, ES_NUMBER,
-            IDCANCEL, IDYES, MB_DEFBUTTON2, MB_ICONWARNING, MB_YESNO, MINMAXINFO, SW_SHOWNORMAL,
-            WM_APP, WM_CLOSE, WM_COMMAND, WM_CTLCOLORSTATIC, WM_DESTROY, WM_GETMINMAXINFO,
-            WM_NCCREATE, WM_SETFOCUS, WM_SIZE, WS_CHILD, WS_EX_CLIENTEDGE, WS_OVERLAPPEDWINDOW,
-            WS_TABSTOP, WS_VISIBLE, WS_VSCROLL,
+            IDCANCEL, IDYES, MB_DEFBUTTON2, MB_ICONWARNING, MB_YESNO, MINMAXINFO, SWP_NOACTIVATE,
+            SWP_NOREDRAW, SWP_NOZORDER, SW_SHOWNA, SW_SHOWNORMAL, WM_APP, WM_CLOSE, WM_COMMAND,
+            WM_CTLCOLORSTATIC, WM_DESTROY, WM_GETMINMAXINFO, WM_HSCROLL, WM_NCCREATE, WM_SETFOCUS,
+            WM_SIZE, WS_CHILD, WS_EX_CLIENTEDGE, WS_OVERLAPPEDWINDOW, WS_TABSTOP, WS_VISIBLE,
+            WS_VSCROLL,
         },
     },
 };
 
 use crate::{
-    config::DashboardSettingsUpdate,
-    native_ui::{edit_control_color, set_control_font, static_control_color, FontSet},
+    config::{AppTheme, BatteryColorMap, DashboardSettingsUpdate},
+    native_ui::{set_control_font, FontSet},
     win32::{self, ControlSpec},
 };
 
@@ -40,14 +45,16 @@ use super::{
     model::{DashboardInventoryDevice, DashboardSettings},
 };
 
+mod appearance;
+use appearance::Appearance;
+
 const WINDOW_CLASS: &str = "VoltyNativeSettingsWindow";
 const WINDOW_TITLE: &str = "Volty Settings";
-const WINDOW_WIDTH: i32 = 900;
+const WINDOW_WIDTH: i32 = 940;
 const WINDOW_HEIGHT: i32 = 900;
 const MIN_WINDOW_WIDTH: i32 = 820;
-const MIN_WINDOW_HEIGHT: i32 = 880;
+const MIN_WINDOW_HEIGHT: i32 = 820;
 const MARGIN: i32 = 32;
-const OVERVIEW_ID: usize = 1001;
 const THRESHOLDS_ID: usize = 1002;
 const COOLDOWN_ID: usize = 1003;
 const NOTIFICATIONS_ID: usize = 1004;
@@ -58,11 +65,27 @@ const PERCENTAGE_OVERLAY_ID: usize = 1008;
 const PINNED_DEVICE_ID: usize = 1009;
 const STARTUP_ID: usize = 1010;
 const SAVE_ID: usize = 1011;
+const APP_THEME_ID: usize = 1012;
+const RED_CUTOFF_ID: usize = 1013;
+const YELLOW_CUTOFF_ID: usize = 1014;
+const RED_COLOR_ID: usize = 1015;
+const YELLOW_COLOR_ID: usize = 1016;
+const GREEN_COLOR_ID: usize = 1017;
+const PICK_RED_ID: usize = 1018;
+const PICK_YELLOW_ID: usize = 1019;
+const PICK_GREEN_ID: usize = 1020;
+const PREVIEW_LEVEL_ID: usize = 1021;
 const SETTINGS_ACTIVATE_MESSAGE: u32 = WM_APP + 1;
 const SETTINGS_INSTANCE_MUTEX: &str = "Local\\VoltySettings";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct FormValues {
+    app_theme: usize,
+    red_cutoff: String,
+    yellow_cutoff: String,
+    red_color: String,
+    yellow_color: String,
+    green_color: String,
     thresholds: String,
     cooldown: String,
     notifications: bool,
@@ -75,9 +98,10 @@ struct FormValues {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ControlRole {
+    AppTheme,
+    AppThemeLabel,
     Heading,
     Description,
-    Overview,
     ConfigError,
     ReadOnly,
     BatteryHeading,
@@ -92,10 +116,10 @@ enum ControlRole {
     CooldownError,
     Notifications,
     TestNotification,
-    TestStatus,
     BatteryDivider,
     TrayHeading,
     TrayDescription,
+    AppThemeHelp,
     IconStyleLabel,
     IconStyleHelp,
     IconStyle,
@@ -108,12 +132,40 @@ enum ControlRole {
     PinnedDeviceHelp,
     PinnedDevice,
     TrayDivider,
+    ColorMapHeading,
+    ColorMapDescription,
+    RedCutoffLabel,
+    YellowCutoffLabel,
+    RedCutoff,
+    YellowCutoff,
+    ColorMapError,
+    RedColorLabel,
+    YellowColorLabel,
+    GreenColorLabel,
+    RedColor,
+    YellowColor,
+    GreenColor,
+    PickRed,
+    PickYellow,
+    PickGreen,
+    PreviewLabel,
+    PreviewLevel,
+    PreviewValue,
     StartupHeading,
     StartupDescription,
     Startup,
     StartupError,
     Status,
     Save,
+}
+
+impl ControlRole {
+    fn is_combo(self) -> bool {
+        matches!(
+            self,
+            Self::AppTheme | Self::IconStyle | Self::IconTheme | Self::PinnedDevice
+        )
+    }
 }
 
 struct LayoutControl {
@@ -124,12 +176,14 @@ struct LayoutControl {
 struct SettingsWindow {
     backend: DashboardBackend,
     days: u32,
-    database: Option<std::path::PathBuf>,
     settings: Option<DashboardSettings>,
     pin_values: Vec<Option<String>>,
     controls: Vec<LayoutControl>,
     fonts: FontSet,
+    appearance: Appearance,
     original: Option<FormValues>,
+    preview_bgra: Vec<u8>,
+    custom_colors: [COLORREF; 16],
     activation_listener: Option<SettingsEventListener>,
     create_complete: bool,
 }
@@ -145,7 +199,6 @@ impl Drop for SettingsWindow {
 pub(super) fn open_settings_window(
     backend: DashboardBackend,
     days: u32,
-    database: Option<std::path::PathBuf>,
 ) -> Result<(), Box<dyn Error>> {
     win32::enable_system_dark_menus();
     let data = backend.get_dashboard_data(days)?;
@@ -156,22 +209,39 @@ pub(super) fn open_settings_window(
     if instance.is_null() {
         return Err(io::Error::last_os_error().into());
     }
+    let common_controls = INITCOMMONCONTROLSEX {
+        dwSize: std::mem::size_of::<INITCOMMONCONTROLSEX>() as u32,
+        dwICC: ICC_BAR_CLASSES,
+    };
+    // SAFETY: the structure contains the requested trackbar class group and its exact size.
+    if unsafe { InitCommonControlsEx(&common_controls) } == 0 {
+        return Err(io::Error::last_os_error().into());
+    }
     win32::register_window_class(&class_name, window_proc, instance)?;
 
     let fonts = FontSet::new()?;
+    let preference = data
+        .settings
+        .as_ref()
+        .and_then(|s| AppTheme::parse(&s.app_theme))
+        .unwrap_or_default();
+    let appearance = Appearance::new(preference)?;
     let mut state = Box::new(SettingsWindow {
         backend,
         days,
-        database,
         settings: data.settings,
         pin_values: Vec::new(),
         controls: Vec::new(),
         fonts,
+        appearance,
         original: None,
+        preview_bgra: Vec::new(),
+        custom_colors: [0; 16],
         activation_listener: None,
         create_complete: false,
     });
 
+    let (window_width, window_height) = initial_window_size();
     // SAFETY: class/title are NUL-terminated and live through creation; the Box-backed state pointer
     // remains valid until the window is destroyed and the message loop exits.
     let window = unsafe {
@@ -179,11 +249,11 @@ pub(super) fn open_settings_window(
             0,
             class_name.as_ptr(),
             title.as_ptr(),
-            WS_OVERLAPPEDWINDOW,
+            WS_OVERLAPPEDWINDOW | windows_sys::Win32::UI::WindowsAndMessaging::WS_CLIPCHILDREN,
             windows_sys::Win32::UI::WindowsAndMessaging::CW_USEDEFAULT,
             windows_sys::Win32::UI::WindowsAndMessaging::CW_USEDEFAULT,
-            WINDOW_WIDTH,
-            WINDOW_HEIGHT,
+            window_width,
+            window_height,
             ptr::null_mut(),
             ptr::null_mut(),
             instance,
@@ -203,13 +273,36 @@ pub(super) fn open_settings_window(
         }
         return Err(error);
     }
-    state.create_complete = true;
     win32::allow_dark_mode_for_current_thread_windows();
+    state.appearance.apply_native_theme(window, &state);
+    state.create_complete = true;
+    for control in &state.controls {
+        // SAFETY: each created child is live and the parent remains hidden until all are shown.
+        unsafe { ShowWindow(control.handle, SW_SHOWNA) };
+    }
     state.activation_listener = Some(SettingsEventListener::start(window)?);
     win32::run_dialog_message_loop(window, SW_SHOWNORMAL, state, |state, value| {
         state.create_complete = value;
     })?;
     Ok(())
+}
+
+fn initial_window_size() -> (i32, i32) {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{SystemParametersInfoW, SPI_GETWORKAREA};
+
+    let mut work_area = windows_sys::Win32::Foundation::RECT::default();
+    // SAFETY: SPI_GETWORKAREA writes one RECT into valid writable storage.
+    if unsafe { SystemParametersInfoW(SPI_GETWORKAREA, 0, ptr::from_mut(&mut work_area).cast(), 0) }
+        == 0
+    {
+        return (WINDOW_WIDTH, WINDOW_HEIGHT);
+    }
+    let available_width = (work_area.right - work_area.left - 16).max(MIN_WINDOW_WIDTH);
+    let available_height = (work_area.bottom - work_area.top - 4).max(MIN_WINDOW_HEIGHT);
+    (
+        WINDOW_WIDTH.min(available_width),
+        WINDOW_HEIGHT.min(available_height),
+    )
 }
 
 fn create_controls(
@@ -235,20 +328,9 @@ fn create_controls(
         state,
         ControlRole::Description,
         "STATIC",
-        "Choose how Volty alerts you, starts with Windows, and appears in the tray.",
+        "Make Volty work the way you do.",
         WS_VISIBLE,
         0,
-        state.fonts.body,
-    )?;
-    let overview = add_control(
-        window,
-        instance,
-        state,
-        ControlRole::Overview,
-        "BUTTON",
-        "Overview",
-        WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON as u32,
-        OVERVIEW_ID,
         state.fonts.body,
     )?;
     let config_error = state
@@ -299,7 +381,7 @@ fn create_controls(
         instance,
         state,
         ControlRole::BatteryDescription,
-        "Choose the levels that trigger notifications. Alerts are tracked per discharge cycle.",
+        "Choose when to hear about a low battery.",
         state.fonts.body_small,
     )?;
     add_label(
@@ -307,7 +389,7 @@ fn create_controls(
         instance,
         state,
         ControlRole::ThresholdLabel,
-        "Alert at",
+        "Alert thresholds",
         state.fonts.body,
     )?;
     add_label(
@@ -315,7 +397,7 @@ fn create_controls(
         instance,
         state,
         ControlRole::ThresholdHelp,
-        "Whole percentages, highest first, separated by commas (for example 20, 10, 5).",
+        "Comma separated, e.g. 20, 10, 5.",
         state.fonts.body_small,
     )?;
     let thresholds = state
@@ -363,7 +445,7 @@ fn create_controls(
         instance,
         state,
         ControlRole::CooldownHelp,
-        "Minutes before repeating below the lowest level. Set to 0 to never repeat.",
+        "Minutes between alerts; 0 disables repeats.",
         state.fonts.body_small,
     )?;
     let cooldown = state
@@ -398,7 +480,7 @@ fn create_controls(
         state,
         ControlRole::Notifications,
         "BUTTON",
-        "Send low-battery notifications",
+        "Low-battery notifications",
         WS_VISIBLE | WS_TABSTOP | BS_AUTOCHECKBOX as u32,
         NOTIFICATIONS_ID,
         state.fonts.body,
@@ -416,18 +498,10 @@ fn create_controls(
         state,
         ControlRole::TestNotification,
         "BUTTON",
-        "Send a test notification",
+        "Test notification",
         WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON as u32,
         TEST_NOTIFICATION_ID,
         state.fonts.body,
-    )?;
-    add_label(
-        window,
-        instance,
-        state,
-        ControlRole::TestStatus,
-        "",
-        state.fonts.body_small,
     )?;
     let battery_divider = add_control(
         window,
@@ -454,9 +528,45 @@ fn create_controls(
         instance,
         state,
         ControlRole::TrayDescription,
-        "Choose what the icon shows and which battery stays visible.",
+        "Tray icon and app appearance.",
         state.fonts.body_small,
     )?;
+    add_label(
+        window,
+        instance,
+        state,
+        ControlRole::AppThemeLabel,
+        "App theme",
+        state.fonts.body,
+    )?;
+    add_label(
+        window,
+        instance,
+        state,
+        ControlRole::AppThemeHelp,
+        "System, Light, or Dark.",
+        state.fonts.body_small,
+    )?;
+    let app_theme = create_combo(
+        window,
+        instance,
+        state,
+        ControlRole::AppTheme,
+        APP_THEME_ID,
+        &["System", "Light", "Dark"],
+    )?;
+    let preference = state
+        .settings
+        .as_ref()
+        .map_or("system", |settings| settings.app_theme.as_str());
+    set_combo_selection(
+        app_theme,
+        match preference {
+            "light" => 1,
+            "dark" => 2,
+            _ => 0,
+        },
+    );
     add_label(
         window,
         instance,
@@ -470,7 +580,7 @@ fn create_controls(
         instance,
         state,
         ControlRole::IconStyleHelp,
-        "Battery level shows a fill gauge; Percentage only shows a number.",
+        "Gauge or percentage.",
         state.fonts.body_small,
     )?;
     let icon_style = create_combo(
@@ -501,7 +611,7 @@ fn create_controls(
         instance,
         state,
         ControlRole::IconThemeHelp,
-        "Match Windows follows the system appearance; Light and Dark stay fixed.",
+        "Match Windows or set fixed.",
         state.fonts.body_small,
     )?;
     let icon_theme = create_combo(
@@ -530,7 +640,7 @@ fn create_controls(
         state,
         ControlRole::PercentageOverlay,
         "BUTTON",
-        "Show battery percentage inside the battery icon",
+        "Show percentage inside the battery icon",
         WS_VISIBLE | WS_TABSTOP | BS_AUTOCHECKBOX as u32,
         PERCENTAGE_OVERLAY_ID,
         state.fonts.body,
@@ -547,7 +657,7 @@ fn create_controls(
         instance,
         state,
         ControlRole::PercentageHelp,
-        "The number is drawn over the battery glyph; it has no effect with Percentage only.",
+        "Applies when icon contents is set to Battery level.",
         state.fonts.body_small,
     )?;
     add_label(
@@ -555,7 +665,7 @@ fn create_controls(
         instance,
         state,
         ControlRole::PinnedDeviceLabel,
-        "Battery shown in the tray",
+        "Tray battery",
         state.fonts.body,
     )?;
     add_label(
@@ -563,7 +673,7 @@ fn create_controls(
         instance,
         state,
         ControlRole::PinnedDeviceHelp,
-        "Choose one device to pin, or show the lowest monitored battery.",
+        "Pick a device or the lowest.",
         state.fonts.body_small,
     )?;
     let pinned_device = create_combo(
@@ -609,6 +719,183 @@ fn create_controls(
     }
     set_combo_selection(pinned_device, selected_pin);
 
+    let color_map = state
+        .settings
+        .as_ref()
+        .map_or_else(BatteryColorMap::default, |settings| BatteryColorMap {
+            red_max_percent: settings.battery_color_red_max_percent,
+            yellow_max_percent: settings.battery_color_yellow_max_percent,
+            red: parse_hex_color(&settings.battery_color_red).unwrap_or([210, 48, 48]),
+            yellow: parse_hex_color(&settings.battery_color_yellow).unwrap_or([235, 190, 35]),
+            green: parse_hex_color(&settings.battery_color_green).unwrap_or([45, 170, 75]),
+        });
+    add_label(
+        window,
+        instance,
+        state,
+        ControlRole::ColorMapHeading,
+        "Battery color map",
+        state.fonts.body,
+    )?;
+    add_label(
+        window,
+        instance,
+        state,
+        ControlRole::ColorMapDescription,
+        "Set cutoffs, choose colors, and preview the tray icon.",
+        state.fonts.body_small,
+    )?;
+    add_label(
+        window,
+        instance,
+        state,
+        ControlRole::RedCutoffLabel,
+        "Red at or below (%)",
+        state.fonts.body_small,
+    )?;
+    add_label(
+        window,
+        instance,
+        state,
+        ControlRole::YellowCutoffLabel,
+        "Yellow through (%)",
+        state.fonts.body_small,
+    )?;
+    let red_cutoff = add_control(
+        window,
+        instance,
+        state,
+        ControlRole::RedCutoff,
+        "EDIT",
+        &color_map.red_max_percent.to_string(),
+        WS_VISIBLE | WS_TABSTOP | ES_AUTOHSCROLL as u32 | ES_NUMBER as u32,
+        RED_CUTOFF_ID,
+        state.fonts.body,
+    )?;
+    send_message(red_cutoff, EM_LIMITTEXT, 3, 0);
+    let yellow_cutoff = add_control(
+        window,
+        instance,
+        state,
+        ControlRole::YellowCutoff,
+        "EDIT",
+        &color_map.yellow_max_percent.to_string(),
+        WS_VISIBLE | WS_TABSTOP | ES_AUTOHSCROLL as u32 | ES_NUMBER as u32,
+        YELLOW_CUTOFF_ID,
+        state.fonts.body,
+    )?;
+    send_message(yellow_cutoff, EM_LIMITTEXT, 3, 0);
+    add_label(
+        window,
+        instance,
+        state,
+        ControlRole::ColorMapError,
+        "",
+        state.fonts.body_small,
+    )?;
+    for (role, label_role, color, id) in [
+        (
+            ControlRole::RedColor,
+            ControlRole::RedColorLabel,
+            format!(
+                "#{:02X}{:02X}{:02X}",
+                color_map.red[0], color_map.red[1], color_map.red[2]
+            ),
+            RED_COLOR_ID,
+        ),
+        (
+            ControlRole::YellowColor,
+            ControlRole::YellowColorLabel,
+            format!(
+                "#{:02X}{:02X}{:02X}",
+                color_map.yellow[0], color_map.yellow[1], color_map.yellow[2]
+            ),
+            YELLOW_COLOR_ID,
+        ),
+        (
+            ControlRole::GreenColor,
+            ControlRole::GreenColorLabel,
+            format!(
+                "#{:02X}{:02X}{:02X}",
+                color_map.green[0], color_map.green[1], color_map.green[2]
+            ),
+            GREEN_COLOR_ID,
+        ),
+    ] {
+        let label = match label_role {
+            ControlRole::RedColorLabel => "Red",
+            ControlRole::YellowColorLabel => "Yellow",
+            _ => "Green",
+        };
+        add_label(
+            window,
+            instance,
+            state,
+            label_role,
+            label,
+            state.fonts.body_small,
+        )?;
+        let edit = add_control(
+            window,
+            instance,
+            state,
+            role,
+            "EDIT",
+            &color,
+            WS_VISIBLE | WS_TABSTOP | ES_AUTOHSCROLL as u32,
+            id,
+            state.fonts.body,
+        )?;
+        send_message(edit, EM_LIMITTEXT, 7, 0);
+    }
+    for (role, id) in [
+        (ControlRole::PickRed, PICK_RED_ID),
+        (ControlRole::PickYellow, PICK_YELLOW_ID),
+        (ControlRole::PickGreen, PICK_GREEN_ID),
+    ] {
+        add_control(
+            window,
+            instance,
+            state,
+            role,
+            "BUTTON",
+            "Pick…",
+            WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON as u32,
+            id,
+            state.fonts.body_small,
+        )?;
+    }
+    add_label(
+        window,
+        instance,
+        state,
+        ControlRole::PreviewLabel,
+        "Live icon preview · drag to change battery level",
+        state.fonts.body_small,
+    )?;
+    add_label(
+        window,
+        instance,
+        state,
+        ControlRole::PreviewValue,
+        "65%",
+        state.fonts.body,
+    )?;
+    let preview_level = add_control(
+        window,
+        instance,
+        state,
+        ControlRole::PreviewLevel,
+        "msctls_trackbar32",
+        "",
+        WS_VISIBLE | WS_TABSTOP | windows_sys::Win32::UI::Controls::TBS_NOTICKS,
+        PREVIEW_LEVEL_ID,
+        state.fonts.body,
+    )?;
+    send_message(preview_level, TBM_SETRANGEMIN, 1, 0);
+    send_message(preview_level, TBM_SETRANGEMAX, 1, 100);
+    send_message(preview_level, TBM_SETPOS, 1, 65);
+
     let tray_divider = add_control(
         window,
         instance,
@@ -633,7 +920,7 @@ fn create_controls(
         instance,
         state,
         ControlRole::StartupDescription,
-        "Keep Volty running in the background when you sign in.",
+        "Monitor batteries after you sign in.",
         state.fonts.body_small,
     )?;
     let startup = add_control(
@@ -642,7 +929,7 @@ fn create_controls(
         state,
         ControlRole::Startup,
         "BUTTON",
-        "Start automatically when I sign in",
+        "Start with Windows",
         WS_VISIBLE | WS_TABSTOP | BS_AUTOCHECKBOX as u32,
         STARTUP_ID,
         state.fonts.body,
@@ -692,7 +979,6 @@ fn create_controls(
     for control in [
         heading,
         description,
-        overview,
         config,
         read_only,
         test,
@@ -704,6 +990,7 @@ fn create_controls(
             return Err(io::Error::other("could not create a Settings control").into());
         }
     }
+    refresh_preview_icon(state);
     state.original = current_form(state);
     refresh_controls(window, state);
     layout_controls(window, state);
@@ -744,7 +1031,7 @@ fn add_control(
             class: &class,
             text: &text,
             extended_style: u32::from(class_name == "EDIT") * WS_EX_CLIENTEDGE,
-            style: WS_CHILD | WS_VISIBLE | style,
+            style: WS_CHILD | (style & !WS_VISIBLE),
             x: 0,
             y: 0,
             width: 0,
@@ -752,6 +1039,17 @@ fn add_control(
             id,
         },
     )?;
+    let font = if matches!(
+        role,
+        ControlRole::BatteryHeading
+            | ControlRole::TrayHeading
+            | ControlRole::ColorMapHeading
+            | ControlRole::StartupHeading
+    ) {
+        state.fonts.section
+    } else {
+        font
+    };
     set_control_font(handle, font);
     state.controls.push(LayoutControl { handle, role });
     Ok(handle)
@@ -772,7 +1070,12 @@ fn create_combo(
         role,
         "COMBOBOX",
         "",
-        WS_VISIBLE | WS_TABSTOP | WS_VSCROLL | CBS_DROPDOWNLIST as u32 | CBS_HASSTRINGS as u32,
+        WS_VISIBLE
+            | WS_TABSTOP
+            | WS_VSCROLL
+            | CBS_DROPDOWNLIST as u32
+            | CBS_HASSTRINGS as u32
+            | windows_sys::Win32::UI::WindowsAndMessaging::CBS_OWNERDRAWFIXED as u32,
         id,
         state.fonts.body,
     )?;
@@ -802,180 +1105,402 @@ fn set_combo_selection(combo: HWND, index: usize) {
 }
 
 fn layout_controls(window: HWND, state: &SettingsWindow) {
-    let mut client = windows_sys::Win32::Foundation::RECT {
-        left: 0,
-        top: 0,
-        right: 0,
-        bottom: 0,
-    };
-    // SAFETY: client is writable and window is the live native Settings window.
-    if unsafe { GetClientRect(window, ptr::addr_of_mut!(client)) } == 0 {
-        eprintln!(
-            "Volty could not read the Settings client area: {}",
-            io::Error::last_os_error()
-        );
+    let mut client = windows_sys::Win32::Foundation::RECT::default();
+    // SAFETY: client is writable and window is live.
+    if unsafe { GetClientRect(window, &mut client) } == 0 {
         return;
     }
-    let client_width = client.right - client.left;
-    let width = client_width.min(1_000);
-    let horizontal_offset = (client_width - width) / 2;
-    let control_width = 250.min((width - MARGIN * 2) / 3).max(210);
-    let control_x = width - MARGIN - control_width;
-    let left_width = control_x - MARGIN * 2;
-    let place = |role: ControlRole, x: i32, y: i32, w: i32, h: i32| {
-        if let Some(control) = state.controls.iter().find(|control| control.role == role) {
-            // SAFETY: the control is a live child of this Settings window.
-            if unsafe {
-                MoveWindow(
-                    control.handle,
-                    x + horizontal_offset,
-                    y,
-                    w.max(1),
-                    h.max(1),
-                    1,
-                )
-            } == 0
-            {
-                eprintln!(
-                    "Volty could not lay out a Settings control: {}",
-                    io::Error::last_os_error()
-                );
-            }
+    let width = client.right.min(960);
+    let offset = (client.right - width) / 2;
+    let inset = MARGIN + 24;
+    let card_gap = 20;
+    let card_width = (width - MARGIN * 2 - card_gap) / 2;
+    let right_card_x = MARGIN + card_width + card_gap;
+    let battery_input_width = 148;
+    let battery_input_x = MARGIN + card_width - 24 - battery_input_width;
+    let tray_combo_width = 180;
+    let tray_combo_x = right_card_x + card_width - 24 - tray_combo_width;
+    let full_width = width - inset * 2;
+    let footer_y = client.bottom - 52;
+    let cutoff_gap = 24;
+    let cutoff_width = (full_width - cutoff_gap) / 2;
+    let color_gap = 16;
+    let color_width = (full_width - color_gap * 2) / 3;
+    let preview_track_width = full_width - 160;
+    let startup_description_width = full_width / 3;
+    let startup_checkbox_x = inset + startup_description_width + 12;
+    let startup_checkbox_width = full_width / 4;
+    let startup_error_x = startup_checkbox_x + startup_checkbox_width + 12;
+    let startup_error_width = full_width - startup_description_width - startup_checkbox_width - 24;
+    let rows = [
+        (ControlRole::Heading, MARGIN, 24, width - 230, 36),
+        (ControlRole::Description, MARGIN, 66, width - 340, 22),
+        (ControlRole::ConfigError, MARGIN, 92, width - MARGIN * 2, 26),
+        (ControlRole::ReadOnly, MARGIN, 92, width - MARGIN * 2, 26),
+        (
+            ControlRole::BatteryHeading,
+            MARGIN + 24,
+            132,
+            card_width - 48,
+            26,
+        ),
+        (
+            ControlRole::BatteryDescription,
+            MARGIN + 24,
+            160,
+            card_width - 48,
+            20,
+        ),
+        (
+            ControlRole::ThresholdLabel,
+            MARGIN + 24,
+            188,
+            battery_input_x - inset - 12,
+            22,
+        ),
+        (
+            ControlRole::ThresholdHelp,
+            MARGIN + 24,
+            212,
+            battery_input_x - inset - 12,
+            32,
+        ),
+        (
+            ControlRole::ThresholdEdit,
+            battery_input_x,
+            186,
+            battery_input_width,
+            30,
+        ),
+        (
+            ControlRole::ThresholdError,
+            battery_input_x,
+            218,
+            battery_input_width,
+            24,
+        ),
+        (
+            ControlRole::CooldownLabel,
+            MARGIN + 24,
+            248,
+            battery_input_x - inset - 12,
+            22,
+        ),
+        (
+            ControlRole::CooldownHelp,
+            MARGIN + 24,
+            272,
+            battery_input_x - inset - 12,
+            32,
+        ),
+        (
+            ControlRole::CooldownEdit,
+            battery_input_x,
+            246,
+            battery_input_width,
+            30,
+        ),
+        (
+            ControlRole::CooldownError,
+            battery_input_x,
+            278,
+            battery_input_width,
+            24,
+        ),
+        (
+            ControlRole::Notifications,
+            MARGIN + 24,
+            312,
+            card_width - 192,
+            26,
+        ),
+        (
+            ControlRole::TestNotification,
+            MARGIN + card_width - 24 - 128,
+            348,
+            128,
+            32,
+        ),
+        (
+            ControlRole::TrayHeading,
+            right_card_x + 24,
+            132,
+            card_width - 48,
+            26,
+        ),
+        (
+            ControlRole::TrayDescription,
+            right_card_x + 24,
+            160,
+            card_width - 48,
+            20,
+        ),
+        (
+            ControlRole::AppThemeLabel,
+            right_card_x + 24,
+            186,
+            tray_combo_x - right_card_x - 36,
+            22,
+        ),
+        (
+            ControlRole::AppThemeHelp,
+            right_card_x + 24,
+            210,
+            tray_combo_x - right_card_x - 36,
+            20,
+        ),
+        (
+            ControlRole::AppTheme,
+            tray_combo_x,
+            184,
+            tray_combo_width,
+            30,
+        ),
+        (
+            ControlRole::IconStyleLabel,
+            right_card_x + 24,
+            224,
+            tray_combo_x - right_card_x - 36,
+            22,
+        ),
+        (
+            ControlRole::IconStyleHelp,
+            right_card_x + 24,
+            254,
+            tray_combo_x - right_card_x - 36,
+            20,
+        ),
+        (
+            ControlRole::IconStyle,
+            tray_combo_x,
+            222,
+            tray_combo_width,
+            30,
+        ),
+        (
+            ControlRole::IconThemeLabel,
+            right_card_x + 24,
+            262,
+            tray_combo_x - right_card_x - 36,
+            22,
+        ),
+        (
+            ControlRole::IconThemeHelp,
+            right_card_x + 24,
+            298,
+            tray_combo_x - right_card_x - 36,
+            20,
+        ),
+        (
+            ControlRole::IconTheme,
+            tray_combo_x,
+            260,
+            tray_combo_width,
+            30,
+        ),
+        (
+            ControlRole::PercentageOverlay,
+            right_card_x + 24,
+            300,
+            card_width - 48,
+            24,
+        ),
+        (
+            ControlRole::PercentageHelp,
+            right_card_x + 46,
+            342,
+            card_width - 70,
+            20,
+        ),
+        (
+            ControlRole::PinnedDeviceLabel,
+            right_card_x + 24,
+            330,
+            card_width - 48,
+            22,
+        ),
+        (
+            ControlRole::PinnedDeviceHelp,
+            right_card_x + 24,
+            390,
+            tray_combo_x - right_card_x - 36,
+            20,
+        ),
+        (
+            ControlRole::PinnedDevice,
+            right_card_x + 24,
+            356,
+            card_width - 48,
+            30,
+        ),
+        (ControlRole::ColorMapHeading, inset, 412, full_width, 26),
+        (ControlRole::ColorMapDescription, inset, 440, full_width, 20),
+        (ControlRole::RedCutoffLabel, inset, 466, cutoff_width, 20),
+        (
+            ControlRole::YellowCutoffLabel,
+            inset + cutoff_width + cutoff_gap,
+            466,
+            cutoff_width,
+            20,
+        ),
+        (ControlRole::RedCutoff, inset, 486, cutoff_width, 30),
+        (
+            ControlRole::YellowCutoff,
+            inset + cutoff_width + cutoff_gap,
+            486,
+            cutoff_width,
+            30,
+        ),
+        (ControlRole::ColorMapError, inset, 516, full_width, 20),
+        (ControlRole::RedColorLabel, inset, 540, color_width, 20),
+        (
+            ControlRole::YellowColorLabel,
+            inset + color_width + color_gap,
+            540,
+            color_width,
+            20,
+        ),
+        (
+            ControlRole::GreenColorLabel,
+            inset + (color_width + color_gap) * 2,
+            540,
+            color_width,
+            20,
+        ),
+        (ControlRole::RedColor, inset + 30, 560, 116, 30),
+        (
+            ControlRole::YellowColor,
+            inset + color_width + color_gap + 30,
+            560,
+            116,
+            30,
+        ),
+        (
+            ControlRole::GreenColor,
+            inset + (color_width + color_gap) * 2 + 30,
+            560,
+            116,
+            30,
+        ),
+        (ControlRole::PickRed, inset + 152, 560, 82, 30),
+        (
+            ControlRole::PickYellow,
+            inset + color_width + color_gap + 152,
+            560,
+            82,
+            30,
+        ),
+        (
+            ControlRole::PickGreen,
+            inset + (color_width + color_gap) * 2 + 152,
+            560,
+            82,
+            30,
+        ),
+        (
+            ControlRole::PreviewLabel,
+            inset,
+            600,
+            preview_track_width,
+            20,
+        ),
+        (
+            ControlRole::PreviewLevel,
+            inset,
+            622,
+            preview_track_width,
+            38,
+        ),
+        (
+            ControlRole::PreviewValue,
+            inset + full_width - 148,
+            630,
+            48,
+            24,
+        ),
+        (ControlRole::StartupHeading, inset, 682, full_width, 26),
+        (
+            ControlRole::StartupDescription,
+            inset,
+            710,
+            startup_description_width,
+            20,
+        ),
+        (
+            ControlRole::Startup,
+            startup_checkbox_x,
+            710,
+            startup_checkbox_width,
+            24,
+        ),
+        (
+            ControlRole::StartupError,
+            startup_error_x,
+            710,
+            startup_error_width,
+            20,
+        ),
+        (
+            ControlRole::Status,
+            MARGIN,
+            footer_y + 8,
+            width - MARGIN * 2 - 160,
+            32,
+        ),
+        (ControlRole::Save, width - MARGIN - 144, footer_y, 144, 36),
+    ];
+    for (role, x, y, w, h) in rows {
+        let handle = control(state, role);
+        // The native combo height includes the expanded list, not just the selection field.
+        let h = if role.is_combo() {
+            use windows_sys::Win32::UI::WindowsAndMessaging::{CB_GETCOUNT, CB_GETITEMHEIGHT};
+            let count = send_message(handle, CB_GETCOUNT, 0, 0).clamp(1, 8) as i32;
+            let item_height = send_message(handle, CB_GETITEMHEIGHT, 0, 0).max(1) as i32;
+            h + count * item_height + 8
+        } else {
+            h
+        };
+        // SAFETY: each role resolves to a live child; redraw is deferred until every control moves.
+        unsafe {
+            SetWindowPos(
+                handle,
+                ptr::null_mut(),
+                x + offset,
+                y,
+                w.max(1),
+                h,
+                SWP_NOACTIVATE | SWP_NOREDRAW | SWP_NOZORDER,
+            );
         }
-    };
-
-    place(ControlRole::Heading, MARGIN, 22, left_width, 38);
-    place(ControlRole::Description, MARGIN, 63, width - MARGIN * 2, 24);
-    place(ControlRole::Overview, width - MARGIN - 120, 26, 120, 34);
-    place(ControlRole::ConfigError, MARGIN, 90, width - MARGIN * 2, 24);
-    place(ControlRole::ReadOnly, MARGIN, 90, width - MARGIN * 2, 24);
-
-    place(
-        ControlRole::BatteryHeading,
-        MARGIN,
-        122,
-        width - MARGIN * 2,
-        22,
-    );
-    place(
-        ControlRole::BatteryDescription,
-        MARGIN,
-        146,
-        width - MARGIN * 2,
-        20,
-    );
-    place(ControlRole::ThresholdLabel, MARGIN, 176, left_width, 20);
-    place(ControlRole::ThresholdHelp, MARGIN, 198, left_width, 40);
-    place(
-        ControlRole::ThresholdEdit,
-        control_x,
-        174,
-        control_width,
-        30,
-    );
-    place(
-        ControlRole::ThresholdError,
-        control_x,
-        207,
-        control_width,
-        34,
-    );
-    place(ControlRole::CooldownLabel, MARGIN, 251, left_width, 20);
-    place(ControlRole::CooldownHelp, MARGIN, 273, left_width, 30);
-    place(ControlRole::CooldownEdit, control_x, 249, control_width, 30);
-    place(
-        ControlRole::CooldownError,
-        control_x,
-        282,
-        control_width,
-        28,
-    );
-    place(ControlRole::Notifications, MARGIN, 314, left_width, 28);
-    place(
-        ControlRole::TestNotification,
-        width - MARGIN - 220,
-        310,
-        220,
-        34,
-    );
-    place(ControlRole::TestStatus, width - MARGIN - 220, 346, 220, 28);
-    place(
+    }
+    for role in [
         ControlRole::BatteryDivider,
-        MARGIN,
-        380,
-        width - MARGIN * 2,
-        2,
-    );
-
-    place(
-        ControlRole::TrayHeading,
-        MARGIN,
-        399,
-        width - MARGIN * 2,
-        22,
-    );
-    place(
-        ControlRole::TrayDescription,
-        MARGIN,
-        423,
-        width - MARGIN * 2,
-        20,
-    );
-    place(ControlRole::IconStyleLabel, MARGIN, 453, left_width, 20);
-    place(ControlRole::IconStyleHelp, MARGIN, 475, left_width, 30);
-    place(ControlRole::IconStyle, control_x, 451, control_width, 30);
-    place(ControlRole::IconThemeLabel, MARGIN, 515, left_width, 20);
-    place(ControlRole::IconThemeHelp, MARGIN, 537, left_width, 30);
-    place(ControlRole::IconTheme, control_x, 513, control_width, 30);
-    place(
-        ControlRole::PercentageOverlay,
-        MARGIN,
-        560,
-        width - MARGIN * 2,
-        28,
-    );
-    place(
+        ControlRole::TrayDivider,
+        ControlRole::AppThemeHelp,
+        ControlRole::IconStyleHelp,
+        ControlRole::IconThemeHelp,
         ControlRole::PercentageHelp,
-        MARGIN + 22,
-        585,
-        width - MARGIN * 2 - 22,
-        26,
-    );
-    place(ControlRole::PinnedDeviceLabel, MARGIN, 617, left_width, 20);
-    place(ControlRole::PinnedDeviceHelp, MARGIN, 639, left_width, 30);
-    place(ControlRole::PinnedDevice, control_x, 615, control_width, 30);
-    place(ControlRole::TrayDivider, MARGIN, 674, width - MARGIN * 2, 2);
-
-    place(
-        ControlRole::StartupHeading,
-        MARGIN,
-        693,
-        width - MARGIN * 2,
-        22,
-    );
-    place(
-        ControlRole::StartupDescription,
-        MARGIN,
-        717,
-        width - MARGIN * 2,
-        20,
-    );
-    place(ControlRole::Startup, MARGIN, 743, width - MARGIN * 2, 28);
-    place(
-        ControlRole::StartupError,
-        MARGIN,
-        773,
-        width - MARGIN * 2,
-        22,
-    );
-    place(
-        ControlRole::Status,
-        MARGIN,
-        804,
-        width - MARGIN * 2 - 150,
-        26,
-    );
-    place(ControlRole::Save, width - MARGIN - 140, 798, 140, 36);
+        ControlRole::PinnedDeviceHelp,
+    ] {
+        // SAFETY: the old etched separators are replaced by painted section boundaries.
+        unsafe {
+            ShowWindow(
+                control(state, role),
+                windows_sys::Win32::UI::WindowsAndMessaging::SW_HIDE,
+            )
+        };
+    }
+    // SAFETY: repaint the completed layout and all children once, without an erase flash.
+    unsafe {
+        windows_sys::Win32::Graphics::Gdi::RedrawWindow(
+            window,
+            ptr::null(),
+            ptr::null_mut(),
+            windows_sys::Win32::Graphics::Gdi::RDW_INVALIDATE
+                | windows_sys::Win32::Graphics::Gdi::RDW_ALLCHILDREN
+                | windows_sys::Win32::Graphics::Gdi::RDW_NOERASE,
+        );
+    }
 }
 
 fn control(state: &SettingsWindow, role: ControlRole) -> HWND {
@@ -1021,6 +1546,13 @@ fn current_form(state: &SettingsWindow) -> Option<FormValues> {
         .start_on_boot
         .map(|_| check_control(control(state, ControlRole::Startup)));
     Some(FormValues {
+        app_theme: send_message(control(state, ControlRole::AppTheme), CB_GETCURSEL, 0, 0).max(0)
+            as usize,
+        red_cutoff: get_control_text(control(state, ControlRole::RedCutoff)),
+        yellow_cutoff: get_control_text(control(state, ControlRole::YellowCutoff)),
+        red_color: get_control_text(control(state, ControlRole::RedColor)),
+        yellow_color: get_control_text(control(state, ControlRole::YellowColor)),
+        green_color: get_control_text(control(state, ControlRole::GreenColor)),
         thresholds: get_control_text(control(state, ControlRole::ThresholdEdit)),
         cooldown: get_control_text(control(state, ControlRole::CooldownEdit)),
         notifications: check_control(control(state, ControlRole::Notifications)),
@@ -1071,18 +1603,92 @@ fn validate_cooldown(value: &str) -> Result<u64, &'static str> {
     Ok(minutes)
 }
 
+fn parse_hex_color(value: &str) -> Option<[u8; 3]> {
+    let digits = value.strip_prefix('#')?;
+    if digits.len() != 6 || !digits.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return None;
+    }
+    Some([
+        u8::from_str_radix(&digits[0..2], 16).ok()?,
+        u8::from_str_radix(&digits[2..4], 16).ok()?,
+        u8::from_str_radix(&digits[4..6], 16).ok()?,
+    ])
+}
+
+fn validate_color_map(
+    red_cutoff: &str,
+    yellow_cutoff: &str,
+    red: &str,
+    yellow: &str,
+    green: &str,
+) -> Result<BatteryColorMap, &'static str> {
+    if !red_cutoff.bytes().all(|byte| byte.is_ascii_digit()) || red_cutoff.is_empty() {
+        return Err("Enter a red cutoff from 0 to 99.");
+    }
+    if !yellow_cutoff.bytes().all(|byte| byte.is_ascii_digit()) || yellow_cutoff.is_empty() {
+        return Err("Enter a yellow cutoff from 1 to 100.");
+    }
+    let red_max_percent = red_cutoff
+        .parse::<u8>()
+        .map_err(|_| "Enter a red cutoff from 0 to 99.")?;
+    let yellow_max_percent = yellow_cutoff
+        .parse::<u8>()
+        .map_err(|_| "Enter a yellow cutoff from 1 to 100.")?;
+    if red_max_percent > 99 {
+        return Err("The red cutoff must be from 0 to 99.");
+    }
+    if !(1..=100).contains(&yellow_max_percent) {
+        return Err("The yellow cutoff must be from 1 to 100.");
+    }
+    if red_max_percent >= yellow_max_percent {
+        return Err("The red cutoff must be lower than the yellow cutoff.");
+    }
+    let red = parse_hex_color(red).ok_or("Use a hex color in #RRGGBB format.")?;
+    let yellow = parse_hex_color(yellow).ok_or("Use a hex color in #RRGGBB format.")?;
+    let green = parse_hex_color(green).ok_or("Use a hex color in #RRGGBB format.")?;
+    Ok(BatteryColorMap {
+        red_max_percent,
+        yellow_max_percent,
+        red,
+        yellow,
+        green,
+    })
+}
+
+fn canonical_hex_color(value: &str) -> String {
+    parse_hex_color(value).map_or_else(
+        || value.to_owned(),
+        |color| format!("#{:02X}{:02X}{:02X}", color[0], color[1], color[2]),
+    )
+}
+
 fn update_validation(window: HWND, state: &SettingsWindow) -> bool {
     let threshold = get_control_text(control(state, ControlRole::ThresholdEdit));
     let cooldown = get_control_text(control(state, ControlRole::CooldownEdit));
     let threshold_error = validate_thresholds(&threshold).err().unwrap_or("");
     let cooldown_error = validate_cooldown(&cooldown).err().unwrap_or("");
+    let color_map_error = validate_color_map(
+        &get_control_text(control(state, ControlRole::RedCutoff)),
+        &get_control_text(control(state, ControlRole::YellowCutoff)),
+        &get_control_text(control(state, ControlRole::RedColor)),
+        &get_control_text(control(state, ControlRole::YellowColor)),
+        &get_control_text(control(state, ControlRole::GreenColor)),
+    )
+    .err()
+    .unwrap_or("");
     set_control_text(control(state, ControlRole::ThresholdError), threshold_error);
     set_control_text(control(state, ControlRole::CooldownError), cooldown_error);
-    let valid = threshold_error.is_empty() && cooldown_error.is_empty();
+    set_control_text(control(state, ControlRole::ColorMapError), color_map_error);
+    let valid =
+        threshold_error.is_empty() && cooldown_error.is_empty() && color_map_error.is_empty();
     let dirty = current_form(state).is_some_and(|form| state.original.as_ref() != Some(&form));
     set_control_text(
         control(state, ControlRole::Status),
-        if dirty { "Unsaved changes" } else { "" },
+        if dirty {
+            "Unsaved changes"
+        } else {
+            "Your preferences are up to date."
+        },
     );
     let can_save = state.settings.is_some()
         && !state
@@ -1102,8 +1708,14 @@ fn refresh_controls(window: HWND, state: &SettingsWindow) {
         .as_ref()
         .is_some_and(|settings| settings.config_error.is_none());
     for role in [
+        ControlRole::AppTheme,
         ControlRole::ThresholdEdit,
         ControlRole::CooldownEdit,
+        ControlRole::RedCutoff,
+        ControlRole::YellowCutoff,
+        ControlRole::RedColor,
+        ControlRole::YellowColor,
+        ControlRole::GreenColor,
         ControlRole::Notifications,
         ControlRole::IconStyle,
         ControlRole::IconTheme,
@@ -1113,6 +1725,21 @@ fn refresh_controls(window: HWND, state: &SettingsWindow) {
         // SAFETY: each role corresponds to a live child control created by this window.
         unsafe { EnableWindow(control(state, role), i32::from(editable)) };
     }
+    for role in [
+        ControlRole::PickRed,
+        ControlRole::PickYellow,
+        ControlRole::PickGreen,
+    ] {
+        // SAFETY: each role is a live color picker button owned by the settings window.
+        unsafe { EnableWindow(control(state, role), i32::from(editable)) };
+    }
+    // SAFETY: the preview slider is live and should be disabled only in read-only mode.
+    unsafe {
+        EnableWindow(
+            control(state, ControlRole::PreviewLevel),
+            i32::from(editable),
+        )
+    };
     let startup_available = editable
         && state
             .settings
@@ -1146,12 +1773,123 @@ fn set_control_text(window: HWND, text: &str) {
     }
 }
 
+fn refresh_preview_icon(state: &mut SettingsWindow) {
+    let red_cutoff = get_control_text(control(state, ControlRole::RedCutoff));
+    let yellow_cutoff = get_control_text(control(state, ControlRole::YellowCutoff));
+    let red = get_control_text(control(state, ControlRole::RedColor));
+    let yellow = get_control_text(control(state, ControlRole::YellowColor));
+    let green = get_control_text(control(state, ControlRole::GreenColor));
+    let Ok(color_map) = validate_color_map(&red_cutoff, &yellow_cutoff, &red, &yellow, &green)
+    else {
+        return;
+    };
+    let style = match send_message(control(state, ControlRole::IconStyle), CB_GETCURSEL, 0, 0) {
+        1 => crate::state::TrayIconStyle::Percentage,
+        _ => crate::state::TrayIconStyle::Battery,
+    };
+    let theme = match send_message(control(state, ControlRole::IconTheme), CB_GETCURSEL, 0, 0) {
+        1 => crate::state::TrayIconTheme::Light,
+        2 => crate::state::TrayIconTheme::Dark,
+        _ => crate::state::TrayIconTheme::System,
+    };
+    let percentage = send_message(
+        control(state, ControlRole::PreviewLevel),
+        windows_sys::Win32::UI::WindowsAndMessaging::WM_USER,
+        0,
+        0,
+    )
+    .clamp(0, 100) as u8;
+    let show_percentage = check_control(control(state, ControlRole::PercentageOverlay));
+    let Ok(rgba) = crate::tray::render_settings_preview(
+        percentage,
+        32,
+        color_map,
+        theme,
+        style,
+        show_percentage,
+    ) else {
+        return;
+    };
+    let background = state.appearance.surface_rgb();
+    let (pixels, _) = rgba.as_chunks::<4>();
+    state.preview_bgra = pixels
+        .iter()
+        .flat_map(|pixel| {
+            let alpha = u16::from(pixel[3]);
+            let inverse = 255 - alpha;
+            let red = ((u16::from(pixel[0]) * alpha + u16::from(background[0]) * inverse + 127)
+                / 255) as u8;
+            let green = ((u16::from(pixel[1]) * alpha + u16::from(background[1]) * inverse + 127)
+                / 255) as u8;
+            let blue = ((u16::from(pixel[2]) * alpha + u16::from(background[2]) * inverse + 127)
+                / 255) as u8;
+            [blue, green, red, 255]
+        })
+        .collect();
+    set_control_text(
+        control(state, ControlRole::PreviewValue),
+        &format!("{percentage}%"),
+    );
+}
+
+fn open_color_picker(window: HWND, state: &mut SettingsWindow, role: ControlRole) {
+    let edit_role = match role {
+        ControlRole::PickRed => ControlRole::RedColor,
+        ControlRole::PickYellow => ControlRole::YellowColor,
+        ControlRole::PickGreen => ControlRole::GreenColor,
+        _ => return,
+    };
+    let current =
+        parse_hex_color(&get_control_text(control(state, edit_role))).unwrap_or([210, 48, 48]);
+    let mut dialog = CHOOSECOLORW {
+        lStructSize: std::mem::size_of::<CHOOSECOLORW>() as u32,
+        hwndOwner: window,
+        rgbResult: u32::from(current[0])
+            | (u32::from(current[1]) << 8)
+            | (u32::from(current[2]) << 16),
+        lpCustColors: state.custom_colors.as_mut_ptr(),
+        Flags: CC_FULLOPEN | CC_RGBINIT,
+        ..Default::default()
+    };
+    // SAFETY: the owner, color result, and custom-color storage remain valid through the dialog.
+    if unsafe { ChooseColorW(&mut dialog) } != 0 {
+        let color = dialog.rgbResult;
+        set_control_text(
+            control(state, edit_role),
+            &format!(
+                "#{:02X}{:02X}{:02X}",
+                color & 0xff,
+                (color >> 8) & 0xff,
+                (color >> 16) & 0xff,
+            ),
+        );
+        refresh_preview_icon(state);
+        let _ = update_validation(window, state);
+        // SAFETY: repaint the live settings surface after its preview pixels changed.
+        unsafe { windows_sys::Win32::Graphics::Gdi::InvalidateRect(window, ptr::null(), 0) };
+    }
+}
+
 fn handle_command(window: HWND, state: &mut SettingsWindow, wparam: WPARAM) -> LRESULT {
     let id = wparam & 0xffff;
     let notification = (wparam >> 16) & 0xffff;
     match id {
-        OVERVIEW_ID => {
-            let _ = open_overview(window, state);
+        APP_THEME_ID => {
+            refresh_appearance(window, state);
+            refresh_preview_icon(state);
+            let _ = update_validation(window, state);
+            0
+        }
+        PICK_RED_ID => {
+            open_color_picker(window, state, ControlRole::PickRed);
+            0
+        }
+        PICK_YELLOW_ID => {
+            open_color_picker(window, state, ControlRole::PickYellow);
+            0
+        }
+        PICK_GREEN_ID => {
+            open_color_picker(window, state, ControlRole::PickGreen);
             0
         }
         TEST_NOTIFICATION_ID => {
@@ -1159,16 +1897,20 @@ fn handle_command(window: HWND, state: &mut SettingsWindow, wparam: WPARAM) -> L
                 Ok(()) => "Test notification sent.".to_owned(),
                 Err(error) => format!("Could not send test notification: {error}"),
             };
-            set_control_text(control(state, ControlRole::TestStatus), &status);
+            set_control_text(control(state, ControlRole::Status), &status);
             0
         }
         SAVE_ID => {
             save_settings(window, state);
             0
         }
-        THRESHOLDS_ID | COOLDOWN_ID
+        THRESHOLDS_ID | COOLDOWN_ID | RED_CUTOFF_ID | YELLOW_CUTOFF_ID | RED_COLOR_ID
+        | YELLOW_COLOR_ID | GREEN_COLOR_ID
             if notification == windows_sys::Win32::UI::WindowsAndMessaging::EN_CHANGE as usize =>
         {
+            refresh_preview_icon(state);
+            // SAFETY: repaint the preview and its color samples after edit input.
+            unsafe { windows_sys::Win32::Graphics::Gdi::InvalidateRect(window, ptr::null(), 0) };
             let _ = update_validation(window, state);
             0
         }
@@ -1178,6 +1920,9 @@ fn handle_command(window: HWND, state: &mut SettingsWindow, wparam: WPARAM) -> L
         | PERCENTAGE_OVERLAY_ID
         | PINNED_DEVICE_ID
         | STARTUP_ID => {
+            refresh_preview_icon(state);
+            // SAFETY: icon-related choices update the painted tray preview.
+            unsafe { windows_sys::Win32::Graphics::Gdi::InvalidateRect(window, ptr::null(), 0) };
             let _ = update_validation(window, state);
             0
         }
@@ -1186,6 +1931,25 @@ fn handle_command(window: HWND, state: &mut SettingsWindow, wparam: WPARAM) -> L
             0
         }
         _ => 0,
+    }
+}
+
+fn refresh_appearance(window: HWND, state: &mut SettingsWindow) {
+    let preference = match send_message(control(state, ControlRole::AppTheme), CB_GETCURSEL, 0, 0) {
+        1 => AppTheme::Light,
+        2 => AppTheme::Dark,
+        _ => AppTheme::System,
+    };
+    match Appearance::new(preference) {
+        Ok(next) if !state.appearance.same_colors(&next) => {
+            state.appearance = next;
+            state.appearance.apply_native_theme(window, state);
+        }
+        Ok(_) => {}
+        Err(error) => set_control_text(
+            control(state, ControlRole::Status),
+            &format!("Could not update appearance: {error}"),
+        ),
     }
 }
 
@@ -1208,6 +1972,19 @@ fn save_settings(window: HWND, state: &mut SettingsWindow) {
     };
     let cooldown = match validate_cooldown(&form.cooldown) {
         Ok(cooldown) => cooldown,
+        Err(error) => {
+            set_control_text(control(state, ControlRole::Status), error);
+            return;
+        }
+    };
+    let color_map = match validate_color_map(
+        &form.red_cutoff,
+        &form.yellow_cutoff,
+        &form.red_color,
+        &form.yellow_color,
+        &form.green_color,
+    ) {
+        Ok(color_map) => color_map,
         Err(error) => {
             set_control_text(control(state, ControlRole::Status), error);
             return;
@@ -1237,6 +2014,17 @@ fn save_settings(window: HWND, state: &mut SettingsWindow) {
         }
     };
     let update = DashboardSettingsUpdate {
+        battery_color_red_max_percent: color_map.red_max_percent,
+        battery_color_yellow_max_percent: color_map.yellow_max_percent,
+        battery_color_red: canonical_hex_color(&form.red_color),
+        battery_color_yellow: canonical_hex_color(&form.yellow_color),
+        battery_color_green: canonical_hex_color(&form.green_color),
+        app_theme: match form.app_theme {
+            1 => "light",
+            2 => "dark",
+            _ => "system",
+        }
+        .to_owned(),
         low_battery_thresholds: thresholds,
         low_battery_cooldown_minutes: cooldown,
         notifications_enabled: form.notifications,
@@ -1267,11 +2055,12 @@ fn save_settings(window: HWND, state: &mut SettingsWindow) {
                 return;
             }
             apply_saved_settings(state);
+            layout_controls(window, state);
             state.original = current_form(state);
             refresh_controls(window, state);
             set_control_text(
                 control(state, ControlRole::Status),
-                "Settings saved. Tray changes apply immediately; alerts use the next reading.",
+                "Settings saved. Changes are ready to use.",
             );
         }
         Err(error) => set_control_text(
@@ -1324,10 +2113,38 @@ fn refresh_pinned_values(
     Ok(())
 }
 
-fn apply_saved_settings(state: &SettingsWindow) {
+fn apply_saved_settings(state: &mut SettingsWindow) {
     let Some(settings) = &state.settings else {
         return;
     };
+    set_combo_selection(
+        control(state, ControlRole::AppTheme),
+        match settings.app_theme.as_str() {
+            "light" => 1,
+            "dark" => 2,
+            _ => 0,
+        },
+    );
+    set_control_text(
+        control(state, ControlRole::RedCutoff),
+        &settings.battery_color_red_max_percent.to_string(),
+    );
+    set_control_text(
+        control(state, ControlRole::YellowCutoff),
+        &settings.battery_color_yellow_max_percent.to_string(),
+    );
+    set_control_text(
+        control(state, ControlRole::RedColor),
+        &settings.battery_color_red,
+    );
+    set_control_text(
+        control(state, ControlRole::YellowColor),
+        &settings.battery_color_yellow,
+    );
+    set_control_text(
+        control(state, ControlRole::GreenColor),
+        &settings.battery_color_green,
+    );
     set_control_text(
         control(state, ControlRole::ThresholdEdit),
         &settings
@@ -1365,6 +2182,7 @@ fn apply_saved_settings(state: &SettingsWindow) {
         control(state, ControlRole::Startup),
         settings.start_on_boot == Some(true),
     );
+    refresh_preview_icon(state);
 }
 
 fn set_checkbox(window: HWND, checked: bool) {
@@ -1378,58 +2196,6 @@ fn set_checkbox(window: HWND, checked: bool) {
         },
         0,
     );
-}
-
-fn open_overview(window: HWND, state: &SettingsWindow) -> bool {
-    if current_form(state).is_some_and(|form| state.original.as_ref() != Some(&form)) {
-        let message = win32::to_wide("Discard unsaved Settings changes and open Overview?");
-        let title = win32::to_wide(WINDOW_TITLE);
-        // SAFETY: the live Settings window is a valid owner for this confirmation dialog.
-        let response = unsafe {
-            MessageBoxW(
-                window,
-                message.as_ptr(),
-                title.as_ptr(),
-                MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2,
-            )
-        };
-        if response != IDYES {
-            return false;
-        }
-    }
-
-    let result = (|| -> io::Result<()> {
-        let executable = std::env::current_exe()?;
-        let mut command = Command::new(executable);
-        command.args(["dashboard", "--window", "--days"]);
-        command.arg(state.days.to_string());
-        if let Some(database) = &state.database {
-            command.arg("--database").arg(database);
-        }
-        use std::os::windows::process::CommandExt;
-        command
-            .creation_flags(windows_sys::Win32::System::Threading::CREATE_NO_WINDOW)
-            .spawn()
-            .map(|_| ())
-    })();
-    match result {
-        Ok(()) => {
-            if let Err(error) = win32::destroy_window(window) {
-                eprintln!("Volty could not close Settings after opening Overview: {error}");
-            }
-            true
-        }
-        Err(error) => {
-            if let Some(control) = state
-                .controls
-                .iter()
-                .find(|control| control.role == ControlRole::Status)
-            {
-                set_control_text(control.handle, &format!("Could not open Overview: {error}"));
-            }
-            false
-        }
-    }
 }
 
 fn close_window(window: HWND, state: &SettingsWindow) {
@@ -1468,8 +2234,90 @@ unsafe extern "system" fn window_proc(
     }
 
     match message {
-        WM_CTLCOLORSTATIC => static_control_color(wparam),
-        windows_sys::Win32::UI::WindowsAndMessaging::WM_CTLCOLOREDIT => edit_control_color(wparam),
+        windows_sys::Win32::UI::WindowsAndMessaging::WM_MEASUREITEM if lparam != 0 => {
+            // SAFETY: WM_MEASUREITEM supplies a writable native control measurement structure.
+            let item = unsafe {
+                &mut *ptr::with_exposed_provenance_mut::<
+                    windows_sys::Win32::UI::Controls::MEASUREITEMSTRUCT,
+                >(lparam as usize)
+            };
+            if item.CtlType == windows_sys::Win32::UI::Controls::ODT_COMBOBOX {
+                item.itemHeight = 24;
+                return 1;
+            }
+            win32::default_window_proc(window, message, wparam, lparam)
+        }
+        windows_sys::Win32::UI::WindowsAndMessaging::WM_DRAWITEM if lparam != 0 => {
+            let state = win32::window_state::<SettingsWindow>(window);
+            // SAFETY: WM_DRAWITEM supplies a live drawing structure valid through this message.
+            let item = unsafe {
+                &*ptr::with_exposed_provenance::<windows_sys::Win32::UI::Controls::DRAWITEMSTRUCT>(
+                    lparam as usize,
+                )
+            };
+            if !state.is_null() && item.CtlType == windows_sys::Win32::UI::Controls::ODT_COMBOBOX {
+                // SAFETY: the parent state and its font remain live through control drawing.
+                let state = unsafe { &*state };
+                state.appearance.draw_combo_item(item, state.fonts.body);
+                return 1;
+            }
+            win32::default_window_proc(window, message, wparam, lparam)
+        }
+
+        WM_CTLCOLORSTATIC | windows_sys::Win32::UI::WindowsAndMessaging::WM_CTLCOLORBTN => {
+            let state = win32::window_state::<SettingsWindow>(window);
+            if state.is_null() {
+                return win32::default_window_proc(window, message, wparam, lparam);
+            }
+            // SAFETY: the attached state lives until the window's message loop exits.
+            let state = unsafe { &*state };
+            state.appearance.control_color(wparam, lparam, state)
+        }
+        windows_sys::Win32::UI::WindowsAndMessaging::WM_ERASEBKGND => {
+            let state = win32::window_state::<SettingsWindow>(window);
+            if state.is_null() {
+                return win32::default_window_proc(window, message, wparam, lparam);
+            }
+            // SAFETY: the attached state lives until the window's message loop exits.
+            unsafe { (*state).appearance.erase(wparam, window) }
+        }
+        windows_sys::Win32::UI::WindowsAndMessaging::WM_PAINT => {
+            let state = win32::window_state::<SettingsWindow>(window);
+            if state.is_null() {
+                return win32::default_window_proc(window, message, wparam, lparam);
+            }
+            // SAFETY: the attached state lives until the window's message loop exits.
+            unsafe { (*state).appearance.paint(window, &*state) };
+            0
+        }
+        windows_sys::Win32::UI::WindowsAndMessaging::WM_CTLCOLOREDIT
+        | windows_sys::Win32::UI::WindowsAndMessaging::WM_CTLCOLORLISTBOX => {
+            let state = win32::window_state::<SettingsWindow>(window);
+            if state.is_null() {
+                return win32::default_window_proc(window, message, wparam, lparam);
+            }
+            // SAFETY: the attached state lives through the message loop.
+            let state = unsafe { &*state };
+            state.appearance.input_color(wparam)
+        }
+        windows_sys::Win32::UI::WindowsAndMessaging::WM_SETTINGCHANGE
+        | windows_sys::Win32::UI::WindowsAndMessaging::WM_THEMECHANGED
+        | windows_sys::Win32::UI::WindowsAndMessaging::WM_SYSCOLORCHANGE => {
+            let state = win32::window_state::<SettingsWindow>(window);
+            if !state.is_null() {
+                // SAFETY: the attached state lives through the message loop.
+                let state = unsafe { &mut *state };
+                if state.create_complete {
+                    refresh_appearance(window, state);
+                    refresh_preview_icon(state);
+                    // SAFETY: the preview may follow a Windows tray-theme change.
+                    unsafe {
+                        windows_sys::Win32::Graphics::Gdi::InvalidateRect(window, ptr::null(), 0)
+                    };
+                }
+            }
+            0
+        }
         WM_COMMAND => {
             let state = win32::window_state::<SettingsWindow>(window);
             if state.is_null() {
@@ -1479,9 +2327,27 @@ unsafe extern "system" fn window_proc(
                 handle_command(window, unsafe { &mut *state }, wparam)
             }
         }
-        WM_SIZE => {
+        WM_HSCROLL => {
             let state = win32::window_state::<SettingsWindow>(window);
             if !state.is_null() {
+                // SAFETY: the state and trackbar control are live for this parent notification.
+                let state = unsafe { &mut *state };
+                if lparam as usize == control(state, ControlRole::PreviewLevel).expose_provenance()
+                {
+                    refresh_preview_icon(state);
+                    // SAFETY: repaint the percentage label and preview after trackbar input.
+                    unsafe {
+                        windows_sys::Win32::Graphics::Gdi::InvalidateRect(window, ptr::null(), 0)
+                    };
+                }
+            }
+            0
+        }
+        WM_SIZE => {
+            let state = win32::window_state::<SettingsWindow>(window);
+            // SAFETY: a non-null state pointer remains attached for the lifetime of this window.
+            let created = !state.is_null() && unsafe { (*state).create_complete };
+            if created {
                 // SAFETY: the attached Box remains alive until the message loop exits.
                 layout_controls(window, unsafe { &*state });
             }
@@ -1672,7 +2538,7 @@ pub(super) const fn instance_mutex_name() -> &'static str {
 
 #[cfg(test)]
 mod tests {
-    use super::{validate_cooldown, validate_thresholds};
+    use super::{parse_hex_color, validate_color_map, validate_cooldown, validate_thresholds};
 
     #[test]
     fn threshold_validation_accepts_multiple_whole_percentages() {
@@ -1692,5 +2558,23 @@ mod tests {
         assert_eq!(validate_cooldown("0"), Ok(0));
         assert!(validate_cooldown("-1").is_err());
         assert!(validate_cooldown("9223372036854775808").is_err());
+    }
+
+    #[test]
+    fn color_map_accepts_hex_colors_and_ordered_cutoffs() {
+        let map = validate_color_map("15", "30", "#D23030", "#ebbe23", "#2DAA4B").unwrap();
+        assert_eq!(map.red_max_percent, 15);
+        assert_eq!(map.yellow_max_percent, 30);
+        assert_eq!(map.color_for(15), [210, 48, 48]);
+        assert_eq!(map.color_for(30), [235, 190, 35]);
+        assert_eq!(map.color_for(31), [45, 170, 75]);
+        assert_eq!(parse_hex_color("#123AbC"), Some([18, 58, 188]));
+    }
+
+    #[test]
+    fn color_map_rejects_invalid_hex_and_overlapping_cutoffs() {
+        assert!(validate_color_map("30", "30", "#D23030", "#EBBE23", "#2DAA4B").is_err());
+        assert!(validate_color_map("100", "30", "#D23030", "#EBBE23", "#2DAA4B").is_err());
+        assert!(validate_color_map("15", "30", "red", "#EBBE23", "#2DAA4B").is_err());
     }
 }
