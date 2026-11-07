@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.13.0] - 2026-11-07
+
+### Added
+
+- Added configurable tray icon themes (system, light, or dark), battery or percentage-only styles, and an optional percentage overlay. Theme and style choices can be saved from the advanced tray menu or set in `config.toml`.
+
+### Changed
+
+- Improved tray battery icon readability in light and dark themes with theme-aware outlines and Segoe UI percentage digits.
+
 ## [0.12.0] - 2026-11-07
 
 ### Changed
