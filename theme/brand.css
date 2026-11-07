@@ -34,3 +34,23 @@
     max-height: 220px;
     object-fit: contain;
 }
+
+.dashboard-theme-preview img {
+    height: auto;
+    max-width: 100%;
+    width: 720px;
+}
+
+.dashboard-theme-preview .dashboard-theme-light {
+    display: none;
+}
+
+html.light .dashboard-theme-preview .dashboard-theme-light,
+html.rust .dashboard-theme-preview .dashboard-theme-light {
+    display: block;
+}
+
+html.light .dashboard-theme-preview .dashboard-theme-dark,
+html.rust .dashboard-theme-preview .dashboard-theme-dark {
+    display: none;
+}

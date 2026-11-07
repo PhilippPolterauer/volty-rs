@@ -46,9 +46,10 @@ tray icon or run `volty dashboard`; see
 [dashboard options and details](diagnostics.md#battery-history-dashboard).
 Dashboard data stays on your device.
 
-![Volty battery-history dashboard with synthetic demo data in dark theme, showing summary cards, filters, battery levels, drain rates, and history charts](dashboard.png)
-
-![The same illustrative dashboard in light theme](dashboard-light.png)
+<div class="dashboard-theme-preview">
+  <img class="dashboard-theme-light" src="dashboard-light.png" alt="Volty battery-history dashboard with synthetic demo data in light theme, showing summary cards, filters, battery levels, drain rates, and history charts">
+  <img class="dashboard-theme-dark" src="dashboard.png" alt="Volty battery-history dashboard with synthetic demo data in dark theme, showing summary cards, filters, battery levels, drain rates, and history charts">
+</div>
 
 ## Technical reference
 
