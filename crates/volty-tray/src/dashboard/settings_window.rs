@@ -10,7 +10,7 @@ use std::{
 
 use windows_sys::Win32::{
     Foundation::{
-        COLORREF, HWND, LPARAM, LRESULT, WAIT_FAILED, WAIT_OBJECT_0, WAIT_TIMEOUT, WPARAM,
+        COLORREF, HWND, LPARAM, LRESULT, RECT, WAIT_FAILED, WAIT_OBJECT_0, WAIT_TIMEOUT, WPARAM,
     },
     System::LibraryLoader::GetModuleHandleW,
     UI::{
@@ -19,7 +19,7 @@ use windows_sys::Win32::{
             InitCommonControlsEx, BST_CHECKED, BST_UNCHECKED, EM_LIMITTEXT, ICC_BAR_CLASSES,
             INITCOMMONCONTROLSEX, TBM_SETPOS, TBM_SETRANGEMAX, TBM_SETRANGEMIN,
         },
-        Input::KeyboardAndMouse::{EnableWindow, SetFocus},
+        Input::KeyboardAndMouse::EnableWindow,
         WindowsAndMessaging::{
             CreateWindowExW, GetClientRect, GetWindowTextLengthW, GetWindowTextW, MessageBoxW,
             PostMessageW, SendMessageW, SetWindowPos, SetWindowTextW, ShowWindow, BM_GETCHECK,
@@ -27,9 +27,8 @@ use windows_sys::Win32::{
             CBS_HASSTRINGS, CB_ADDSTRING, CB_GETCURSEL, CB_SETCURSEL, ES_AUTOHSCROLL, ES_NUMBER,
             IDCANCEL, IDYES, MB_DEFBUTTON2, MB_ICONWARNING, MB_YESNO, MINMAXINFO, SWP_NOACTIVATE,
             SWP_NOREDRAW, SWP_NOZORDER, SW_SHOWNA, SW_SHOWNORMAL, WM_APP, WM_CLOSE, WM_COMMAND,
-            WM_CTLCOLORSTATIC, WM_DESTROY, WM_GETMINMAXINFO, WM_HSCROLL, WM_NCCREATE, WM_SETFOCUS,
-            WM_SIZE, WS_CHILD, WS_EX_CLIENTEDGE, WS_OVERLAPPEDWINDOW, WS_TABSTOP, WS_VISIBLE,
-            WS_VSCROLL,
+            WM_CTLCOLORSTATIC, WM_DESTROY, WM_GETMINMAXINFO, WM_HSCROLL, WM_NCCREATE, WM_SIZE,
+            WS_CHILD, WS_EX_CLIENTEDGE, WS_OVERLAPPEDWINDOW, WS_TABSTOP, WS_VISIBLE, WS_VSCROLL,
         },
     },
 };
@@ -1832,6 +1831,43 @@ fn refresh_preview_icon(state: &mut SettingsWindow) {
     );
 }
 
+fn invalidate_preview(window: HWND) {
+    let mut client = RECT::default();
+    // SAFETY: `window` is the live settings window receiving the update.
+    if unsafe { GetClientRect(window, &mut client) } == 0 {
+        return;
+    }
+    let width = (client.right - client.left).min(960);
+    let offset = (client.right - width) / 2;
+    let preview_x = offset + width - 124;
+    let preview = RECT {
+        left: preview_x - 8,
+        top: 590,
+        right: preview_x + 73,
+        bottom: 661,
+    };
+    // SAFETY: only the custom painted icon tile needs repainting; skip background erase.
+    unsafe { windows_sys::Win32::Graphics::Gdi::InvalidateRect(window, &preview, 0) };
+}
+
+fn invalidate_color_map_preview(window: HWND) {
+    let mut client = RECT::default();
+    // SAFETY: `window` is the live settings window receiving the update.
+    if unsafe { GetClientRect(window, &mut client) } == 0 {
+        return;
+    }
+    let width = (client.right - client.left).min(960);
+    let offset = (client.right - width) / 2;
+    let color_map = RECT {
+        left: offset + 48,
+        top: 560,
+        right: offset + width - 32,
+        bottom: 661,
+    };
+    // SAFETY: this covers the custom color samples and the icon tile, without erasing the page.
+    unsafe { windows_sys::Win32::Graphics::Gdi::InvalidateRect(window, &color_map, 0) };
+}
+
 fn open_color_picker(window: HWND, state: &mut SettingsWindow, role: ControlRole) {
     let edit_role = match role {
         ControlRole::PickRed => ControlRole::RedColor,
@@ -1865,8 +1901,7 @@ fn open_color_picker(window: HWND, state: &mut SettingsWindow, role: ControlRole
         );
         refresh_preview_icon(state);
         let _ = update_validation(window, state);
-        // SAFETY: repaint the live settings surface after its preview pixels changed.
-        unsafe { windows_sys::Win32::Graphics::Gdi::InvalidateRect(window, ptr::null(), 0) };
+        invalidate_color_map_preview(window);
     }
 }
 
@@ -1908,21 +1943,23 @@ fn handle_command(window: HWND, state: &mut SettingsWindow, wparam: WPARAM) -> L
         | YELLOW_COLOR_ID | GREEN_COLOR_ID
             if notification == windows_sys::Win32::UI::WindowsAndMessaging::EN_CHANGE as usize =>
         {
-            refresh_preview_icon(state);
-            // SAFETY: repaint the preview and its color samples after edit input.
-            unsafe { windows_sys::Win32::Graphics::Gdi::InvalidateRect(window, ptr::null(), 0) };
+            if matches!(
+                id,
+                RED_CUTOFF_ID | YELLOW_CUTOFF_ID | RED_COLOR_ID | YELLOW_COLOR_ID | GREEN_COLOR_ID
+            ) {
+                refresh_preview_icon(state);
+                invalidate_color_map_preview(window);
+            }
             let _ = update_validation(window, state);
             0
         }
-        NOTIFICATIONS_ID
-        | ICON_STYLE_ID
-        | ICON_THEME_ID
-        | PERCENTAGE_OVERLAY_ID
-        | PINNED_DEVICE_ID
-        | STARTUP_ID => {
+        ICON_STYLE_ID | ICON_THEME_ID | PERCENTAGE_OVERLAY_ID => {
             refresh_preview_icon(state);
-            // SAFETY: icon-related choices update the painted tray preview.
-            unsafe { windows_sys::Win32::Graphics::Gdi::InvalidateRect(window, ptr::null(), 0) };
+            invalidate_preview(window);
+            let _ = update_validation(window, state);
+            0
+        }
+        NOTIFICATIONS_ID | PINNED_DEVICE_ID | STARTUP_ID => {
             let _ = update_validation(window, state);
             0
         }
@@ -2310,10 +2347,7 @@ unsafe extern "system" fn window_proc(
                 if state.create_complete {
                     refresh_appearance(window, state);
                     refresh_preview_icon(state);
-                    // SAFETY: the preview may follow a Windows tray-theme change.
-                    unsafe {
-                        windows_sys::Win32::Graphics::Gdi::InvalidateRect(window, ptr::null(), 0)
-                    };
+                    invalidate_preview(window);
                 }
             }
             0
@@ -2335,10 +2369,7 @@ unsafe extern "system" fn window_proc(
                 if lparam as usize == control(state, ControlRole::PreviewLevel).expose_provenance()
                 {
                     refresh_preview_icon(state);
-                    // SAFETY: repaint the percentage label and preview after trackbar input.
-                    unsafe {
-                        windows_sys::Win32::Graphics::Gdi::InvalidateRect(window, ptr::null(), 0)
-                    };
+                    invalidate_preview(window);
                 }
             }
             0
@@ -2350,14 +2381,6 @@ unsafe extern "system" fn window_proc(
             if created {
                 // SAFETY: the attached Box remains alive until the message loop exits.
                 layout_controls(window, unsafe { &*state });
-            }
-            0
-        }
-        WM_SETFOCUS => {
-            let state = win32::window_state::<SettingsWindow>(window);
-            if !state.is_null() {
-                // SAFETY: the attached state and its threshold control live with this window.
-                unsafe { SetFocus(control(&*state, ControlRole::ThresholdEdit)) };
             }
             0
         }
