@@ -50,10 +50,11 @@ use appearance::Appearance;
 const WINDOW_CLASS: &str = "VoltyNativeSettingsWindow";
 const WINDOW_TITLE: &str = "Volty Settings";
 const WINDOW_WIDTH: i32 = 940;
-const WINDOW_HEIGHT: i32 = 900;
+const WINDOW_HEIGHT: i32 = 820;
 const MIN_WINDOW_WIDTH: i32 = 820;
 const MIN_WINDOW_HEIGHT: i32 = 820;
 const MARGIN: i32 = 32;
+const TOP_CARD_GAP: i32 = 20;
 const THRESHOLDS_ID: usize = 1002;
 const COOLDOWN_ID: usize = 1003;
 const NOTIFICATIONS_ID: usize = 1004;
@@ -304,6 +305,13 @@ fn initial_window_size() -> (i32, i32) {
     )
 }
 
+pub(super) fn top_card_layout(width: i32) -> (i32, i32, i32) {
+    let available = width - MARGIN * 2 - TOP_CARD_GAP;
+    let left_width = available * 55 / 100;
+    let right_width = available - left_width;
+    (left_width, right_width, MARGIN + left_width + TOP_CARD_GAP)
+}
+
 fn create_controls(
     window: HWND,
     instance: windows_sys::Win32::Foundation::HINSTANCE,
@@ -396,7 +404,7 @@ fn create_controls(
         instance,
         state,
         ControlRole::ThresholdHelp,
-        "Comma separated, e.g. 20, 10, 5.",
+        "Comma separated: 20, 10, 5.",
         state.fonts.body_small,
     )?;
     let thresholds = state
@@ -444,7 +452,7 @@ fn create_controls(
         instance,
         state,
         ControlRole::CooldownHelp,
-        "Minutes between alerts; 0 disables repeats.",
+        "Minutes between alerts; 0 = off.",
         state.fonts.body_small,
     )?;
     let cooldown = state
@@ -914,6 +922,13 @@ fn create_controls(
         "Windows startup",
         state.fonts.body,
     )?;
+    let startup_error = state
+        .settings
+        .as_ref()
+        .and_then(|settings| settings.startup_error.as_deref())
+        .map_or_else(String::new, |error| {
+            format!("Windows startup setting could not be read: {error}")
+        });
     add_label(
         window,
         instance,
@@ -940,14 +955,7 @@ fn create_controls(
     {
         send_message(startup, BM_SETCHECK, BST_CHECKED as usize, 0);
     }
-    let startup_error = state
-        .settings
-        .as_ref()
-        .and_then(|settings| settings.startup_error.as_deref())
-        .map_or_else(String::new, |error| {
-            format!("Windows startup setting could not be read: {error}")
-        });
-    add_label(
+    let startup_error_control = add_label(
         window,
         instance,
         state,
@@ -955,6 +963,23 @@ fn create_controls(
         &startup_error,
         state.fonts.body_small,
     )?;
+    if startup_error.is_empty() {
+        // SAFETY: this is the unused error label created for the live settings window.
+        unsafe {
+            ShowWindow(
+                startup_error_control,
+                windows_sys::Win32::UI::WindowsAndMessaging::SW_HIDE,
+            )
+        };
+    } else {
+        // SAFETY: the startup error replaces the helper in its layout slot.
+        unsafe {
+            ShowWindow(
+                control(state, ControlRole::StartupDescription),
+                windows_sys::Win32::UI::WindowsAndMessaging::SW_HIDE,
+            )
+        };
+    }
     add_label(
         window,
         instance,
@@ -1112,13 +1137,11 @@ fn layout_controls(window: HWND, state: &SettingsWindow) {
     let width = client.right.min(960);
     let offset = (client.right - width) / 2;
     let inset = MARGIN + 24;
-    let card_gap = 20;
-    let card_width = (width - MARGIN * 2 - card_gap) / 2;
-    let right_card_x = MARGIN + card_width + card_gap;
+    let (left_card_width, right_card_width, right_card_x) = top_card_layout(width);
     let battery_input_width = 148;
-    let battery_input_x = MARGIN + card_width - 24 - battery_input_width;
-    let tray_combo_width = 180;
-    let tray_combo_x = right_card_x + card_width - 24 - tray_combo_width;
+    let battery_input_x = MARGIN + left_card_width - 24 - battery_input_width;
+    let tray_combo_width = (right_card_width - 160).clamp(156, 180);
+    let tray_combo_x = right_card_x + right_card_width - 24 - tray_combo_width;
     let full_width = width - inset * 2;
     let footer_y = client.bottom - 52;
     let cutoff_gap = 24;
@@ -1126,11 +1149,12 @@ fn layout_controls(window: HWND, state: &SettingsWindow) {
     let color_gap = 16;
     let color_width = (full_width - color_gap * 2) / 3;
     let preview_track_width = full_width - 160;
-    let startup_description_width = full_width / 3;
-    let startup_checkbox_x = inset + startup_description_width + 12;
-    let startup_checkbox_width = full_width / 4;
-    let startup_error_x = startup_checkbox_x + startup_checkbox_width + 12;
-    let startup_error_width = full_width - startup_description_width - startup_checkbox_width - 24;
+    let startup_checkbox_width = 192;
+    let startup_checkbox_x = inset;
+    let startup_description_x = inset + startup_checkbox_width + 12;
+    let startup_description_width = full_width - startup_checkbox_width - 12;
+    let startup_error_x = startup_description_x;
+    let startup_error_width = startup_description_width;
     let rows = [
         (ControlRole::Heading, MARGIN, 24, width - 230, 36),
         (ControlRole::Description, MARGIN, 66, width - 340, 22),
@@ -1140,14 +1164,14 @@ fn layout_controls(window: HWND, state: &SettingsWindow) {
             ControlRole::BatteryHeading,
             MARGIN + 24,
             132,
-            card_width - 48,
+            left_card_width - 48,
             26,
         ),
         (
             ControlRole::BatteryDescription,
             MARGIN + 24,
             160,
-            card_width - 48,
+            left_card_width - 48,
             20,
         ),
         (
@@ -1210,12 +1234,12 @@ fn layout_controls(window: HWND, state: &SettingsWindow) {
             ControlRole::Notifications,
             MARGIN + 24,
             312,
-            card_width - 192,
+            left_card_width - 192,
             26,
         ),
         (
             ControlRole::TestNotification,
-            MARGIN + card_width - 24 - 128,
+            MARGIN + left_card_width - 24 - 128,
             348,
             128,
             32,
@@ -1224,14 +1248,14 @@ fn layout_controls(window: HWND, state: &SettingsWindow) {
             ControlRole::TrayHeading,
             right_card_x + 24,
             132,
-            card_width - 48,
+            right_card_width - 48,
             26,
         ),
         (
             ControlRole::TrayDescription,
             right_card_x + 24,
             160,
-            card_width - 48,
+            right_card_width - 48,
             20,
         ),
         (
@@ -1301,21 +1325,21 @@ fn layout_controls(window: HWND, state: &SettingsWindow) {
             ControlRole::PercentageOverlay,
             right_card_x + 24,
             300,
-            card_width - 48,
+            right_card_width - 48,
             24,
         ),
         (
             ControlRole::PercentageHelp,
             right_card_x + 46,
             342,
-            card_width - 70,
+            right_card_width - 70,
             20,
         ),
         (
             ControlRole::PinnedDeviceLabel,
             right_card_x + 24,
             330,
-            card_width - 48,
+            right_card_width - 48,
             22,
         ),
         (
@@ -1329,7 +1353,7 @@ fn layout_controls(window: HWND, state: &SettingsWindow) {
             ControlRole::PinnedDevice,
             right_card_x + 24,
             356,
-            card_width - 48,
+            right_card_width - 48,
             30,
         ),
         (ControlRole::ColorMapHeading, inset, 412, full_width, 26),
@@ -1420,7 +1444,7 @@ fn layout_controls(window: HWND, state: &SettingsWindow) {
         (ControlRole::StartupHeading, inset, 682, full_width, 26),
         (
             ControlRole::StartupDescription,
-            inset,
+            startup_description_x,
             710,
             startup_description_width,
             20,

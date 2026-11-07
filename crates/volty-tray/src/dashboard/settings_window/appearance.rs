@@ -12,7 +12,9 @@ use windows_sys::Win32::{
     UI::WindowsAndMessaging::GetClientRect,
 };
 
-use super::{control, get_control_text, parse_hex_color, ControlRole, SettingsWindow};
+use super::{
+    control, get_control_text, parse_hex_color, top_card_layout, ControlRole, SettingsWindow,
+};
 
 pub(super) struct Appearance {
     pub(super) dark: bool,
@@ -393,12 +395,10 @@ impl Appearance {
             let old_brush = SelectObject(hdc, self.surface);
             let old_pen = SelectObject(hdc, GetStockObject(DC_PEN));
             SetDCPenColor(hdc, self.border);
-            let card_gap = 20;
-            let card_width = (width - 64 - card_gap) / 2;
-            let right_card_x = 32 + card_width + card_gap;
+            let (left_card_width, right_card_width, right_card_x) = top_card_layout(width);
             for (left, top, right, bottom) in [
-                (32, 120, 32 + card_width, 390),
-                (right_card_x, 120, right_card_x + card_width, 390),
+                (32, 120, 32 + left_card_width, 390),
+                (right_card_x, 120, right_card_x + right_card_width, 390),
                 (32, 400, width - 32, 660),
                 (32, 670, width - 32, 736),
             ] {
