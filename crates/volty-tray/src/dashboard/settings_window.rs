@@ -76,6 +76,7 @@ const PICK_YELLOW_ID: usize = 1019;
 const PICK_GREEN_ID: usize = 1020;
 const PREVIEW_LEVEL_ID: usize = 1021;
 const SETTINGS_ACTIVATE_MESSAGE: u32 = WM_APP + 1;
+const SETTINGS_SHUTDOWN_MESSAGE: u32 = WM_APP + 2;
 const SETTINGS_INSTANCE_MUTEX: &str = "Local\\VoltySettings";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1150,9 +1151,10 @@ fn layout_controls(window: HWND, state: &SettingsWindow) {
     let color_width = (full_width - color_gap * 2) / 3;
     let preview_track_width = full_width - 160;
     let startup_checkbox_width = 192;
-    let startup_checkbox_x = inset;
-    let startup_description_x = inset + startup_checkbox_width + 12;
-    let startup_description_width = full_width - startup_checkbox_width - 12;
+    let startup_heading_width = 160;
+    let startup_description_x = inset + startup_heading_width + 12;
+    let startup_checkbox_x = inset + full_width - startup_checkbox_width;
+    let startup_description_width = startup_checkbox_x - startup_description_x - 12;
     let startup_error_x = startup_description_x;
     let startup_error_width = startup_description_width;
     let rows = [
@@ -1240,7 +1242,7 @@ fn layout_controls(window: HWND, state: &SettingsWindow) {
         (
             ControlRole::TestNotification,
             MARGIN + left_card_width - 24 - 128,
-            348,
+            309,
             128,
             32,
         ),
@@ -1375,91 +1377,97 @@ fn layout_controls(window: HWND, state: &SettingsWindow) {
             30,
         ),
         (ControlRole::ColorMapError, inset, 516, full_width, 20),
-        (ControlRole::RedColorLabel, inset, 540, color_width, 20),
+        (ControlRole::RedColorLabel, inset, 536, color_width, 20),
         (
             ControlRole::YellowColorLabel,
             inset + color_width + color_gap,
-            540,
+            536,
             color_width,
             20,
         ),
         (
             ControlRole::GreenColorLabel,
             inset + (color_width + color_gap) * 2,
-            540,
+            536,
             color_width,
             20,
         ),
-        (ControlRole::RedColor, inset + 30, 560, 116, 30),
+        (ControlRole::RedColor, inset + 30, 556, 116, 30),
         (
             ControlRole::YellowColor,
             inset + color_width + color_gap + 30,
-            560,
+            556,
             116,
             30,
         ),
         (
             ControlRole::GreenColor,
             inset + (color_width + color_gap) * 2 + 30,
-            560,
+            556,
             116,
             30,
         ),
-        (ControlRole::PickRed, inset + 152, 560, 82, 30),
+        (ControlRole::PickRed, inset + 152, 556, 82, 30),
         (
             ControlRole::PickYellow,
             inset + color_width + color_gap + 152,
-            560,
+            556,
             82,
             30,
         ),
         (
             ControlRole::PickGreen,
             inset + (color_width + color_gap) * 2 + 152,
-            560,
+            556,
             82,
             30,
         ),
         (
             ControlRole::PreviewLabel,
             inset,
-            600,
+            590,
             preview_track_width,
             20,
         ),
         (
             ControlRole::PreviewLevel,
             inset,
-            622,
+            612,
             preview_track_width,
             38,
         ),
         (
             ControlRole::PreviewValue,
             inset + full_width - 148,
-            630,
+            620,
             48,
             24,
         ),
-        (ControlRole::StartupHeading, inset, 682, full_width, 26),
+        (
+            ControlRole::StartupHeading,
+            inset,
+            690,
+            startup_heading_width,
+            26,
+        ),
         (
             ControlRole::StartupDescription,
             startup_description_x,
-            710,
+            690,
             startup_description_width,
             20,
         ),
         (
             ControlRole::Startup,
             startup_checkbox_x,
-            710,
+            690,
             startup_checkbox_width,
             24,
         ),
         (
             ControlRole::StartupError,
             startup_error_x,
-            710,
+            690,
             startup_error_width,
             20,
         ),
@@ -2419,6 +2427,10 @@ unsafe extern "system" fn window_proc(
             }
             0
         }
+        SETTINGS_SHUTDOWN_MESSAGE => {
+            destroy_window(window);
+            0
+        }
         WM_GETMINMAXINFO => {
             if lparam != 0 {
                 // SAFETY: WM_GETMINMAXINFO supplies a writable MINMAXINFO in lParam.
@@ -2539,7 +2551,7 @@ impl SettingsEventListener {
                         }
                         value if value == WAIT_OBJECT_0 + 1 => {
                             // SAFETY: window remains live until its listener is stopped.
-                            let _ = window.post_message(WM_CLOSE);
+                            let _ = window.post_message(SETTINGS_SHUTDOWN_MESSAGE);
                             break;
                         }
                         WAIT_TIMEOUT => {}

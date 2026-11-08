@@ -178,47 +178,16 @@ fn render_percentage(
         size,
         (size as f32 / ICON_SIZE as f32).ceil() as i32,
     );
-    let outline_color = theme.outline_color();
-    composite_mask(
-        &mut image,
-        &outline,
-        [outline_color[0], outline_color[1], outline_color[2]],
-    );
-    composite_mask(&mut image, &mask, fill_color);
-    Ok(center_opaque_pixels(image))
-}
-
-fn center_opaque_pixels(image: RgbaImage) -> RgbaImage {
-    let (width, height) = image.dimensions();
-    let mut bounds = [width, height, 0, 0];
-    for (x, y, pixel) in image.enumerate_pixels() {
-        if pixel[3] > 0 {
-            bounds[0] = bounds[0].min(x);
-            bounds[1] = bounds[1].min(y);
-            bounds[2] = bounds[2].max(x);
-            bounds[3] = bounds[3].max(y);
+    let (outline_color, text_color) = match theme {
+        IconTheme::Light => {
+            let outline = theme.outline_color();
+            ([outline[0], outline[1], outline[2]], fill_color)
         }
-    }
-
-    if bounds[0] == width {
-        return image;
-    }
-
-    let shift_x = ((width - 1) as i32 - (bounds[0] + bounds[2]) as i32) / 2;
-    let shift_y = ((height - 1) as i32 - (bounds[1] + bounds[3]) as i32) / 2;
-    let mut centered = RgbaImage::from_pixel(width, height, Rgba([0, 0, 0, 0]));
-    for (x, y, pixel) in image.enumerate_pixels() {
-        if pixel[3] == 0 {
-            continue;
-        }
-        let x = x as i32 + shift_x;
-        let y = y as i32 + shift_y;
-        if x >= 0 && x < width as i32 && y >= 0 && y < height as i32 {
-            centered.put_pixel(x as u32, y as u32, *pixel);
-        }
-    }
-
-    centered
+        IconTheme::Dark => (fill_color, [245, 247, 250]),
+    };
+    composite_mask(&mut image, &outline, outline_color);
+    composite_mask(&mut image, &mask, text_color);
+    Ok(image)
 }
 
 fn percentage_font() -> Result<&'static Font, TrayError> {
@@ -356,7 +325,11 @@ fn percentage_text_mask(
     }
 
     let origin_x = center.0 - (left + right) / 2.0;
-    let origin_y = center.1 - (top + bottom) / 2.0;
+    let origin_y = font
+        .horizontal_line_metrics(font_size)
+        .map_or(center.1 - (top + bottom) / 2.0, |line| {
+            center.1 + (line.ascent + line.descent) / 2.0
+        });
     let mut mask = vec![0; (canvas_size * canvas_size) as usize];
     for (metrics, bitmap, pen_x) in glyphs {
         let glyph_x = (origin_x + pen_x + metrics.xmin as f32).round() as i32;
@@ -1330,9 +1303,14 @@ mod tests {
                 let opaque = opaque_pixels(&rgba);
                 assert!(!opaque.is_empty());
                 assert!(opaque.iter().any(|pixel| pixel[..3] == expected));
-                assert!(opaque
-                    .iter()
-                    .any(|pixel| pixel[..3] == theme.outline_color()[..3]));
+                let expected_outline = match theme {
+                    IconTheme::Light => {
+                        let outline = theme.outline_color();
+                        [outline[0], outline[1], outline[2]]
+                    }
+                    IconTheme::Dark => [245, 247, 250],
+                };
+                assert!(opaque.iter().any(|pixel| pixel[..3] == expected_outline));
                 assert!(opaque.iter().any(|pixel| pixel[3] < 255));
             }
         }

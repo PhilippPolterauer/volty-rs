@@ -1,6 +1,13 @@
 //! Lets background threads wake the tray loop so it can block instead of polling.
 
-use std::{io, sync::OnceLock, time::Duration};
+use std::{
+    io,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        OnceLock,
+    },
+    time::Duration,
+};
 use windows_sys::Win32::{
     Foundation::{HANDLE, WAIT_FAILED},
     System::Threading::{CreateEventW, SetEvent, INFINITE},
@@ -15,6 +22,49 @@ unsafe impl Send for WakeEvent {}
 unsafe impl Sync for WakeEvent {}
 
 static WAKE_EVENT: OnceLock<WakeEvent> = OnceLock::new();
+static CTRL_C_REQUESTED: AtomicBool = AtomicBool::new(false);
+
+pub(super) struct ConsoleControlHandler;
+
+impl Drop for ConsoleControlHandler {
+    fn drop(&mut self) {
+        use windows_sys::Win32::System::Console::SetConsoleCtrlHandler;
+
+        // SAFETY: this unregisters the static callback installed by `install_console_control_handler`.
+        if unsafe { SetConsoleCtrlHandler(Some(handle_console_control), 0) } == 0 {
+            eprintln!(
+                "Volty could not unregister its Ctrl+C handler: {}",
+                io::Error::last_os_error()
+            );
+        }
+    }
+}
+
+pub(super) fn install_console_control_handler() -> io::Result<ConsoleControlHandler> {
+    use windows_sys::Win32::System::Console::SetConsoleCtrlHandler;
+
+    CTRL_C_REQUESTED.store(false, Ordering::Release);
+    // SAFETY: the callback is static and only updates atomics and signals the wake event.
+    if unsafe { SetConsoleCtrlHandler(Some(handle_console_control), 1) } == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(ConsoleControlHandler)
+}
+
+pub(super) fn take_ctrl_c_request() -> bool {
+    CTRL_C_REQUESTED.swap(false, Ordering::AcqRel)
+}
+
+unsafe extern "system" fn handle_console_control(control: u32) -> i32 {
+    use windows_sys::Win32::System::Console::CTRL_C_EVENT;
+
+    if control != CTRL_C_EVENT {
+        return 0;
+    }
+    CTRL_C_REQUESTED.store(true, Ordering::Release);
+    signal();
+    1
+}
 
 /// Creates the auto-reset event; must run before the first [`wait`].
 pub(super) fn init() -> io::Result<()> {

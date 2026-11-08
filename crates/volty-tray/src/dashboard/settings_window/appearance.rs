@@ -399,8 +399,8 @@ impl Appearance {
             for (left, top, right, bottom) in [
                 (32, 120, 32 + left_card_width, 390),
                 (right_card_x, 120, right_card_x + right_card_width, 390),
-                (32, 400, width - 32, 660),
-                (32, 670, width - 32, 736),
+                (32, 400, width - 32, 670),
+                (32, 678, width - 32, 720),
             ] {
                 RoundRect(hdc, offset + left, top, offset + right, bottom, 10, 10);
             }
@@ -422,9 +422,9 @@ impl Appearance {
                     let x = offset + inset + (column_width + gap) * column + 2;
                     let swatch = RECT {
                         left: x,
-                        top: 564,
+                        top: 560,
                         right: x + 22,
-                        bottom: 586,
+                        bottom: 582,
                     };
                     FillRect(hdc, &swatch, brush);
                     DeleteObject(brush);
@@ -440,13 +440,13 @@ impl Appearance {
                 bitmap.bmiHeader.biCompression = BI_RGB;
                 bitmap.bmiHeader.biSizeImage = state.preview_bgra.len() as u32;
                 let preview_x = offset + width - 124;
-                RoundRect(hdc, preview_x - 8, 590, preview_x + 72, 660, 8, 8);
+                RoundRect(hdc, preview_x - 8, 590, preview_x + 72, 670, 10, 10);
                 StretchDIBits(
                     hdc,
-                    preview_x,
-                    596,
-                    64,
-                    64,
+                    preview_x - 4,
+                    594,
+                    72,
+                    72,
                     0,
                     0,
                     32,

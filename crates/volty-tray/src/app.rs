@@ -93,6 +93,8 @@ struct App {
 }
 
 pub fn run() -> Result<(), Box<dyn Error>> {
+    wake::init()?;
+    let _console_control_handler = wake::install_console_control_handler()?;
     let mut app = App::start()?;
     app.start_update_check(UpdateCheckOrigin::Automatic)?;
     let result = app.run_loop();
@@ -281,6 +283,11 @@ impl App {
 
     fn run_loop(&mut self) -> Result<(), Box<dyn Error>> {
         loop {
+            if wake::take_ctrl_c_request() {
+                self.record_event(LogLevel::Info, "Ctrl+C requested application shutdown")?;
+                self.session.request_quit();
+                return Ok(());
+            }
             if let Some(gap) = self.liveness.tick() {
                 self.record_event(
                     LogLevel::Warn,
