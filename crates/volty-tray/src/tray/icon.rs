@@ -325,11 +325,7 @@ fn percentage_text_mask(
     }
 
     let origin_x = center.0 - (left + right) / 2.0;
-    let origin_y = font
-        .horizontal_line_metrics(font_size)
-        .map_or(center.1 - (top + bottom) / 2.0, |line| {
-            center.1 + (line.ascent + line.descent) / 2.0
-        });
+    let origin_y = center.1 - (top + bottom) / 2.0;
     let mut mask = vec![0; (canvas_size * canvas_size) as usize];
     for (metrics, bitmap, pen_x) in glyphs {
         let glyph_x = (origin_x + pen_x + metrics.xmin as f32).round() as i32;
@@ -1296,7 +1292,11 @@ mod tests {
     fn percentage_icon_uses_the_active_color_band() {
         let map = BatteryColorMap::default();
         for theme in [IconTheme::Light, IconTheme::Dark] {
-            for (percentage, expected) in [(10, map.red), (20, map.yellow), (60, map.green)] {
+            for (percentage, expected) in [
+                (map.red_max_percent, map.red),
+                (map.yellow_max_percent, map.yellow),
+                (100, map.green),
+            ] {
                 let rgba = render_percentage(percentage, 32, map, theme)
                     .unwrap()
                     .into_raw();
