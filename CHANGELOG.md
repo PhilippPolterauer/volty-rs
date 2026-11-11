@@ -7,9 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.15.0] - 2026-11-09
+
 ### Changed
 
 - Tray icon colors now blend smoothly between the configured red, yellow, and green percentage points.
+- Refined the Settings window layout and show Windows startup errors in place of helper text.
+- Ctrl+C now requests a clean shutdown when Volty is launched from a console.
+- Centered percentage-only tray icon text at both supported icon sizes.
 
 ## [0.14.0] - 2026-11-07
 
