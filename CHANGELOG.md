@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.16.0] - 2026-11-18
+
+### Added
+
+- Added an x64 Microsoft Store package with Store-managed updates and opt-in startup through Windows Settings.
+- Added an x64 WinGet portable package with a `volty` command and WinGet-managed upgrades.
+
 ## [0.15.0] - 2026-11-09
 
 ### Changed
