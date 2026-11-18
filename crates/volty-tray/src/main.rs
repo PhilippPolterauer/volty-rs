@@ -32,9 +32,9 @@ mod report;
 mod state;
 #[cfg(windows)]
 mod tray;
-#[cfg(windows)]
+#[cfg(all(windows, feature = "self-update"))]
 mod update;
-#[cfg(windows)]
+#[cfg(all(windows, feature = "self-update"))]
 mod update_progress;
 #[cfg(windows)]
 mod win32;
@@ -222,9 +222,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         Some("history") => return history::run_cli(&args.collect::<Vec<_>>()),
         #[cfg(windows)]
         Some("dashboard") => return run_dashboard_cli(&args.collect::<Vec<_>>()),
-        #[cfg(windows)]
+        #[cfg(all(windows, feature = "self-update"))]
         Some("--apply-update") => return update::apply_update_cli(&args.collect::<Vec<_>>()),
-        #[cfg(windows)]
+        #[cfg(all(windows, feature = "self-update"))]
         Some(update::FINISH_UPDATE_ARGUMENT) => {
             if let Err(error) = update::finish_update_cli(&args.collect::<Vec<_>>()) {
                 show_error(&format!("volty: update cleanup failed: {error}"));

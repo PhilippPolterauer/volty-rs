@@ -8,9 +8,12 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: release-${{ github.ref }}
+
 jobs:
   windows-release:
-    name: Build Windows standalone executable
+    name: Build Windows standalone, Store, and WinGet packages
     runs-on: windows-latest
     steps:
       - name: Check out source
@@ -56,6 +59,16 @@ jobs:
       - name: Build release executable
         run: cargo build --locked --release --target x86_64-pc-windows-msvc --package volty-tray
 
+      - name: Build Microsoft Store package without self-updates
+        shell: pwsh
+        run: ./scripts/build-msix.ps1 -OutputDirectory "dist/msix/$env:GITHUB_REF_NAME"
+
+      - name: Build portable WinGet package and manifests
+        shell: pwsh
+        env:
+          RELEASE_REPOSITORY: ${{ github.repository }}
+        run: ./scripts/build-winget.ps1 -Version ($env:GITHUB_REF_NAME.Substring(1)) -Repository $env:RELEASE_REPOSITORY
+
       - name: Prepare release assets
         shell: pwsh
         run: |
@@ -78,14 +91,45 @@ jobs:
         run: |
           $assetName = "Volty-$env:GITHUB_REF_NAME-x86_64-pc-windows-msvc.exe"
           $dist = Join-Path $env:GITHUB_WORKSPACE "dist"
-          $asset = Join-Path $dist $assetName
-          $checksum = Join-Path $dist "${assetName}.sha256"
-          gh release view $env:GITHUB_REF_NAME *> $null
-          if ($LASTEXITCODE -eq 0) {
-            gh release upload $env:GITHUB_REF_NAME $asset $checksum --clobber
-          } else {
-            gh release create $env:GITHUB_REF_NAME $asset $checksum --verify-tag --generate-notes
+          $storeDist = Join-Path $dist "msix/$env:GITHUB_REF_NAME"
+          $assets = @(
+            (Join-Path $dist $assetName)
+            (Join-Path $dist "${assetName}.sha256")
+            (Join-Path $dist "Volty-$env:GITHUB_REF_NAME-winget-x64.zip")
+            (Join-Path $dist "Volty-$env:GITHUB_REF_NAME-winget-manifests.zip")
+          )
+          foreach ($extension in @("msixupload", "msixbundle")) {
+            $packages = @(Get-ChildItem -LiteralPath $storeDist -Filter "Volty_*_x64.$extension" -File)
+            if ($packages.Count -ne 1) {
+              throw "Expected exactly one .$extension package, found $($packages.Count)."
+            }
+            $assets += $packages[0].FullName
           }
+          $releaseJson = gh release view $env:GITHUB_REF_NAME --json isDraft,assets 2>$null
+          if ($LASTEXITCODE -ne 0) {
+            gh release create $env:GITHUB_REF_NAME --draft --verify-tag --generate-notes
+            if ($LASTEXITCODE -ne 0) {
+              exit $LASTEXITCODE
+            }
+          } else {
+            $release = $releaseJson | ConvertFrom-Json
+            if (-not $release.isDraft) {
+              foreach ($asset in $assets) {
+                $name = Split-Path -Leaf $asset
+                if ($name -notin $release.assets.name) {
+                  throw "Published release is missing $name."
+                }
+              }
+              exit 0
+            }
+          }
+
+          # Keep the published WinGet installer hash stable across reruns.
+          gh release upload $env:GITHUB_REF_NAME @assets --clobber
+          if ($LASTEXITCODE -ne 0) {
+            exit $LASTEXITCODE
+          }
+          gh release edit $env:GITHUB_REF_NAME --draft=false
           if ($LASTEXITCODE -ne 0) {
             exit $LASTEXITCODE
           }

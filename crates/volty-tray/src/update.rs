@@ -65,6 +65,13 @@ struct GitHubReleaseAsset {
 }
 
 pub fn check_for_update() -> Result<Option<UpdateInfo>, Box<dyn Error>> {
+    // Packaged builds (Microsoft Store or MSIX sideload) are updated by the
+    // package deployment stack. The executable lives in WindowsApps and cannot
+    // replace itself, so the standalone updater must stay out of the way.
+    if crate::win32::has_package_identity() {
+        return Ok(None);
+    }
+
     let response = http_agent()
         .get(RELEASE_API_URL)
         .set("Accept", "application/vnd.github+json")

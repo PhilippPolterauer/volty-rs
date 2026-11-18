@@ -215,6 +215,7 @@ pub(super) fn show_low_battery_notification(
 }
 
 #[cfg(windows)]
+#[cfg(feature = "self-update")]
 pub(super) fn show_update_available_notification(
     version: &str,
 ) -> Result<notify_rust::NotificationHandle, NotificationError> {
@@ -229,6 +230,7 @@ pub(super) fn show_update_available_notification(
         })
 }
 
+#[cfg(feature = "self-update")]
 pub(crate) fn update_notification_opens_prompt(
     response: &notify_rust::NotificationResponse,
 ) -> bool {
@@ -300,6 +302,7 @@ mod tests {
         ));
     }
 
+    #[cfg(feature = "self-update")]
     #[test]
     fn update_notification_opens_prompt_only_when_clicked() {
         use notify_rust::{CloseReason, NotificationResponse};

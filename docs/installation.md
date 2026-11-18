@@ -22,6 +22,24 @@ launch it and confirm the change. The in-app updater replaces the executable
 in place, preserving the startup path; its restart does not show a second
 confirmation.
 
+## Install through WinGet
+
+Once the package is listed in the WinGet community source, install it with:
+
+```powershell
+winget install --id PhilippPolterauer.Volty --exact --source winget
+volty
+```
+
+Quit Volty from the tray before running
+`winget upgrade --id PhilippPolterauer.Volty --exact --source winget`. WinGet
+installs the portable executable for your Windows user and handles upgrades.
+
+## Microsoft Store
+
+The Microsoft Store package receives updates through the Store. To start this
+edition at sign-in, enable **volty-rs** in **Windows Settings → Apps → Startup**.
+
 ## Use the tray app
 
 Volty monitors supported devices while it runs. The icon shows the lowest
@@ -54,7 +72,7 @@ cooldown are configurable.
 ![Volty low-battery notification](notification.png)
 
 Right-click the icon for the compact menu: manage **Monitored Devices**, open
-**Settings...**, check for updates, open **About Volty**, or quit. Volty checks
+**Settings...**, open **About Volty**, or quit. The standalone download checks
 for updates on startup and once per day while running. When a stable GitHub
 release is available, Windows shows a notification and the tray item changes to
 **Update available!**; selecting it asks before downloading. You can also select

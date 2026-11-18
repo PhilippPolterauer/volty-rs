@@ -63,10 +63,11 @@ use tray_icon::{
     Icon, TrayIcon, TrayIconBuilder, TrayIconEvent,
 };
 
+#[cfg(feature = "self-update")]
+use crate::update::UpdateInfo;
 use crate::{
     config::BatteryColorMap,
     state::{TrayIconStyle, TrayIconTheme},
-    update::UpdateInfo,
 };
 
 pub(crate) fn render_settings_preview(
@@ -91,7 +92,8 @@ pub(crate) fn render_settings_preview(
 
 const MAX_STATUS_CHARS: usize = 80;
 const MAX_TOOLTIP_UTF16_UNITS: usize = 127;
-const MENU_ITEMS_AFTER_ADVANCED_OPTIONS: usize = 4; // Check for Updates, About, separator, Quit.
+// About, separator, Quit, and the optional Check for Updates action.
+const MENU_ITEMS_AFTER_ADVANCED_OPTIONS: usize = 3 + cfg!(feature = "self-update") as usize;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum MenuItemId {
@@ -107,6 +109,7 @@ enum MenuItemId {
     MonitoredDevices,
     MonitoredDevice(u64),
     Settings,
+    #[cfg(feature = "self-update")]
     CheckForUpdates,
     About,
     Quit,
@@ -129,6 +132,7 @@ impl MenuItemId {
                 format!("volty.monitored-device.{sequence}")
             }
             Self::Settings => "volty.settings".to_owned(),
+            #[cfg(feature = "self-update")]
             Self::CheckForUpdates => "volty.check-for-updates".to_owned(),
             Self::About => "volty.about".to_owned(),
             Self::Quit => "volty.quit".to_owned(),
@@ -148,6 +152,7 @@ impl MenuItemId {
             "volty.reset" => Some(Self::ResetVolty),
             "volty.monitored-devices" => Some(Self::MonitoredDevices),
             "volty.settings" => Some(Self::Settings),
+            #[cfg(feature = "self-update")]
             "volty.check-for-updates" => Some(Self::CheckForUpdates),
             "volty.about" => Some(Self::About),
             "volty.quit" => Some(Self::Quit),
@@ -194,17 +199,21 @@ pub enum TrayAction {
         identity: String,
         monitored: bool,
     },
+    #[cfg(feature = "self-update")]
     CheckForUpdates,
+    #[cfg(feature = "self-update")]
     UpdateCheckResult {
         result: Result<Option<UpdateInfo>, String>,
         origin: UpdateCheckOrigin,
     },
+    #[cfg(feature = "self-update")]
     UpdateInstallResult(Result<(), String>),
     About,
     AboutWindowResult(Result<(), String>),
     Quit,
 }
 
+#[cfg(feature = "self-update")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UpdateCheckOrigin {
     Automatic,
@@ -246,6 +255,7 @@ pub struct TrayController {
     pinned_device: Option<String>,
     tray_icon_style: TrayIconStyle,
     tray_icon_theme: TrayIconTheme,
+    #[cfg(feature = "self-update")]
     check_for_updates_item: MenuItem,
     actions_tx: Sender<TrayAction>,
     actions_rx: Receiver<TrayAction>,
@@ -272,6 +282,7 @@ struct TrayMenu {
     monitored_devices_empty_item: MenuItem,
     show_advanced_options_item: CheckMenuItem,
     advanced_menu_items: AdvancedMenuItems,
+    #[cfg(feature = "self-update")]
     check_for_updates_item: MenuItem,
 }
 
@@ -284,6 +295,7 @@ struct TrayMenuItems {
     advanced_options_separator: PredefinedMenuItem,
     advanced_menu_items: AdvancedMenuItems,
     settings_item: MenuItem,
+    #[cfg(feature = "self-update")]
     check_for_updates_item: MenuItem,
     about_item: MenuItem,
     about_separator: PredefinedMenuItem,
@@ -387,6 +399,7 @@ fn create_tray_menu(advanced_options_visible: bool) -> Result<TrayMenu, TrayErro
         advanced_options_separator: PredefinedMenuItem::separator(),
         advanced_menu_items,
         settings_item: MenuItem::with_id(MenuItemId::Settings.as_id(), "Settings...", true, None),
+        #[cfg(feature = "self-update")]
         check_for_updates_item: MenuItem::with_id(
             MenuItemId::CheckForUpdates.as_id(),
             "Check for Updates...",
@@ -406,6 +419,7 @@ fn create_tray_menu(advanced_options_visible: bool) -> Result<TrayMenu, TrayErro
         monitored_devices_empty_item: items.monitored_devices_empty_item,
         show_advanced_options_item: items.show_advanced_options_item,
         advanced_menu_items: items.advanced_menu_items,
+        #[cfg(feature = "self-update")]
         check_for_updates_item: items.check_for_updates_item,
     })
 }
@@ -438,6 +452,7 @@ fn append_tray_menu_items(
     if advanced_options_visible {
         append_advanced_menu_items(menu, &items.advanced_menu_items)?;
     }
+    #[cfg(feature = "self-update")]
     menu.append(&items.check_for_updates_item)
         .map_err(|error| {
             TrayError::new(format!("could not add Check for Updates action: {error}"))
@@ -532,6 +547,7 @@ impl TrayController {
             pinned_device: None,
             tray_icon_style: TrayIconStyle::Battery,
             tray_icon_theme,
+            #[cfg(feature = "self-update")]
             check_for_updates_item: tray_menu.check_for_updates_item,
             actions_tx,
             actions_rx,
@@ -839,6 +855,7 @@ impl TrayController {
                     identity: entry.identity.clone(),
                     monitored: entry.item.is_checked(),
                 }),
+            #[cfg(feature = "self-update")]
             MenuItemId::CheckForUpdates => Some(TrayAction::CheckForUpdates),
             MenuItemId::About => Some(TrayAction::About),
             MenuItemId::ResetVolty => Some(TrayAction::ResetVolty),
@@ -878,10 +895,12 @@ impl TrayController {
         self.actions_tx.clone()
     }
 
+    #[cfg(feature = "self-update")]
     pub fn set_check_for_updates_enabled(&self, enabled: bool) {
         self.check_for_updates_item.set_enabled(enabled);
     }
 
+    #[cfg(feature = "self-update")]
     pub fn set_update_available(&self, available: bool) {
         self.check_for_updates_item.set_text(if available {
             "Update available!"
@@ -1116,6 +1135,7 @@ mod tests {
             MenuItemId::MonitoredDevices,
             MenuItemId::MonitoredDevice(42),
             MenuItemId::Settings,
+            #[cfg(feature = "self-update")]
             MenuItemId::CheckForUpdates,
             MenuItemId::About,
             MenuItemId::Quit,
@@ -1152,7 +1172,10 @@ mod tests {
         assert!(basic_ids.contains(&MenuItemId::MonitoredDevices.as_id()));
         assert!(basic_ids.contains(&MenuItemId::OpenDashboard.as_id()));
         assert!(basic_ids.contains(&MenuItemId::Settings.as_id()));
-        assert!(basic_ids.contains(&MenuItemId::CheckForUpdates.as_id()));
+        assert_eq!(
+            basic_ids.iter().any(|id| id == "volty.check-for-updates"),
+            cfg!(feature = "self-update")
+        );
         assert!(
             basic_ids
                 .iter()

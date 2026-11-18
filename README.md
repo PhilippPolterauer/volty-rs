@@ -33,7 +33,7 @@ and history stay on your PC.
 ## Get it running
 
 1. [Download the latest release](https://github.com/PhilippPolterauer/volty-rs/releases/latest). For a 64-bit PC, choose `Volty-vX.Y.Z-x86_64-pc-windows-msvc.exe`.
-2. Save the file where you want it and double-click to run. No installer or administrator access is needed. On first launch, choose whether Volty should start when you sign in.
+2. Save the file where you want it and double-click to run. You can enable **Start with Windows** in Volty’s Settings.
 3. Find the battery icon in the Windows notification area. If it is hidden, open the taskbar's **Show hidden icons** menu.
 
 ## Use the tray icon
@@ -74,6 +74,10 @@ Requires Windows 10/11 and Rust 1.99 or newer.
 cargo build --release --package volty-tray --locked
 cargo test --workspace --all-features --locked
 ```
+
+See the [Microsoft Store](packaging/msix/README.md) and
+[WinGet](packaging/winget/README.md) packaging guides for builds with
+package-managed updates.
 
 See the [development guide](https://philipppolterauer.github.io/volty-rs/development.html)
 for the full validation steps.

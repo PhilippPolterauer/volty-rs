@@ -266,6 +266,7 @@ pub fn run_message_loop<T>(
     )
 }
 
+#[cfg(feature = "self-update")]
 pub fn run_foreground_message_loop<T>(
     window: HWND,
     show_command: i32,
@@ -439,6 +440,22 @@ pub fn quit_after_creation(create_complete: bool) {
         // SAFETY: PostQuitMessage targets the current thread and takes no pointers.
         unsafe { PostQuitMessage(0) };
     }
+}
+
+/// Reports whether this process runs with an MSIX package identity.
+pub fn has_package_identity() -> bool {
+    // Querying with a null buffer returns the required length when a package
+    // identity exists and APPMODEL_ERROR_NO_PACKAGE (15700) when it does not.
+    let mut length = 0u32;
+    // SAFETY: the API only writes the required buffer length into `length` when
+    // `packagefullname` is null, so no buffer is read or written.
+    let status = unsafe {
+        windows_sys::Win32::Storage::Packaging::Appx::GetCurrentPackageFullName(
+            &mut length,
+            ptr::null_mut(),
+        )
+    };
+    status == windows_sys::Win32::Foundation::ERROR_INSUFFICIENT_BUFFER
 }
 
 #[cfg(test)]

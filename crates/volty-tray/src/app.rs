@@ -34,6 +34,8 @@ use volty_battery::{
     BatteryState, BatteryStatus, DeviceId, DeviceLabel, ProviderEvent, SourceReading,
 };
 
+#[cfg(feature = "self-update")]
+use crate::tray::UpdateCheckOrigin;
 use crate::{
     about::show_about_window,
     capture,
@@ -43,13 +45,12 @@ use crate::{
     logging::FileLogger,
     report::generate_diagnostic_report,
     state::{local_state_path, DeviceState, TrayIconStyle, TrayIconTheme},
-    tray::{
-        confirm_reset, reset_startup_preferences, TrayAction, TrayController, UpdateCheckOrigin,
-    },
+    tray::{confirm_reset, reset_startup_preferences, TrayAction, TrayController},
 };
 
 const CONFIG_RELOAD_DEBOUNCE: Duration = Duration::from_millis(200);
 const UI_REFRESH_INTERVAL: Duration = Duration::from_secs(60);
+#[cfg(feature = "self-update")]
 const UPDATE_CHECK_INTERVAL: Duration = Duration::from_secs(24 * 60 * 60);
 const MAX_DIAGNOSTIC_LOG_ENTRIES: usize = 200;
 
@@ -87,8 +88,11 @@ struct App {
     liveness: Liveness,
     history: Option<HistoryStore>,
     history_error: Option<String>,
+    #[cfg(feature = "self-update")]
     update_operation_running: bool,
+    #[cfg(feature = "self-update")]
     next_update_check: Instant,
+    #[cfg(feature = "self-update")]
     available_update: Option<crate::update::UpdateInfo>,
 }
 
@@ -96,6 +100,7 @@ pub fn run() -> Result<(), Box<dyn Error>> {
     wake::init()?;
     let _console_control_handler = wake::install_console_control_handler()?;
     let mut app = App::start()?;
+    #[cfg(feature = "self-update")]
     app.start_update_check(UpdateCheckOrigin::Automatic)?;
     let result = app.run_loop();
     let dashboard_shutdown = app.dashboard_shutdown_event.signal();
@@ -275,8 +280,11 @@ impl App {
             liveness,
             history,
             history_error: None,
+            #[cfg(feature = "self-update")]
             update_operation_running: false,
+            #[cfg(feature = "self-update")]
             next_update_check: Instant::now() + UPDATE_CHECK_INTERVAL,
+            #[cfg(feature = "self-update")]
             available_update: None,
         })
     }
@@ -311,6 +319,7 @@ impl App {
             self.reload_config_if_due()?;
             self.process_poll_results()?;
             self.refresh_ui_if_due()?;
+            #[cfg(feature = "self-update")]
             self.check_update_if_due()?;
             let ui_wait = self
                 .next_ui_refresh
@@ -318,6 +327,7 @@ impl App {
             let wait = self.config_reload_due.map_or(ui_wait, |due| {
                 due.saturating_duration_since(Instant::now()).min(ui_wait)
             });
+            #[cfg(feature = "self-update")]
             let wait = self
                 .next_update_check
                 .saturating_duration_since(Instant::now())
@@ -326,6 +336,7 @@ impl App {
         }
     }
 
+    #[cfg(feature = "self-update")]
     fn check_update_if_due(&mut self) -> Result<(), Box<dyn Error>> {
         let now = Instant::now();
         if now >= self.next_update_check {
@@ -401,15 +412,19 @@ impl App {
                 identity,
                 monitored,
             } => self.set_device_monitored(&identity, monitored)?,
+            #[cfg(feature = "self-update")]
             TrayAction::CheckForUpdates => self.start_update_check(UpdateCheckOrigin::Manual)?,
+            #[cfg(feature = "self-update")]
             TrayAction::UpdateCheckResult { result, origin } => {
                 self.handle_update_check_result(result, origin)?
             }
+            #[cfg(feature = "self-update")]
             TrayAction::UpdateInstallResult(Ok(())) => {
                 self.record_event(LogLevel::Info, "Update staged; restarting Volty")?;
                 self.session.request_quit();
                 return Ok(false);
             }
+            #[cfg(feature = "self-update")]
             TrayAction::UpdateInstallResult(Err(error)) => {
                 self.update_operation_running = false;
                 self.restore_update_menu();
@@ -498,6 +513,7 @@ impl App {
         Ok(())
     }
 
+    #[cfg(feature = "self-update")]
     fn start_update_check(&mut self, origin: UpdateCheckOrigin) -> Result<(), Box<dyn Error>> {
         if self.update_operation_running {
             return Ok(());
@@ -530,6 +546,7 @@ impl App {
         Ok(())
     }
 
+    #[cfg(feature = "self-update")]
     fn handle_update_check_result(
         &mut self,
         result: Result<Option<crate::update::UpdateInfo>, String>,
@@ -632,6 +649,7 @@ impl App {
         Ok(())
     }
 
+    #[cfg(feature = "self-update")]
     fn prompt_update_install(
         &mut self,
         update: crate::update::UpdateInfo,
@@ -706,12 +724,14 @@ impl App {
         Ok(())
     }
 
+    #[cfg(feature = "self-update")]
     fn restore_update_menu(&self) {
         self.tray
             .set_update_available(self.available_update.is_some());
         self.tray.set_check_for_updates_enabled(true);
     }
 
+    #[cfg(feature = "self-update")]
     fn show_update_message(&mut self, title: &str, message: &str, style: u32) -> i32 {
         let style = style
             | windows_sys::Win32::UI::WindowsAndMessaging::MB_SETFOREGROUND

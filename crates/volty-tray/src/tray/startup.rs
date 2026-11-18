@@ -16,10 +16,15 @@ const APP_RUN_VALUE: &str = "Volty";
 const APP_SETTINGS_KEY: &str = "Software\\Volty";
 #[cfg(windows)]
 const STARTUP_PROMPT_VALUE: &str = "StartupPrompted";
+const PACKAGED_STARTUP_SETTINGS: &str =
+    "Manage Volty startup in Windows Settings > Apps > Startup.";
 
 pub fn start_on_boot_enabled() -> Result<bool, TrayError> {
     #[cfg(windows)]
     {
+        if crate::win32::has_package_identity() {
+            return Err(TrayError::new(PACKAGED_STARTUP_SETTINGS));
+        }
         Ok(startup_command_from_registry()?.is_some())
     }
 
@@ -30,6 +35,10 @@ pub fn start_on_boot_enabled() -> Result<bool, TrayError> {
 }
 
 pub(super) fn ensure_startup_command_current() -> Result<(), TrayError> {
+    #[cfg(windows)]
+    if crate::win32::has_package_identity() {
+        return Ok(());
+    }
     #[cfg(windows)]
     if let Some(configured_command) = startup_command_from_registry()? {
         let executable = std::env::current_exe().map_err(|error| {
@@ -74,7 +83,14 @@ fn should_confirm_startup_command_change(
 
 #[cfg(windows)]
 fn is_update_restart() -> bool {
-    std::env::args().nth(1).as_deref() == Some(crate::update::FINISH_UPDATE_ARGUMENT)
+    #[cfg(feature = "self-update")]
+    {
+        std::env::args().nth(1).as_deref() == Some(crate::update::FINISH_UPDATE_ARGUMENT)
+    }
+    #[cfg(not(feature = "self-update"))]
+    {
+        false
+    }
 }
 
 #[cfg(windows)]
@@ -121,10 +137,16 @@ pub fn confirm_reset(
     configuration_file: &std::path::Path,
     local_state_file: &std::path::Path,
 ) -> Result<bool, TrayError> {
+    let startup_note = if crate::win32::has_package_identity() {
+        PACKAGED_STARTUP_SETTINGS
+    } else {
+        "Windows startup and the first-run startup preference will also be reset."
+    };
     let text = format!(
-        "This permanently deletes Volty's configuration and local device state, disables Windows startup, and resets the first-run startup prompt:\n\n\
+        "This permanently deletes Volty's configuration and local device state:\n\n\
          Configuration: {}\n\
          Local state: {}\n\n\
+         {startup_note}\n\n\
          Volty will reset and continue running with fresh defaults.\n\n\
          Continue?",
         configuration_file.display(),
@@ -153,6 +175,9 @@ pub fn confirm_reset(
 pub fn set_start_on_boot_enabled(enabled: bool) -> Result<(), TrayError> {
     #[cfg(windows)]
     {
+        if crate::win32::has_package_identity() {
+            return Err(TrayError::new(PACKAGED_STARTUP_SETTINGS));
+        }
         if enabled {
             let key = create_registry_key(BATTERY_RUN_KEY, "could not enable Windows startup")?;
             let executable = std::env::current_exe().map_err(|error| {
@@ -181,6 +206,9 @@ pub fn set_start_on_boot_enabled(enabled: bool) -> Result<(), TrayError> {
 
 #[cfg(windows)]
 pub fn reset_startup_preferences() -> Result<(), TrayError> {
+    if crate::win32::has_package_identity() {
+        return Ok(());
+    }
     let mut errors = Vec::new();
     if let Err(error) = set_start_on_boot_enabled(false) {
         errors.push(error.to_string());

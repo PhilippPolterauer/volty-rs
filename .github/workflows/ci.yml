@@ -37,6 +37,12 @@ jobs:
       - name: Build tray with default features
         run: cargo build -p volty-tray --locked
 
+      - name: Lint tray without self-updates
+        run: cargo clippy -p volty-tray --all-targets --locked --no-default-features --features bluetooth -- -D warnings
+
+      - name: Test tray without self-updates
+        run: cargo test -p volty-tray --locked --no-default-features --features bluetooth
+
   msrv:
     name: MSRV (Rust 1.99.0)
     runs-on: windows-latest

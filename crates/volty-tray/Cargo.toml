@@ -8,8 +8,14 @@ rust-version.workspace = true
 description = "Windows system tray application for Volty"
 
 [features]
-default = ["bluetooth"]
+default = ["bluetooth", "self-update"]
 bluetooth = ["volty-bluetooth/windows-backend"]
+self-update = [
+    "dep:semver",
+    "dep:ureq",
+    "windows-sys/Win32_Storage_FileSystem",
+    "windows-sys/Win32_System_Diagnostics_ToolHelp",
+]
 
 [[bin]]
 name = "volty"
@@ -38,9 +44,8 @@ windows-sys = { version = "0.61", features = [
     "Win32_Graphics_Dwm",
     "Win32_UI_Accessibility",
     "Win32_Security",
-    "Win32_Storage_FileSystem",
+    "Win32_Storage_Packaging_Appx",
     "Win32_System_Console",
-    "Win32_System_Diagnostics_ToolHelp",
     "Win32_System_Threading",
     "Win32_System_SystemServices",
     "Win32_System_SystemInformation",
@@ -58,11 +63,11 @@ windows-sys = { version = "0.61", features = [
 winreg = "0.56"
 serde.workspace = true
 serde_json.workspace = true
-semver = "1"
+semver = { version = "1", optional = true }
 sha2 = "0.11"
 wry = { version = "0.57.1", default-features = false }
 tao = { version = "0.37.2", default-features = false, features = ["rwh_06"] }
-ureq = { version = "2.12", default-features = false, features = ["tls"] }
+ureq = { version = "2.12", default-features = false, features = ["tls"], optional = true }
 
 [target.x86_64-pc-windows-msvc.dependencies]
 rusqlite = { version = "0.41.1", features = ["bundled"], default-features = false }

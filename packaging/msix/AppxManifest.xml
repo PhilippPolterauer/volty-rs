@@ -1,0 +1,85 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Microsoft Store package manifest for Volty.
+
+  The identity values come from Partner Center:
+  Apps and games > volty-rs > Product management > Product identity.
+  They must match the Store reservation exactly, including casing.
+
+  scripts/build-msix.ps1 fills in the version and architecture fields
+  before packing. Do not edit those fields by hand.
+-->
+<Package
+  xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"
+  xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10"
+  xmlns:uap5="http://schemas.microsoft.com/appx/manifest/uap/windows10/5"
+  xmlns:uap10="http://schemas.microsoft.com/appx/manifest/uap/windows10/10"
+  xmlns:rescap="http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedcapabilities"
+  IgnorableNamespaces="uap uap5 uap10 rescap">
+
+  <Identity
+    Name="philipp.polterauer.volty-rs"
+    Publisher="CN=631AAAE1-ED5D-48D1-A4F8-A9BF5B008645"
+    Version="__MSIX_VERSION__"
+    ProcessorArchitecture="__MSIX_ARCHITECTURE__" />
+
+  <Properties>
+    <DisplayName>volty-rs</DisplayName>
+    <PublisherDisplayName>philipp.polterauer</PublisherDisplayName>
+    <Logo>Assets\StoreLogo.png</Logo>
+    <Description>See supported device battery levels right in the Windows system tray.</Description>
+  </Properties>
+
+  <Dependencies>
+    <TargetDeviceFamily Name="Windows.Desktop" MinVersion="10.0.19041.0" MaxVersionTested="10.0.26100.0" />
+    <!-- Volty links the Visual C++ runtime dynamically (VCRUNTIME140.dll).
+         14.0.24217.0 is the oldest framework version the Store serves. -->
+    <PackageDependency
+      Name="Microsoft.VCLibs.140.00.UWPDesktop"
+      MinVersion="14.0.24217.0"
+      Publisher="CN=Microsoft Corporation, O=Microsoft Corporation, L=Redmond, S=Washington, C=US" />
+  </Dependencies>
+
+  <Resources>
+    <Resource Language="en-us" />
+  </Resources>
+
+  <Applications>
+    <Application
+      Id="Volty"
+      Executable="Volty.exe"
+      EntryPoint="Windows.FullTrustApplication"
+      uap10:TrustLevel="mediumIL"
+      uap10:RuntimeBehavior="packagedClassicApp">
+      <uap:VisualElements
+        DisplayName="volty-rs"
+        Description="Monitors battery levels for supported mice, headsets, and gamepads."
+        BackgroundColor="#1B1F24"
+        Square150x150Logo="Assets\Square150x150Logo.png"
+        Square44x44Logo="Assets\Square44x44Logo.png" />
+      <Extensions>
+        <!-- Lets volty.exe work from a terminal, like the standalone release. -->
+        <uap5:Extension
+          Category="windows.appExecutionAlias"
+          Executable="Volty.exe"
+          EntryPoint="Windows.FullTrustApplication">
+          <uap5:AppExecutionAlias>
+            <uap5:ExecutionAlias Alias="volty.exe" />
+          </uap5:AppExecutionAlias>
+        </uap5:Extension>
+        <!-- Packaged apps cannot use the HKCU Run key, so start-up is a StartupTask.
+             It stays disabled until the user enables Volty in Settings > Apps > Startup. -->
+        <uap5:Extension
+          Category="windows.startupTask"
+          Executable="Volty.exe"
+          EntryPoint="Windows.FullTrustApplication">
+          <uap5:StartupTask TaskId="VoltyStartup" Enabled="false" DisplayName="volty-rs" />
+        </uap5:Extension>
+      </Extensions>
+    </Application>
+  </Applications>
+
+  <Capabilities>
+    <rescap:Capability Name="runFullTrust" />
+  </Capabilities>
+</Package>
