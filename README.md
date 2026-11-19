@@ -9,7 +9,11 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/PhilippPolterauer/volty-rs/releases/latest">Download for Windows</a>
+  <a href="https://apps.microsoft.com/detail/9np6xlpqmd7b">Microsoft Store</a>
+  ·
+  <a href="#winget">WinGet</a>
+  ·
+  <a href="https://github.com/PhilippPolterauer/volty-rs/releases/latest">GitHub download</a>
   ·
   <a href="https://philipppolterauer.github.io/volty-rs/">Documentation</a>
 </p>
@@ -32,9 +36,20 @@ and history stay on your PC.
 
 ## Get it running
 
-1. [Download the latest release](https://github.com/PhilippPolterauer/volty-rs/releases/latest). For a 64-bit PC, choose `Volty-vX.Y.Z-x86_64-pc-windows-msvc.exe`.
-2. Save the file where you want it and double-click to run. You can enable **Start with Windows** in Volty’s Settings.
-3. Find the battery icon in the Windows notification area. If it is hidden, open the taskbar's **Show hidden icons** menu.
+- **Microsoft Store** handles installation and updates. [Get Volty from the Microsoft Store](https://apps.microsoft.com/detail/9np6xlpqmd7b)
+- **Standalone** runs from wherever you save it. For a 64-bit PC, download and open `Volty-vX.Y.Z-x86_64-pc-windows-msvc.exe`. To launch it at sign-in, enable **Start with Windows** in Volty’s Settings. [Download the latest GitHub release](https://github.com/PhilippPolterauer/volty-rs/releases/latest)
+
+After opening Volty, find the battery icon in the Windows notification area. If
+it is hidden, open the taskbar's **Show hidden icons** menu.
+
+### WinGet
+
+The community package is [awaiting approval](https://github.com/microsoft/winget-pkgs/pull/484253).
+Once it appears in the WinGet source, install it with:
+
+```powershell
+winget install --id PhilippPolterauer.Volty --exact --source winget
+```
 
 ## Use the tray icon
 

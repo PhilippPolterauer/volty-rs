@@ -15,7 +15,7 @@ The manifest already contains the identity from Partner Center
 | Package/Identity/Publisher | `CN=631AAAE1-ED5D-48D1-A4F8-A9BF5B008645` |
 | Package/Properties/PublisherDisplayName | `philipp.polterauer` |
 | Package/Properties/DisplayName | `volty-rs` |
-| Store ID | `9NP6XLQPMD78` |
+| Store ID | [`9NP6XLPQMD7B`](https://apps.microsoft.com/detail/9np6xlpqmd7b) |
 
 ## Requirements
 
