@@ -20,8 +20,12 @@ impl BatteryProtocol for LogitechHidpp20 {
             && interface.usage == Some(LOGITECH_HIDPP_LONG_USAGE)
     }
 
-    fn device_indices(&self) -> &'static [u8] {
-        &[0xff, 1, 2, 3, 4, 5, 6]
+    fn device_indices(&self, interface: &HidInterfaceInfo) -> &'static [u8] {
+        if is_direct_only_hidpp(interface.vendor_id, interface.product_id) {
+            &[0xff]
+        } else {
+            &[0xff, 1, 2, 3, 4, 5, 6]
+        }
     }
 
     fn query_battery(
@@ -85,6 +89,14 @@ pub static LOGITECH_HIDPP_20: LogitechHidpp20 = LogitechHidpp20;
 pub static LOGITECH_HIDPP_DEVICE: LogitechHidppDevice = LogitechHidppDevice;
 
 pub const LOGITECH_VENDOR_ID: u16 = 0x046d;
+
+/// Known wired HID++ devices without receiver slots.
+pub fn is_direct_only_hidpp(vendor_id: u16, product_id: u16) -> bool {
+    // The wired G502 X PLUS echoes the requested slot in its response,
+    // even though all addresses talk to the same mouse.
+    (vendor_id, product_id) == (LOGITECH_VENDOR_ID, 0xc095)
+}
+
 pub const FEATURE_ROOT: u16 = 0x0000;
 pub const FEATURE_SET: u16 = 0x0001;
 pub const FEATURE_DEVICE_NAME: u16 = 0x0005;

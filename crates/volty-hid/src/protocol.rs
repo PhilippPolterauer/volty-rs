@@ -17,8 +17,8 @@ pub trait BatteryProtocol: Sync {
 
     fn supports_interface(&self, interface: &HidInterfaceInfo) -> bool;
 
-    /// Protocol-specific device addresses to try, in preferred order.
-    fn device_indices(&self) -> &'static [u8];
+    /// Protocol-specific device addresses to try on this interface, in preferred order.
+    fn device_indices(&self, interface: &HidInterfaceInfo) -> &'static [u8];
 
     fn query_battery(
         &self,
@@ -216,5 +216,20 @@ mod tests {
             .unwrap()
             .is_none());
         assert!(resolve_hid_device(&interface(0x1234)).unwrap().is_none());
+    }
+
+    #[test]
+    fn wired_g502_x_plus_uses_only_the_direct_address() {
+        let receiver = interface(0x046d);
+        let wired_mouse = HidInterfaceInfo {
+            product_id: 0xc095,
+            ..receiver.clone()
+        };
+        let protocol = &crate::LOGITECH_HIDPP_20;
+        assert_eq!(protocol.device_indices(&wired_mouse), &[0xff]);
+        assert_eq!(
+            protocol.device_indices(&receiver),
+            &[0xff, 1, 2, 3, 4, 5, 6]
+        );
     }
 }

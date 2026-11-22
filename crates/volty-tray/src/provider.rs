@@ -5,6 +5,8 @@ mod hid;
 mod name_cache;
 mod xinput;
 
+pub(crate) use hid::is_invalid_hidpp_slot;
+
 use crate::state::DeviceState;
 use volty_battery::BatteryProvider;
 

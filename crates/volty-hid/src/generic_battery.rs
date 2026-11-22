@@ -520,7 +520,7 @@ impl BatteryProtocol for GenericHidBattery {
         is_probe_candidate(interface) && cached_layout(interface).is_some()
     }
 
-    fn device_indices(&self) -> &'static [u8] {
+    fn device_indices(&self, _interface: &HidInterfaceInfo) -> &'static [u8] {
         &[0xff]
     }
 

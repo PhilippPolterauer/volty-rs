@@ -176,13 +176,12 @@ fn write_capture(
                     detail: None,
                 }))?;
                 if backend == LOGITECH_HIDPP_20.name() {
+                    let default_indices = LOGITECH_HIDPP_20.device_indices(interface);
                     let candidates = known_state
                         .as_ref()
                         .zip(keys.get(index))
                         .and_then(|(state, key)| {
-                            state
-                                .known_device_indices(key, LOGITECH_HIDPP_20.device_indices())
-                                .ok()
+                            state.known_device_indices(key, default_indices).ok()
                         })
                         .filter(|indices| !indices.is_empty());
                     capture_hidpp(
@@ -191,9 +190,7 @@ fn write_capture(
                         &id,
                         interface,
                         &redactor,
-                        candidates
-                            .as_deref()
-                            .unwrap_or_else(|| LOGITECH_HIDPP_20.device_indices()),
+                        candidates.as_deref().unwrap_or(default_indices),
                     )?;
                 } else if backend == GENERIC_HID_BATTERY.name() {
                     capture_generic(&mut writer, started, &id, interface, &redactor)?;

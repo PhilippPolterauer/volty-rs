@@ -83,7 +83,7 @@ impl BatteryProtocol for FlydigiVendorProtocol {
                 .is_some_and(|page| page >= FIRST_VENDOR_USAGE_PAGE)
     }
 
-    fn device_indices(&self) -> &'static [u8] {
+    fn device_indices(&self, _interface: &HidInterfaceInfo) -> &'static [u8] {
         &[0xff]
     }
 

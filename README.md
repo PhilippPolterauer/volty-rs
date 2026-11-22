@@ -1,100 +1,65 @@
-# Volty
-
 <p align="center">
-  <img src="docs/icon.png" alt="Volty logo" width="120">
+  <img src="docs/icon.png" alt="Volty logo" width="96">
 </p>
 
-<p align="center">
-  <strong>See supported device battery levels right in the Windows system tray.</strong>
-</p>
+<h1 align="center">Volty</h1>
+
+<p align="center">Battery levels for your wireless devices, right in the Windows system tray.</p>
 
 <p align="center">
-  <a href="https://apps.microsoft.com/detail/9np6xlpqmd7b">Microsoft Store</a>
-  ·
-  <a href="#winget">WinGet</a>
-  ·
-  <a href="https://github.com/PhilippPolterauer/volty-rs/releases/latest">GitHub download</a>
-  ·
+  <a href="https://apps.microsoft.com/detail/9np6xlpqmd7b">Microsoft Store</a> ·
+  <a href="https://github.com/PhilippPolterauer/volty-rs/releases/latest">Download for Windows</a> ·
   <a href="https://philipppolterauer.github.io/volty-rs/">Documentation</a>
 </p>
 
 <p align="center">
-  <a href="https://github.com/PhilippPolterauer/volty-rs/actions/workflows/ci.yml"><img src="https://github.com/PhilippPolterauer/volty-rs/actions/workflows/ci.yml/badge.svg" alt="CI status"></a>
   <a href="https://github.com/PhilippPolterauer/volty-rs/releases/latest"><img src="https://img.shields.io/github/v/release/PhilippPolterauer/volty-rs" alt="Latest release"></a>
+  <a href="https://github.com/PhilippPolterauer/volty-rs/actions/workflows/ci.yml"><img src="https://github.com/PhilippPolterauer/volty-rs/actions/workflows/ci.yml/badge.svg" alt="CI status"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="MIT license"></a>
 </p>
 
-Volty monitors battery levels from supported mice, headsets, and gamepads. Its
-tray icon shows the lowest monitored battery by default; hover for device
-details, and get a Windows notification when a battery runs low. Battery data
-and history stay on your PC.
+![Volty preview showing three tray icon styles, a low battery alert, and the battery history dashboard](docs/hero.png)
 
-<p align="center">
-  <img src="docs/tray.png" alt="Volty battery icon in the Windows notification area" width="360">
-  <img src="docs/tooltip.png" alt="Hovering over the icon shows device battery percentage and estimated remaining time" width="360">
-</p>
+Volty monitors supported mice, headsets, gamepads, and other peripherals on
+Windows 10 and 11 (x64). It shows the lowest monitored battery level by default,
+or you can pin the device you care about most.
 
-## Get it running
+- **Hover** over the tray icon for each device’s charge and estimated time remaining, when available.
+- **Left-click** to open the battery history dashboard and see how quickly your devices drain.
+- **Right-click** to choose which devices to monitor, change the tray display, or configure alerts.
+- **Get a Windows notification** at 20%, 10%, and 5% by default.
 
-- **Microsoft Store** handles installation and updates. [Get Volty from the Microsoft Store](https://apps.microsoft.com/detail/9np6xlpqmd7b)
-- **Standalone** runs from wherever you save it. For a 64-bit PC, download and open `Volty-vX.Y.Z-x86_64-pc-windows-msvc.exe`. To launch it at sign-in, enable **Start with Windows** in Volty’s Settings. [Download the latest GitHub release](https://github.com/PhilippPolterauer/volty-rs/releases/latest)
+Battery readings and history stay on your PC.
 
-After opening Volty, find the battery icon in the Windows notification area. If
-it is hidden, open the taskbar's **Show hidden icons** menu.
+## Install
 
-### WinGet
+- **Microsoft Store** handles installation and updates. [Get Volty](https://apps.microsoft.com/detail/9np6xlpqmd7b)
+- **Standalone** runs without an installer. Download the `Volty-v*-x86_64-pc-windows-msvc.exe` release asset and open it. [Latest release](https://github.com/PhilippPolterauer/volty-rs/releases/latest)
 
-The community package is [awaiting approval](https://github.com/microsoft/winget-pkgs/pull/484253).
-Once it appears in the WinGet source, install it with:
+If the tray icon is hidden, open **Show hidden icons** on the Windows taskbar.
+The WinGet community package is [pending approval](https://github.com/microsoft/winget-pkgs/pull/484253).
 
-```powershell
-winget install --id PhilippPolterauer.Volty --exact --source winget
-```
+## Device support
 
-## Use the tray icon
+Volty reads battery levels from supported Logitech devices, other devices that
+report battery levels over HID, XInput gamepads, and Bluetooth devices whose
+battery readings Windows exposes. Support varies by model and connection type.
+See the [tested devices and known limitations](docs/device-support.md).
 
-- **Battery level:** the icon represents the lowest reported level among
-  monitored devices. Hover to see device names, percentages, and estimated
-  remaining time when available.
-- **Customize:** right-click Volty and choose **Show Advanced Options → Tray
-  Display** to choose a battery or percentage icon, set a light/dark/system
-  theme, or pin a device.
-- **Alerts:** Windows notifications appear at 20%, 10%, and 5% by default.
-- **History:** left-click the icon to open the local battery dashboard.
+If a device is missing, make sure it’s on and connected, then right-click the
+tray icon and select **Show Advanced Options → Discover Devices Now**. See the
+[troubleshooting guide](docs/diagnostics.md) for more help.
 
-If no reading appears, right-click **Monitored Devices** to see which devices
-Volty found and which are enabled. To scan again, use **Show Advanced Options →
-Discover Devices Now**. Volty can only read battery data exposed by Windows
-from supported devices.
+## Build from source
 
-Volty supports Windows 10/11, but device compatibility varies. See the
-[tested devices and limitations](https://philipppolterauer.github.io/volty-rs/device-support.html)
-before relying on it. Volty is an independent hobby project and is not
-affiliated with Logitech.
-
-## More
-
-- [Installation and usage](https://philipppolterauer.github.io/volty-rs/installation.html)
-- [Configuration](https://philipppolterauer.github.io/volty-rs/configuration.html)
-- [Troubleshooting](https://philipppolterauer.github.io/volty-rs/diagnostics.html)
-- [Releases](https://github.com/PhilippPolterauer/volty-rs/releases)
-- [Changelog](CHANGELOG.md)
-
-<details>
-<summary>Build from source</summary>
-
-Requires Windows 10/11 and Rust 1.99 or newer.
+On Windows with Rust 1.99 or newer and the x64 MSVC toolchain, run:
 
 ```powershell
 cargo build --release --package volty-tray --locked
-cargo test --workspace --all-features --locked
 ```
 
-See the [Microsoft Store](packaging/msix/README.md) and
-[WinGet](packaging/winget/README.md) packaging guides for builds with
-package-managed updates.
+The executable is at `target\release\volty.exe`. The
+[development guide](docs/development.md) covers workspace checks and hardware
+reports. See the [changelog](CHANGELOG.md) for release notes.
 
-See the [development guide](https://philipppolterauer.github.io/volty-rs/development.html)
-for the full validation steps.
-
-</details>
+Volty is an independent open source project under the [MIT license](LICENSE).

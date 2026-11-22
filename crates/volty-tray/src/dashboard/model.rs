@@ -2,7 +2,10 @@ use std::{collections::BTreeMap, io};
 
 use serde::Serialize;
 
-use crate::history::{HistorySample, HistoryStore};
+use crate::{
+    history::{HistorySample, HistoryStore},
+    provider::is_invalid_hidpp_slot,
+};
 
 const OFFLINE_AFTER_SECONDS: i64 = 15 * 60;
 const SECONDS_PER_DAY: i64 = 86_400;
@@ -82,13 +85,15 @@ pub(super) struct DashboardPoint {
 }
 
 pub(super) fn build_data(
-    samples: Vec<HistorySample>,
+    mut samples: Vec<HistorySample>,
     window_days: u32,
     generated_at: i64,
     window_start: i64,
     management_allowed: bool,
-    inventory: Vec<DashboardInventoryDevice>,
+    mut inventory: Vec<DashboardInventoryDevice>,
 ) -> Result<DashboardData, io::Error> {
+    samples.retain(|sample| !is_invalid_hidpp_slot(&sample.identity));
+    inventory.retain(|device| !is_invalid_hidpp_slot(&device.identity));
     let summaries = HistoryStore::summaries_from_samples(&samples);
     let mut samples_by_identity = BTreeMap::<String, Vec<HistorySample>>::new();
     for sample in samples {
@@ -235,6 +240,52 @@ mod tests {
             charging: false,
             voltage_mv: Some(3_800),
         }
+    }
+
+    #[test]
+    fn dashboard_hides_old_wired_slot_aliases_and_keeps_receiver_slots() {
+        let identities = [
+            "hid:046d:c095:2:ff00:0002:serial#1",
+            "hid:046d:c095:2:ff00:0002:serial#6",
+            "hid:046d:c095:2:ff00:0002:serial#255",
+            "hid:046d:c547:2:ff00:0002:-#1",
+            "hid:046d:c547:2:ff00:0002:-#2",
+        ];
+        let samples = identities
+            .iter()
+            .map(|&identity| HistorySample {
+                identity: identity.to_owned(),
+                ..sample(1_000)
+            })
+            .collect();
+        let inventory = identities
+            .iter()
+            .map(|&identity| DashboardInventoryDevice {
+                identity: identity.to_owned(),
+                name: "Mouse".to_owned(),
+                samples: 1,
+                last_sample_at: Some(1_000),
+                monitored: Some(true),
+                history_recording_enabled: true,
+                pinned: false,
+            })
+            .collect();
+
+        let data = build_data(samples, 7, 1_000, 0, true, inventory).unwrap();
+        assert_eq!(
+            data.devices
+                .iter()
+                .map(|device| device.identity.as_str())
+                .collect::<Vec<_>>(),
+            &identities[2..]
+        );
+        assert_eq!(
+            data.inventory
+                .iter()
+                .map(|device| device.identity.as_str())
+                .collect::<Vec<_>>(),
+            &identities[2..]
+        );
     }
 
     #[test]
