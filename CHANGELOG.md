@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.17.0] - 2026-11-24
+
+### Added
+
+- Logitech G502 X PLUS now shares one battery history across USB and LIGHTSPEED when its HID++ unit ID is available. If both connections report in the same poll, Volty uses the USB reading.
+
+### Fixed
+
+- Prevented duplicate slot entries while the G502 X PLUS is connected by USB and hid invalid wired slot entries from older dashboard history.
+
+### Documentation
+
+- Documented G502 X PLUS support and clarified Windows installation and tray usage in the README.
+
 ## [0.16.0] - 2026-11-18
 
 ### Added
