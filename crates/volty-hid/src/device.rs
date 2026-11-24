@@ -14,7 +14,7 @@ impl std::fmt::Display for G502XPlusUnitId {
     }
 }
 
-#[cfg(any(feature = "hidapi", test))]
+#[cfg(feature = "hidapi")]
 pub(crate) fn query_g502_x_plus_unit_id(
     transport: &mut impl HidppTransport,
     device_index: u8,
@@ -52,25 +52,6 @@ fn g502_x_plus_unit_id(params: &[u8]) -> Option<G502XPlusUnitId> {
         return None;
     }
     Some(G502XPlusUnitId(crate::interface::fnv1a(&unit)))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn unit_identity_matches_across_transports_and_distinguishes_mice() {
-        let wireless = [3, 1, 2, 3, 4, 0, 4, 0x40, 0x99, 0xc0, 0x95, 0, 0];
-        let mut usb = wireless;
-        usb[6] = 8;
-        let identity = g502_x_plus_unit_id(&wireless).unwrap();
-        assert_eq!(g502_x_plus_unit_id(&usb), Some(identity));
-        usb[4] = 5;
-        assert_ne!(g502_x_plus_unit_id(&usb), Some(identity));
-        usb[10] = 0x94;
-        assert_eq!(g502_x_plus_unit_id(&usb), None);
-        assert_eq!(g502_x_plus_unit_id(&wireless[..12]), None);
-    }
 }
 
 /// Reads a device name from the HID++ Device Name and Type feature.
@@ -264,5 +245,24 @@ fn verify_response(request: &HidppFrame, response: &HidppFrame) -> Result<(), Hi
         Err(HidppError::UnexpectedResponse(
             "transport returned a response that does not match the request",
         ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn unit_identity_matches_across_transports_and_distinguishes_mice() {
+        let wireless = [3, 1, 2, 3, 4, 0, 4, 0x40, 0x99, 0xc0, 0x95, 0, 0];
+        let mut usb = wireless;
+        usb[6] = 8;
+        let identity = g502_x_plus_unit_id(&wireless).unwrap();
+        assert_eq!(g502_x_plus_unit_id(&usb), Some(identity));
+        usb[4] = 5;
+        assert_ne!(g502_x_plus_unit_id(&usb), Some(identity));
+        usb[10] = 0x94;
+        assert_eq!(g502_x_plus_unit_id(&usb), None);
+        assert_eq!(g502_x_plus_unit_id(&wireless[..12]), None);
     }
 }
