@@ -284,7 +284,7 @@ pub(crate) fn query_battery_interface(
 pub(crate) fn query_device_interface(
     info: &HidInterfaceInfo,
     device_index: u8,
-) -> Result<(Result<Option<String>, HidppError>, BatteryStatus), HidppError> {
+) -> Result<ProtocolDeviceReading, HidppError> {
     let mut session = open_hidpp_session(info)?;
     query_device_session(&mut session, device_index)
 }
@@ -399,7 +399,7 @@ fn query_battery_session(
 fn query_device_session(
     session: &mut HidppSession,
     device_index: u8,
-) -> Result<(Result<Option<String>, HidppError>, BatteryStatus), HidppError> {
+) -> Result<ProtocolDeviceReading, HidppError> {
     let feature = session.with_software_ids(|transport, software_ids| {
         discover_battery_feature(transport, device_index, software_ids)
     })?;
@@ -408,5 +408,14 @@ fn query_device_session(
         read_battery(transport, device_index, software_ids, feature)
     })?;
     cache_feature((session.info.path.clone(), device_index), feature);
-    Ok((name, battery))
+    let g502_x_plus_unit_id = session
+        .with_software_ids(|transport, software_ids| {
+            query_g502_x_plus_unit_id(transport, device_index, software_ids, QUERY_TIMEOUT)
+        })
+        .unwrap_or(None);
+    Ok(ProtocolDeviceReading {
+        name: name.map_err(|error| Box::new(error) as ProtocolError),
+        battery,
+        g502_x_plus_unit_id,
+    })
 }

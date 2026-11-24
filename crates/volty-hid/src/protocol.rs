@@ -9,6 +9,7 @@ pub type ProtocolError = Box<dyn Error + Send + Sync>;
 pub struct ProtocolDeviceReading {
     pub name: Result<Option<String>, ProtocolError>,
     pub battery: BatteryStatus,
+    pub g502_x_plus_unit_id: Option<crate::G502XPlusUnitId>,
 }
 
 /// A transport/protocol implementation that can produce normalized battery readings.
@@ -38,6 +39,7 @@ pub trait BatteryProtocol: Sync {
         Ok(ProtocolDeviceReading {
             name: Ok(None),
             battery: self.query_battery(interface, device_index)?,
+            g502_x_plus_unit_id: None,
         })
     }
 }

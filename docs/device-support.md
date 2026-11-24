@@ -8,8 +8,7 @@ guarantee that every device using the same protocol will behave identically.
 
 | Device | Connection | Battery source | Result |
 | --- | --- | --- | --- |
-| Logitech G502 X Superlight RGB | USB cable or Lightspeed receiver | Logitech HID++ 2.0 Unified Battery | Percentage, charging state, capture and replay |
-| Logitech G502 X PLUS (slot 1) | Connection not recorded | HID battery report | Live battery reading observed in tray |
+| Logitech G502 X PLUS | USB cable or LIGHTSPEED receiver | Logitech HID++ 2.0 Unified Battery | Battery percentage, charging state, capture and replay. Both connections share one battery history when the mouse reports its HID++ unit ID. |
 | Baseus Bass BS2 Lite | Bluetooth Classic (HFP/A2DP) | Windows battery property | Percentage; charging state unavailable |
 | Xiaomi J18 headphones | Bluetooth (profile not recorded) | Windows Bluetooth battery discovery | Percentage observed; exact source not recorded |
 | Xbox One wireless controller | Xbox Wireless Adapter | Windows XInput | Coarse battery estimate; no charging state |
@@ -17,6 +16,10 @@ guarantee that every device using the same protocol will behave identically.
 These are hardware observations, not a compatibility list for all devices in a
 product family. XInput levels are estimates: Windows reports empty, low,
 medium, or full rather than an exact percentage.
+
+When the G502 X PLUS reports through USB and LIGHTSPEED in the same poll,
+Volty uses the USB reading. History recorded by older versions may still show
+separate USB and receiver entries.
 
 ## Implemented battery sources
 

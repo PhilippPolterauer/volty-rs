@@ -4,6 +4,75 @@ use crate::{
     FUNCTION_GET_FEATURE, FUNCTION_GET_FEATURE_SET_COUNT, FUNCTION_GET_FEATURE_SET_ID,
 };
 
+/// A G502 X PLUS unit identifier reported on both USB and LIGHTSPEED.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct G502XPlusUnitId(u64);
+
+impl std::fmt::Display for G502XPlusUnitId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:016x}", self.0)
+    }
+}
+
+#[cfg(any(feature = "hidapi", test))]
+pub(crate) fn query_g502_x_plus_unit_id(
+    transport: &mut impl HidppTransport,
+    device_index: u8,
+    software_ids: &mut SoftwareIdAllocator,
+    timeout: std::time::Duration,
+) -> Result<Option<G502XPlusUnitId>, HidppError> {
+    let Some(feature) = get_feature(
+        transport,
+        device_index,
+        0x0003,
+        software_ids.allocate(),
+        timeout,
+    )?
+    .filter(|feature| feature.version >= 1) else {
+        return Ok(None);
+    };
+    let request = HidppFrame::long(
+        device_index,
+        feature.feature_index,
+        0,
+        software_ids.allocate(),
+        [0; 16],
+    );
+    let response = transport.transact(&request, timeout)?;
+    verify_response(&request, &response)?;
+    Ok(g502_x_plus_unit_id(&response.params))
+}
+
+#[cfg(any(feature = "hidapi", test))]
+fn g502_x_plus_unit_id(params: &[u8]) -> Option<G502XPlusUnitId> {
+    // DEVICE INFORMATION reports the same unit ID and model ID on both transports.
+    let unit: [u8; 4] = params.get(1..5)?.try_into().ok()?;
+    let model = params.get(7..13)?;
+    if model != [0x40, 0x99, 0xc0, 0x95, 0, 0] || unit == [0; 4] || unit == [0xff; 4] {
+        return None;
+    }
+    Some(G502XPlusUnitId(crate::interface::fnv1a(&unit)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn unit_identity_matches_across_transports_and_distinguishes_mice() {
+        let wireless = [3, 1, 2, 3, 4, 0, 4, 0x40, 0x99, 0xc0, 0x95, 0, 0];
+        let mut usb = wireless;
+        usb[6] = 8;
+        let identity = g502_x_plus_unit_id(&wireless).unwrap();
+        assert_eq!(g502_x_plus_unit_id(&usb), Some(identity));
+        usb[4] = 5;
+        assert_ne!(g502_x_plus_unit_id(&usb), Some(identity));
+        usb[10] = 0x94;
+        assert_eq!(g502_x_plus_unit_id(&usb), None);
+        assert_eq!(g502_x_plus_unit_id(&wireless[..12]), None);
+    }
+}
+
 /// Reads a device name from the HID++ Device Name and Type feature.
 ///
 /// Returns `None` when the device does not advertise the feature or has an

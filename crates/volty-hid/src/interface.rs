@@ -31,7 +31,7 @@ impl HidInterfaceInfo {
             .filter(|serial| !serial.is_empty())
             .map_or_else(
                 || "-".to_owned(),
-                |serial| format!("{:016x}", fnv1a(serial)),
+                |serial| format!("{:016x}", fnv1a(serial.as_bytes())),
             );
         format!(
             "{:04x}:{:04x}:{}:{}:{}:{serial}",
@@ -46,10 +46,13 @@ impl HidInterfaceInfo {
     }
 }
 
-fn fnv1a(text: &str) -> u64 {
-    text.bytes().fold(0xcbf2_9ce4_8422_2325, |hash, byte| {
-        (hash ^ u64::from(byte)).wrapping_mul(0x0100_0000_01b3)
-    })
+pub(crate) fn fnv1a(bytes: &[u8]) -> u64 {
+    bytes
+        .iter()
+        .copied()
+        .fold(0xcbf2_9ce4_8422_2325, |hash, byte| {
+            (hash ^ u64::from(byte)).wrapping_mul(0x0100_0000_01b3)
+        })
 }
 
 /// Stable, path-independent keys for an inventory, in the same order as the input.

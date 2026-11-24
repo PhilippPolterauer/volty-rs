@@ -1,12 +1,14 @@
 use super::name_cache::NameCache;
 use crate::state::DeviceState;
+use std::collections::{BTreeMap, HashMap};
+use std::ffi::CString;
 use volty_battery::{
     trace_enabled, BatteryProvider, DeviceId, DeviceLabel, ProviderEvent, ProviderPoll, ScanMode,
     SinkClosed, SourceReading,
 };
 use volty_hid::{
     enumerate_hid_interfaces, is_direct_only_hidpp, resolve_hid_device, stable_interface_keys,
-    BatteryProtocol, HidInterfaceInfo, HidppError, ProtocolDeviceReading,
+    BatteryProtocol, G502XPlusUnitId, HidInterfaceInfo, HidppError, ProtocolDeviceReading,
 };
 
 type Sink<'a> = &'a mut dyn FnMut(ProviderEvent) -> Result<(), SinkClosed>;
@@ -19,6 +21,7 @@ const DIRECT_DEVICE_INDEX: u8 = 0xff;
 pub struct HidProvider {
     state: Option<DeviceState>,
     names: NameCache,
+    units: HashMap<DeviceId, (CString, G502XPlusUnitId)>,
 }
 
 impl HidProvider {
@@ -26,6 +29,7 @@ impl HidProvider {
         Self {
             state,
             names: NameCache::default(),
+            units: HashMap::new(),
         }
     }
 }
@@ -74,8 +78,21 @@ impl BatteryProvider for HidProvider {
             }
         };
         let keys = stable_interface_keys(&interfaces);
+        self.units.retain(|id, (path, _)| {
+            let still_present = interfaces.iter().any(|interface| interface.path == *path);
+            if !still_present || mode == ScanMode::Discover {
+                self.names.forget(id);
+                return false;
+            }
+            true
+        });
+        let mut physical = BTreeMap::new();
         for (interface, key) in interfaces.iter().zip(&keys) {
-            self.poll_interface(interface, key, mode, sink, &mut outcome)?;
+            self.poll_interface(interface, key, mode, sink, &mut outcome, &mut physical)?;
+        }
+        for reading in physical.into_values() {
+            sink(ProviderEvent::Reading(reading))?;
+            outcome.readings += 1;
         }
         Ok(outcome)
     }
@@ -89,6 +106,7 @@ impl HidProvider {
         mode: ScanMode,
         sink: Sink<'_>,
         outcome: &mut ProviderPoll,
+        physical: &mut PhysicalReadings,
     ) -> Result<(), SinkClosed> {
         match resolve_hid_device(interface) {
             Ok(Some(device)) => {
@@ -123,7 +141,7 @@ impl HidProvider {
                         was_known_slot: known_indices.contains(&device_index),
                         mode,
                     };
-                    self.query_slot(&probe, sink, outcome)?;
+                    self.query_slot(&probe, sink, outcome, physical)?;
                 }
                 Ok(())
             }
@@ -217,8 +235,17 @@ impl HidProvider {
         probe: &SlotProbe<'_>,
         sink: Sink<'_>,
         outcome: &mut ProviderPoll,
+        physical: &mut PhysicalReadings,
     ) -> Result<(), SinkClosed> {
         let id = hid_device_id(probe.key, probe.device_index);
+        if self
+            .units
+            .get(&id)
+            .is_some_and(|(path, _)| *path != probe.interface.path)
+        {
+            self.units.remove(&id);
+            self.names.forget(&id);
+        }
         let cached_name = self.names.get(&id).map(str::to_owned);
         let was_known = cached_name.is_some() || probe.was_known_slot;
         let reading = match cached_name {
@@ -233,7 +260,12 @@ impl HidProvider {
                     let ProtocolDeviceReading {
                         name: queried_name,
                         battery,
+                        g502_x_plus_unit_id,
                     } = device;
+                    if let Some(unit_id) = g502_x_plus_unit_id {
+                        self.units
+                            .insert(id.clone(), (probe.interface.path.clone(), unit_id));
+                    }
                     let (name, name_error) =
                         self.names.resolve(id.clone(), probe.fallback_name, || {
                             queried_name.map_err(|error| error.to_string())
@@ -245,14 +277,31 @@ impl HidProvider {
         match reading {
             Ok((battery, name, name_error, name_was_queried)) => {
                 let newly_known = self.names.remember_device(id.clone());
-                let label =
-                    DeviceLabel::new(name).with_qualifier(slot_qualifier(probe.device_index));
-                sink(ProviderEvent::Reading(SourceReading {
-                    id: id.clone(),
-                    label: label.clone(),
-                    battery,
-                }))?;
-                outcome.readings += 1;
+                let unit = self.units.get(&id).map(|&(_, unit)| unit);
+                let label = if unit.is_some() {
+                    DeviceLabel::new("G502 X PLUS")
+                } else {
+                    DeviceLabel::new(name).with_qualifier(slot_qualifier(probe.device_index))
+                };
+                if let Some(unit) = unit {
+                    let reading = SourceReading {
+                        id: DeviceId::new(format!("hid:g502-x-plus:{unit}")),
+                        label: label.clone(),
+                        battery,
+                    };
+                    let direct =
+                        is_direct_only_hidpp(probe.interface.vendor_id, probe.interface.product_id);
+                    if direct || !physical.contains_key(&reading.id) {
+                        physical.insert(reading.id.clone(), reading);
+                    }
+                } else {
+                    sink(ProviderEvent::Reading(SourceReading {
+                        id: id.clone(),
+                        label: label.clone(),
+                        battery,
+                    }))?;
+                    outcome.readings += 1;
+                }
                 // Recency only steers scan order, so persist it once per session instead of every poll.
                 let state_error = self
                     .state
@@ -267,7 +316,7 @@ impl HidProvider {
                         sink,
                     )?;
                 }
-                if name_was_queried {
+                if name_was_queried && unit.is_none() {
                     sink(ProviderEvent::DeviceName {
                         id,
                         label,
@@ -277,6 +326,7 @@ impl HidProvider {
             }
             Err(error) => {
                 self.names.forget(&id);
+                self.units.remove(&id);
                 let empty_discovery_slot = probe.mode == ScanMode::Discover
                     && !was_known
                     && matches!(
@@ -303,6 +353,8 @@ impl HidProvider {
         Ok(())
     }
 }
+
+type PhysicalReadings = BTreeMap<DeviceId, SourceReading>;
 
 struct SlotProbe<'a> {
     interface: &'a HidInterfaceInfo,

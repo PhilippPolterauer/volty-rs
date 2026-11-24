@@ -54,12 +54,8 @@ impl BatteryProtocol for LogitechHidpp20 {
     ) -> Result<ProtocolDeviceReading, ProtocolError> {
         #[cfg(feature = "hidapi")]
         {
-            let (name, battery) = crate::query_device_interface(interface, device_index)
-                .map_err(|error| Box::new(error) as ProtocolError)?;
-            Ok(ProtocolDeviceReading {
-                name: name.map_err(|error| Box::new(error) as ProtocolError),
-                battery,
-            })
+            crate::query_device_interface(interface, device_index)
+                .map_err(|error| Box::new(error) as ProtocolError)
         }
         #[cfg(not(feature = "hidapi"))]
         {

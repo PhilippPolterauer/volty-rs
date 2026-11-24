@@ -46,6 +46,10 @@ report battery levels over HID, XInput gamepads, and Bluetooth devices whose
 battery readings Windows exposes. Support varies by model and connection type.
 See the [tested devices and known limitations](docs/device-support.md).
 
+The **Logitech G502 X PLUS** reports battery percentage and charging status
+over both USB and the LIGHTSPEED receiver. Volty uses the mouse's HID++ unit
+ID to show both connections as one device with a single battery history.
+
 If a device is missing, make sure it’s on and connected, then right-click the
 tray icon and select **Show Advanced Options → Discover Devices Now**. See the
 [troubleshooting guide](docs/diagnostics.md) for more help.
