@@ -4,11 +4,16 @@
   <img src="icon.png" alt="Volty-RS logo" width="220">
 </p>
 
-Volty is a Windows system-tray battery monitor for supported HID devices and
+Volty monitors peripheral batteries on Windows and Linux. The Windows tray supports HID devices and
 XInput gamepads, written in Rust. It reads supported Logitech HID++, standard
 HID battery reports, coarse XInput battery levels, and Bluetooth battery data
 when Windows exposes a supported source. Bluetooth is enabled in the default
 tray build; validated examples and limitations are listed in the device guide.
+
+The [Linux desktop beta](installation.md#ubuntu-2404-lts) reads peripheral
+batteries from UPower, BlueZ, kernel power supplies, and Logitech HID++.
+The CLI shows the source for each reading. The desktop tray adds local
+history, low-battery notifications, and an HTML dashboard.
 
 Volty is a hobby project with limited hardware validation. Device support and
 battery readings are best-effort; Volty is not production-ready and is not

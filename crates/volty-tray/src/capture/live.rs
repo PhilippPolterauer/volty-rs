@@ -1,6 +1,6 @@
 //! Read-only hardware capture snapshots written by the tray and `volty capture`.
 
-#[cfg(feature = "bluetooth")]
+#[cfg(all(windows, feature = "bluetooth"))]
 use std::collections::HashMap;
 use std::{
     error::Error,
@@ -16,24 +16,25 @@ use volty_capture::{
     HidFieldRef, HidRatioRef, HidReportKind, HidSelectedLayout, HidValueCapability, HidValueSample,
     HidppFeature, MatchOutcome, PrivacyProfile, Redactor, SCHEMA,
 };
-#[cfg(feature = "bluetooth")]
+#[cfg(all(windows, feature = "bluetooth"))]
 use volty_capture::{
     CaptureBluetoothDevice, CaptureBluetoothGatt, CaptureBluetoothKind, CaptureBluetoothProperty,
 };
 use volty_hid::{
     enumerate_features, enumerate_hid_interfaces, query_battery_with_transport, resolve_hid_device,
-    stable_interface_keys, BatteryProtocol, BatteryStatus, GenericBatteryButton,
-    GenericBatteryButtonReading, GenericBatteryLayout, GenericBatteryValue,
-    GenericBatteryValueReading, GenericHidBattery, GenericReportKind, HidInterfaceInfo,
-    HidppSession, RecordingTransport, SoftwareIdAllocator, GENERIC_HID_BATTERY, LOGITECH_HIDPP_20,
+    BatteryProtocol, BatteryStatus, GenericBatteryButton, GenericBatteryButtonReading,
+    GenericBatteryLayout, GenericBatteryValue, GenericBatteryValueReading, GenericHidBattery,
+    GenericReportKind, HidInterfaceInfo, HidppSession, RecordingTransport, SoftwareIdAllocator,
+    GENERIC_HID_BATTERY, LOGITECH_HIDPP_20,
 };
 
 use super::{battery_snapshot, usage_error, CAPTURE_USAGE};
+#[cfg(windows)]
 use crate::state::DeviceState;
 
 const DIRECT_DEVICE_INDEX: u8 = 0xff;
 const FEATURE_TIMEOUT: Duration = Duration::from_secs(2);
-const DEVICE_PATH_MARKERS: [&str; 2] = ["\\\\?\\", "\\\\.\\"];
+const DEVICE_PATH_MARKERS: [&str; 3] = ["\\\\?\\", "\\\\.\\", "/dev/hidraw"];
 
 /// The path and validated summary of a written capture.
 pub struct CaptureOutcome {
@@ -42,30 +43,35 @@ pub struct CaptureOutcome {
 }
 
 /// Writes a snapshot to the default capture folder under `%APPDATA%\Volty`.
+#[cfg(windows)]
 pub fn write_default_snapshot() -> Result<CaptureOutcome, Box<dyn Error>> {
     write_snapshot(&default_path()?, PrivacyProfile::Standard)
 }
 
 /// Writes a read-only snapshot of the current HID state to `path`.
 fn write_snapshot(path: &Path, privacy: PrivacyProfile) -> Result<CaptureOutcome, Box<dyn Error>> {
-    if let Some(parent) = path
+    let parent = path
         .parent()
         .filter(|parent| !parent.as_os_str().is_empty())
-    {
-        fs::create_dir_all(parent).map_err(|error| {
-            io::Error::other(format!(
-                "could not create capture folder {}: {error}",
-                parent.display()
-            ))
-        })?;
-    }
-    let (seconds, nanos) = unix_now()?;
-    let writer = CaptureWriter::create(path)?;
-    let result = write_capture(writer, path, privacy, seconds, nanos);
-    if result.is_err() {
-        let _ = fs::remove_file(path);
-    }
-    result
+        .unwrap_or(Path::new("."));
+    let mut dirs = fs::DirBuilder::new();
+    #[cfg(target_os = "linux")]
+    std::os::unix::fs::DirBuilderExt::mode(&mut dirs, 0o700);
+    dirs.recursive(true).create(parent).map_err(|error| {
+        io::Error::other(format!(
+            "could not create capture folder {}: {error}",
+            parent.display()
+        ))
+    })?;
+    let (seconds, nanos) = super::unix_now()?;
+    let (file, temporary) = tempfile::NamedTempFile::new_in(parent)?.into_parts();
+    write_capture(CaptureWriter::from_file(file), privacy, seconds, nanos)?;
+    let summary = CaptureFile::read(&temporary)?.render_summary();
+    temporary.persist(path)?;
+    Ok(CaptureOutcome {
+        path: path.to_owned(),
+        summary,
+    })
 }
 
 pub(super) fn run_cli(args: &[String]) -> Result<(), Box<dyn Error>> {
@@ -118,17 +124,16 @@ pub(super) fn run_cli(args: &[String]) -> Result<(), Box<dyn Error>> {
 
 fn write_capture(
     mut writer: CaptureWriter,
-    path: &Path,
     privacy: PrivacyProfile,
     seconds: u64,
     nanos: u32,
-) -> Result<CaptureOutcome, Box<dyn Error>> {
+) -> Result<(), Box<dyn Error>> {
     let started = Instant::now();
     let redactor = Redactor::new(privacy);
     let header = CaptureHeader {
         schema: SCHEMA.to_owned(),
         capture_id: format!("{seconds}-{nanos:09}"),
-        created_at: unix_to_rfc3339(seconds),
+        created_at: super::unix_to_rfc3339(seconds),
         app_version: env!("CARGO_PKG_VERSION").to_owned(),
         app_commit: option_env!("VOLTY_GIT_COMMIT").map(str::to_owned),
         os: std::env::consts::OS.to_owned(),
@@ -139,8 +144,26 @@ fn write_capture(
     };
     writer.write(&CaptureRecord::Header(header))?;
 
+    #[cfg(windows)]
     let interfaces = enumerate_hid_interfaces()?;
-    let keys = stable_interface_keys(&interfaces);
+    #[cfg(target_os = "linux")]
+    let interfaces = match enumerate_hid_interfaces() {
+        Ok(interfaces) => interfaces,
+        Err(error) => {
+            eprintln!("volty: HID enumeration failed: {error}");
+            write_event(
+                &mut writer,
+                started,
+                None,
+                EventLevel::Warning,
+                "Linux HID enumeration failed".to_owned(),
+            )?;
+            Vec::new()
+        }
+    };
+    #[cfg(windows)]
+    let keys = volty_hid::stable_interface_keys(&interfaces);
+    #[cfg(windows)]
     let known_state = DeviceState::open_local().ok();
     for (index, interface) in interfaces.iter().enumerate() {
         let id = format!("iface-{}", index + 1);
@@ -159,20 +182,25 @@ fn write_capture(
                 }))?;
                 if backend == LOGITECH_HIDPP_20.name() {
                     let default_indices = LOGITECH_HIDPP_20.device_indices(interface);
-                    let candidates = known_state
+                    #[cfg(windows)]
+                    let known_indices = known_state
                         .as_ref()
                         .zip(keys.get(index))
                         .and_then(|(state, key)| {
                             state.known_device_indices(key, default_indices).ok()
                         })
                         .filter(|indices| !indices.is_empty());
+                    #[cfg(windows)]
+                    let device_indices = known_indices.as_deref().unwrap_or(default_indices);
+                    #[cfg(target_os = "linux")]
+                    let device_indices = default_indices;
                     capture_hidpp(
                         &mut writer,
                         started,
                         &id,
                         interface,
                         &redactor,
-                        candidates.as_deref().unwrap_or(default_indices),
+                        device_indices,
                     )?;
                 } else if backend == GENERIC_HID_BATTERY.name() {
                     capture_generic(&mut writer, started, &id, interface, &redactor)?;
@@ -207,15 +235,14 @@ fn write_capture(
         }
     }
 
-    #[cfg(feature = "bluetooth")]
+    #[cfg(all(windows, feature = "bluetooth"))]
     capture_bluetooth(&mut writer, started, &redactor)?;
 
+    #[cfg(target_os = "linux")]
+    crate::linux_power::capture(&mut writer, elapsed_ms(started))?;
+
     writer.finish(true)?;
-    let file = CaptureFile::read(path)?;
-    Ok(CaptureOutcome {
-        path: path.to_path_buf(),
-        summary: file.render_summary(),
-    })
+    Ok(())
 }
 
 fn capture_hidpp(
@@ -402,7 +429,7 @@ fn capture_generic(
     Ok(())
 }
 
-#[cfg(feature = "bluetooth")]
+#[cfg(all(windows, feature = "bluetooth"))]
 fn capture_bluetooth(
     writer: &mut CaptureWriter,
     started: Instant,
@@ -456,7 +483,7 @@ fn capture_bluetooth(
 
 /// Converts a Bluetooth scan into capture records without exposing opaque
 /// Windows device ids or Bluetooth addresses.
-#[cfg(feature = "bluetooth")]
+#[cfg(all(windows, feature = "bluetooth"))]
 fn bluetooth_capture_records(
     scan: &volty_bluetooth::BluetoothScan,
     t_ms: u64,
@@ -515,14 +542,14 @@ fn bluetooth_capture_records(
     records
 }
 
-#[cfg(feature = "bluetooth")]
+#[cfg(all(windows, feature = "bluetooth"))]
 struct BluetoothCaptureMap<'a> {
     redactor: &'a Redactor,
     ids: HashMap<String, String>,
     devices: Vec<CaptureRecord>,
 }
 
-#[cfg(feature = "bluetooth")]
+#[cfg(all(windows, feature = "bluetooth"))]
 impl<'a> BluetoothCaptureMap<'a> {
     fn new(redactor: &'a Redactor) -> Self {
         Self {
@@ -548,7 +575,7 @@ impl<'a> BluetoothCaptureMap<'a> {
     }
 }
 
-#[cfg(feature = "bluetooth")]
+#[cfg(all(windows, feature = "bluetooth"))]
 const fn capture_kind(kind: volty_bluetooth::BluetoothDeviceKind) -> CaptureBluetoothKind {
     match kind {
         volty_bluetooth::BluetoothDeviceKind::Classic => CaptureBluetoothKind::Classic,
@@ -743,25 +770,26 @@ fn duration_ms(duration: Duration) -> u64 {
 }
 
 fn enabled_features() -> Vec<String> {
-    let mut features = vec!["hidapi".to_owned(), "profile".to_owned()];
-    if cfg!(feature = "bluetooth") {
+    let mut features = vec!["hidapi".to_owned()];
+    if cfg!(windows) {
+        features.push("profile".to_owned());
+    }
+    if cfg!(all(windows, feature = "bluetooth")) {
         features.push("bluetooth".to_owned());
     }
     features
 }
 
 fn default_path() -> Result<PathBuf, Box<dyn Error>> {
+    #[cfg(windows)]
     let app_data = std::env::var_os("APPDATA")
         .map(PathBuf::from)
         .ok_or_else(|| io::Error::other("could not determine the user application data folder"))?;
+    #[cfg(windows)]
     let directory = app_data.join("Volty").join("captures");
-    fs::create_dir_all(&directory).map_err(|error| {
-        io::Error::other(format!(
-            "could not create capture folder {}: {error}",
-            directory.display()
-        ))
-    })?;
-    let (seconds, nanos) = unix_now()?;
+    #[cfg(target_os = "linux")]
+    let directory = crate::linux::state_dir()?.join("captures");
+    let (seconds, nanos) = super::unix_now()?;
     Ok(directory.join(format!("volty-capture-{seconds}-{nanos:09}.volty.jsonl")))
 }
 
@@ -825,11 +853,15 @@ mod tests {
             safe_error(r"failed to open \\.\HID#vid_046d"),
             "failed to open <device path omitted>"
         );
+        assert_eq!(
+            safe_error("failed to open /dev/hidraw4: permission denied"),
+            "failed to open <device path omitted>"
+        );
         assert_eq!(safe_error("timed out"), "timed out");
     }
 
     #[test]
-    #[cfg(feature = "bluetooth")]
+    #[cfg(all(windows, feature = "bluetooth"))]
     fn bluetooth_records_use_local_ids_and_follow_privacy_profiles() {
         use volty_bluetooth::{
             battery_status, BluetoothBatteryReading, BluetoothDeviceKind, BluetoothEvidence,

@@ -12,7 +12,7 @@ use device_ui::{
     apply_poll_result, is_device_monitored, update_monitored_device_menu, update_tray_devices,
     update_visible_devices,
 };
-use labels::{append_config_error, battery_is_full, battery_status_label};
+use labels::{append_config_error, battery_status_label};
 use liveness::Liveness;
 use notifications::{process_device_reading, DeviceNotifications};
 use poll::PollUpdate;
@@ -30,9 +30,7 @@ use std::{
     thread,
     time::{Duration, Instant},
 };
-use volty_battery::{
-    BatteryState, BatteryStatus, DeviceId, DeviceLabel, ProviderEvent, SourceReading,
-};
+use volty_battery::{BatteryStatus, DeviceId, DeviceLabel, ProviderEvent, SourceReading};
 
 #[cfg(feature = "self-update")]
 use crate::tray::UpdateCheckOrigin;
@@ -1461,19 +1459,8 @@ impl App {
                 ));
             }
         };
-        let sample = HistorySample {
-            identity: reading.id.as_str().to_owned(),
-            name: reading.label.display(),
-            recorded_at,
-            percent: reading.battery.percentage.exact(),
-            charging: matches!(
-                reading.battery.state,
-                BatteryState::Charging
-                    | BatteryState::ChargingNearlyFull
-                    | BatteryState::ChargingSlow
-            ),
-            voltage_mv: reading.battery.voltage_mv,
-        };
+        let sample =
+            HistorySample::from_reading(&reading.id, &reading.label, &reading.battery, recorded_at);
         let result = match self.history.as_mut() {
             Some(history) => history.record(&sample),
             None => return Ok(()),

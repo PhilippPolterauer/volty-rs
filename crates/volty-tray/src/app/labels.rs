@@ -31,16 +31,10 @@ pub(super) fn battery_status_label(battery: &BatteryStatus) -> String {
         (None, None) => "Unknown charge state".to_owned(),
     }
 }
-pub(super) fn battery_is_full(battery: &BatteryStatus) -> bool {
-    matches!(battery.state, BatteryState::Charged)
-        || battery
-            .percentage
-            .exact()
-            .is_some_and(|percentage| percentage >= 100)
-}
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::notify::battery_is_full;
     use volty_battery::{BatteryLevel, BatteryPercentage, BatteryState, BatteryStatus};
     #[test]
     fn coarse_full_level_does_not_mark_a_discharging_battery_as_full() {

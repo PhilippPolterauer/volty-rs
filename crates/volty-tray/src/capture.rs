@@ -1,11 +1,9 @@
 //! Capture command dispatch and shared conversion to the capture schema.
 
-#[cfg(windows)]
 mod live;
 
 #[cfg(windows)]
 pub use live::write_default_snapshot;
-#[cfg(windows)]
 pub(crate) use live::{unix_now, unix_to_rfc3339};
 
 use std::{error::Error, io, path::PathBuf};
@@ -15,10 +13,7 @@ use volty_battery::{
 };
 use volty_capture::{BatterySnapshot, CapturedBatteryPercentage, CapturedPercentageEstimateMethod};
 
-#[cfg(windows)]
 const CAPTURE_USAGE: &str = "Usage:\n  volty capture [--output <path>] [--strict]\n  volty capture inspect <capture.volty.jsonl>\n  volty capture replay <capture.volty.jsonl>\n\nWrites a read-only snapshot of the visible HID interfaces, or validates and\nreplays a previously written capture without opening a device. Nothing is\nuploaded automatically.";
-#[cfg(target_os = "linux")]
-const CAPTURE_USAGE: &str = "Usage:\n  volty capture inspect <capture.volty.jsonl>\n  volty capture replay <capture.volty.jsonl>\n\nValidates or replays an existing capture without opening a device.";
 
 pub fn run_cli(args: &[String]) -> Result<(), Box<dyn Error>> {
     match args.first().map(String::as_str) {
@@ -28,10 +23,7 @@ pub fn run_cli(args: &[String]) -> Result<(), Box<dyn Error>> {
             println!("{CAPTURE_USAGE}");
             Ok(())
         }
-        #[cfg(windows)]
         _ => live::run_cli(args),
-        #[cfg(target_os = "linux")]
-        _ => Err(usage_error("Linux capture requires inspect or replay")),
     }
 }
 

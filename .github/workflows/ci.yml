@@ -72,6 +72,27 @@ jobs:
       - name: Build CLI with default features
         run: cargo build -p volty-tray --locked
 
+  debian-package:
+    name: Ubuntu 24.04 Debian package
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install packaging dependencies
+        run: sudo apt-get update && sudo apt-get install -y desktop-file-utils dpkg-dev jq libdbus-1-dev libudev-dev pkg-config
+      - name: Build package
+        run: bash scripts/build-deb.sh
+      - name: Smoke test install, upgrade and removal
+        run: bash scripts/smoke-deb.sh dist/*.deb
+      - uses: actions/upload-artifact@v7
+        with:
+          name: linux-amd64-deb
+          path: dist/*.deb*
+          if-no-files-found: error
+
   msrv:
     name: MSRV (Rust 1.99.0)
     runs-on: windows-latest

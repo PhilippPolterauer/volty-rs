@@ -1,6 +1,6 @@
 //! Native low-battery notification policy.
 //!
-//! Feed each battery sample to [`NotificationEngine::update`] and surface
+//! Feed each battery sample to [`NotificationEngine::update_with`] and surface
 //! returned errors in the application's log or UI. Thresholds are read from a
 //! per-user TOML config file (or can be supplied directly by the app).
 
@@ -8,11 +8,49 @@ use std::{
     collections::BTreeSet,
     error::Error,
     fmt,
-    path::Path,
     time::{Duration, Instant},
 };
 
+use volty_battery::{BatteryState, BatteryStatus};
+
+#[cfg(windows)]
 use crate::config::{normalize_low_battery_thresholds, AppConfig};
+#[cfg(windows)]
+use std::path::Path;
+
+pub(crate) const DEFAULT_LOW_BATTERY_THRESHOLDS: &[u8] = &[20, 10, 5];
+pub(crate) const DEFAULT_LOW_BATTERY_COOLDOWN_MINUTES: u64 = 120;
+
+pub(crate) fn charging(state: BatteryState) -> bool {
+    matches!(
+        state,
+        BatteryState::Charging | BatteryState::ChargingNearlyFull | BatteryState::ChargingSlow
+    )
+}
+
+pub(crate) fn battery_is_full(battery: &BatteryStatus) -> bool {
+    battery.state == BatteryState::Charged
+        || battery
+            .percentage
+            .exact()
+            .is_some_and(|percentage| percentage >= 100)
+}
+
+pub(crate) fn notification_sample(battery: &BatteryStatus) -> Option<BatterySample> {
+    let percentage = battery.percentage.exact();
+    let charging = charging(battery.state);
+    let full = battery_is_full(battery);
+    if percentage.is_none() && !charging && !full {
+        return None;
+    }
+
+    Some(BatterySample {
+        // Charging and full samples reset the cycle before thresholds are evaluated.
+        percentage: percentage.unwrap_or(0),
+        charging,
+        full,
+    })
+}
 
 /// Battery data needed by the low-battery notification policy.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -44,7 +82,7 @@ pub enum NotificationOutcome {
 pub struct NotificationError(String);
 
 impl NotificationError {
-    fn new(message: impl Into<String>) -> Self {
+    pub(crate) fn new(message: impl Into<String>) -> Self {
         Self(message.into())
     }
 }
@@ -68,8 +106,21 @@ pub struct NotificationEngine {
     last_repeat: Option<Instant>,
 }
 
+impl Default for NotificationEngine {
+    fn default() -> Self {
+        Self {
+            thresholds: DEFAULT_LOW_BATTERY_THRESHOLDS.to_vec(),
+            notified_thresholds: BTreeSet::new(),
+            notifications_enabled: true,
+            cooldown: Duration::from_secs(DEFAULT_LOW_BATTERY_COOLDOWN_MINUTES * 60),
+            last_repeat: None,
+        }
+    }
+}
+
 impl NotificationEngine {
     /// Creates an engine from loaded or otherwise app-provided settings.
+    #[cfg(windows)]
     pub fn from_config(config: &AppConfig) -> Result<Self, NotificationError> {
         Ok(Self {
             thresholds: configured_thresholds(config)?,
@@ -83,6 +134,7 @@ impl NotificationEngine {
     /// Restores the thresholds already alerted in the current discharge cycle.
     /// A restored lowest threshold restarts the cooldown from now so a restart
     /// cannot immediately repeat an alert.
+    #[cfg(windows)]
     pub(crate) fn restore_notified_thresholds(&mut self, notified: impl IntoIterator<Item = u8>) {
         self.notified_thresholds = notified
             .into_iter()
@@ -95,18 +147,20 @@ impl NotificationEngine {
             .map(|_| Instant::now());
     }
 
+    #[cfg(any(windows, test))]
     pub(crate) fn notified_thresholds(&self) -> BTreeSet<u8> {
         self.notified_thresholds.clone()
     }
 
     /// Returns the active alert thresholds, highest first.
-    #[cfg(test)]
+    #[cfg(all(test, windows))]
     pub fn thresholds(&self) -> &[u8] {
         &self.thresholds
     }
 
     /// Applies a validated configuration without resetting thresholds that are
     /// still configured and already alerted in this discharge cycle.
+    #[cfg(windows)]
     pub fn set_config(&mut self, config: &AppConfig) -> Result<(), NotificationError> {
         let thresholds = configured_thresholds(config)?;
         self.notified_thresholds
@@ -161,6 +215,7 @@ impl NotificationEngine {
         if !reached.is_empty() {
             // A single toast covers a jump past several thresholds; mark them
             // all so later polls cannot deliver stale higher-threshold alerts.
+            dispatch(device_name, sample.percentage)?;
             self.notified_thresholds.extend(reached);
             if self
                 .thresholds
@@ -169,7 +224,6 @@ impl NotificationEngine {
             {
                 self.last_repeat = Some(now);
             }
-            dispatch(device_name, sample.percentage)?;
             return Ok(NotificationOutcome::Notified);
         }
 
@@ -182,8 +236,8 @@ impl NotificationEngine {
                 .last_repeat
                 .is_none_or(|last| now.saturating_duration_since(last) >= self.cooldown);
             if repeat_due {
-                self.last_repeat = Some(now);
                 dispatch(device_name, sample.percentage)?;
+                self.last_repeat = Some(now);
                 return Ok(NotificationOutcome::Notified);
             }
         }
@@ -192,6 +246,7 @@ impl NotificationEngine {
     }
 }
 
+#[cfg(windows)]
 fn configured_thresholds(config: &AppConfig) -> Result<Vec<u8>, NotificationError> {
     normalize_low_battery_thresholds(&config.low_battery_thresholds)
         .map_err(|error| NotificationError::new(error.to_string()))
@@ -214,8 +269,7 @@ pub(super) fn show_low_battery_notification(
         })
 }
 
-#[cfg(windows)]
-#[cfg(feature = "self-update")]
+#[cfg(all(windows, feature = "self-update"))]
 pub(super) fn show_update_available_notification(
     version: &str,
 ) -> Result<notify_rust::NotificationHandle, NotificationError> {
@@ -230,7 +284,7 @@ pub(super) fn show_update_available_notification(
         })
 }
 
-#[cfg(feature = "self-update")]
+#[cfg(all(windows, feature = "self-update"))]
 pub(crate) fn update_notification_opens_prompt(
     response: &notify_rust::NotificationResponse,
 ) -> bool {
@@ -238,6 +292,7 @@ pub(crate) fn update_notification_opens_prompt(
 }
 
 /// Shows a toast whose body or Open Capture action can open the saved file.
+#[cfg(windows)]
 pub(crate) fn show_capture_saved_notification(
     path: &Path,
 ) -> Result<notify_rust::NotificationHandle, NotificationError> {
@@ -256,6 +311,7 @@ pub(crate) fn show_capture_saved_notification(
     })
 }
 
+#[cfg(windows)]
 pub(crate) fn capture_notification_opens_file(
     response: &notify_rust::NotificationResponse,
 ) -> bool {
@@ -267,17 +323,7 @@ pub(crate) fn capture_notification_opens_file(
     }
 }
 
-#[cfg(not(windows))]
-pub(super) fn show_low_battery_notification(
-    _device_name: &str,
-    _percentage: u8,
-) -> Result<(), NotificationError> {
-    Err(NotificationError::new(
-        "native low-battery notifications are only supported on Windows",
-    ))
-}
-
-#[cfg(test)]
+#[cfg(all(test, windows))]
 mod tests {
     use super::*;
 
@@ -302,7 +348,7 @@ mod tests {
         ));
     }
 
-    #[cfg(feature = "self-update")]
+    #[cfg(all(windows, feature = "self-update"))]
     #[test]
     fn update_notification_opens_prompt_only_when_clicked() {
         use notify_rust::{CloseReason, NotificationResponse};
@@ -626,28 +672,6 @@ mod tests {
     }
 
     #[test]
-    fn failed_dispatch_consumes_the_reached_thresholds() {
-        let mut engine = NotificationEngine::from_config(&AppConfig::default()).unwrap();
-        let now = Instant::now();
-        let error = engine
-            .update_with("Test device", discharging(10), now, |_, _| {
-                Err(NotificationError::new("dispatch failed"))
-            })
-            .unwrap_err();
-
-        assert_eq!(error.to_string(), "dispatch failed");
-        assert_eq!(engine.notified_thresholds(), BTreeSet::from([10, 20]));
-        assert_eq!(
-            engine
-                .update_with("Test device", discharging(10), now, |_, _| panic!(
-                    "a failed dispatch must not be retried in the same cycle"
-                ))
-                .unwrap(),
-            NotificationOutcome::AlreadyNotified
-        );
-    }
-
-    #[test]
     fn above_threshold_sample_reports_skipped_notification() {
         let mut engine = NotificationEngine::from_config(&AppConfig::default()).unwrap();
         let outcome = engine
@@ -716,6 +740,124 @@ mod tests {
                 )
                 .unwrap(),
             NotificationOutcome::Notified
+        );
+    }
+}
+
+#[cfg(test)]
+mod portable_tests {
+    use super::*;
+    use volty_battery::{
+        BatteryLevel, BatteryPercentage, BatteryPercentageEstimateMethod, BatteryStatus,
+    };
+
+    #[test]
+    fn failed_dispatch_can_retry_without_consuming_thresholds_or_cooldown() {
+        let mut engine = NotificationEngine::default();
+        let now = Instant::now();
+        let sample = BatterySample {
+            percentage: 5,
+            charging: false,
+            full: false,
+        };
+        let fail = |_: &str, _: u8| Err(NotificationError::new("dispatch failed"));
+        let success = |_: &str, _: u8| Ok(());
+
+        let error = engine
+            .update_with("Test device", sample, now, fail)
+            .unwrap_err();
+        assert_eq!(error.to_string(), "dispatch failed");
+        assert!(engine.notified_thresholds().is_empty());
+        assert_eq!(
+            engine
+                .update_with("Test device", sample, now, success)
+                .unwrap(),
+            NotificationOutcome::Notified
+        );
+        assert_eq!(engine.notified_thresholds(), BTreeSet::from([5, 10, 20]));
+
+        let repeat = now + Duration::from_secs(DEFAULT_LOW_BATTERY_COOLDOWN_MINUTES * 60);
+        assert!(engine
+            .update_with("Test device", sample, repeat, fail)
+            .is_err());
+        assert_eq!(
+            engine
+                .update_with("Test device", sample, repeat, success)
+                .unwrap(),
+            NotificationOutcome::Notified
+        );
+    }
+
+    #[test]
+    fn upward_jitter_does_not_reset_the_discharge_cycle() {
+        let mut engine = NotificationEngine::default();
+        let now = Instant::now();
+        let mut sample = BatterySample {
+            percentage: 20,
+            charging: false,
+            full: false,
+        };
+        assert_eq!(
+            engine
+                .update_with("Test device", sample, now, |_, _| Ok(()))
+                .unwrap(),
+            NotificationOutcome::Notified
+        );
+
+        let unexpected = |_: &str, _: u8| panic!("jitter must not dispatch");
+        sample.percentage = 21;
+        assert_eq!(
+            engine
+                .update_with("Test device", sample, now, unexpected)
+                .unwrap(),
+            NotificationOutcome::AboveThreshold
+        );
+        sample.percentage = 20;
+        assert_eq!(
+            engine
+                .update_with("Test device", sample, now, unexpected)
+                .unwrap(),
+            NotificationOutcome::AlreadyNotified
+        );
+    }
+
+    #[test]
+    fn estimated_bucket_mappings_are_not_used_as_percentage_alert_samples() {
+        let battery = BatteryStatus {
+            percentage: BatteryPercentage::Estimated {
+                value: 20,
+                method: BatteryPercentageEstimateMethod::XInputBucketMapping,
+            },
+            level: BatteryLevel::Low,
+            raw_level: 1,
+            state: BatteryState::Unknown,
+            raw_status: None,
+            voltage_mv: None,
+            source: "XInput coarse battery estimate",
+        };
+
+        assert_eq!(notification_sample(&battery), None);
+    }
+
+    #[test]
+    fn exact_percentages_remain_eligible_for_percentage_alerts() {
+        let battery = BatteryStatus {
+            percentage: BatteryPercentage::Exact(20),
+            level: BatteryLevel::Low,
+            raw_level: 20,
+            state: BatteryState::Discharging,
+            raw_status: None,
+            voltage_mv: None,
+            source: "test",
+        };
+
+        assert_eq!(
+            notification_sample(&battery),
+            Some(BatterySample {
+                percentage: 20,
+                charging: false,
+                full: false,
+            })
         );
     }
 }

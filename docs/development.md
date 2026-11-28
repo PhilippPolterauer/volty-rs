@@ -37,20 +37,26 @@ behavior need Windows and compatible hardware. A successful diagnostic command
 alone does not establish that the tray polls a device; verify it through the
 normal tray path.
 
-## Linux capture preview
+## Linux desktop beta
 
-The Linux build supports offline capture inspection and replay. Build it and
-try both commands against the checked-in Logitech capture:
+On Debian or Ubuntu, install `pkg-config`, `libudev-dev`, and `libdbus-1-dev`.
+Use a normal desktop account to check hardware access. The status command also
+runs in a terminal without a graphical session.
 
 ```sh
 cargo build -p volty-tray --locked
+target/debug/volty status
+target/debug/volty tray
 target/debug/volty capture inspect tests/hardware/g502x-plus-unified.volty.jsonl
 target/debug/volty capture replay tests/hardware/g502x-plus-unified.volty.jsonl
 ```
 
-On Debian and Ubuntu, install `libudev-dev` and `pkg-config` before enabling
-all workspace features. The Linux CI job lints and tests the full workspace
-and builds the CLI with its default features.
+Run `cargo test --workspace --all-features --locked` with `dbus-daemon` and
+`busctl` installed. The Linux desktop integration test starts a private bus
+with a synthetic BlueZ headset and checks the CLI, running tray, history
+database, and dashboard export. Ubuntu packaging CI also installs, upgrades,
+and removes the built package. For physical device tests, follow the
+[Linux capture procedure](hardware-capture.md#linux-snapshots).
 
 ## README visuals
 

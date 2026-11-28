@@ -38,27 +38,6 @@ pub(super) fn hid_device_id(interface_key: &str, device_index: u8) -> DeviceId {
     DeviceId::new(format!("hid:{interface_key}#{device_index}"))
 }
 
-/// Identifies numbered slots that older scans recorded for a wired HID++ device.
-pub(crate) fn is_invalid_hidpp_slot(identity: &str) -> bool {
-    let Some((interface, index)) = identity
-        .strip_prefix("hid:")
-        .and_then(|id| id.rsplit_once('#'))
-    else {
-        return false;
-    };
-    let mut fields = interface.split(':');
-    let (Some(vid), Some(pid), Some("ff00"), Some("0002")) =
-        (fields.next(), fields.next(), fields.nth(1), fields.next())
-    else {
-        return false;
-    };
-    matches!(index, "1" | "2" | "3" | "4" | "5" | "6")
-        && u16::from_str_radix(vid, 16)
-            .ok()
-            .zip(u16::from_str_radix(pid, 16).ok())
-            .is_some_and(|(vid, pid)| is_direct_only_hidpp(vid, pid))
-}
-
 fn slot_qualifier(device_index: u8) -> String {
     if device_index == DIRECT_DEVICE_INDEX {
         "direct".to_owned()

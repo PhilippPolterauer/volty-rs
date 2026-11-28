@@ -3,7 +3,7 @@ use std::{fs, path::PathBuf};
 use crate::{CaptureError, CaptureFooter, CaptureHeader, CaptureRecord, SCHEMA};
 
 /// A validated capture file split into its header, data records, and footer.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct CaptureFile {
     pub header: CaptureHeader,
     /// Data records between the header and footer. Never contains a header or

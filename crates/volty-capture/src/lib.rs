@@ -28,8 +28,9 @@ pub use schema::{
     CaptureBluetoothKind, CaptureBluetoothProperty, CaptureEvent, CaptureFooter, CaptureHeader,
     CaptureHidLayout, CaptureHidSample, CaptureHidppExchange, CaptureHidppFeatures,
     CaptureInterface, CaptureMarker, CaptureMatch, CaptureMode, CaptureReading, CaptureRecord,
-    CapturedBatteryPercentage, CapturedPercentageEstimateMethod, EventLevel, HidButtonCapability,
-    HidButtonSample, HidFieldRef, HidRatioRef, HidReportKind, HidSelectedLayout,
-    HidValueCapability, HidValueSample, HidppFeature, MatchOutcome, PrivacyProfile, SCHEMA,
+    CaptureUpowerBattery, CapturedBatteryPercentage, CapturedPercentageEstimateMethod, EventLevel,
+    HidButtonCapability, HidButtonSample, HidFieldRef, HidRatioRef, HidReportKind,
+    HidSelectedLayout, HidValueCapability, HidValueSample, HidppFeature, MatchOutcome,
+    PrivacyProfile, SCHEMA,
 };
 pub use writer::CaptureWriter;

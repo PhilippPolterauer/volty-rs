@@ -1,15 +1,17 @@
 use super::{
-    battery_is_full, battery_status_label, is_device_monitored, record_event, AppConfig,
-    DeviceReading, DeviceState, FileLogger, LogLevel,
+    battery_status_label, is_device_monitored, record_event, AppConfig, DeviceReading, DeviceState,
+    FileLogger, LogLevel,
 };
-use crate::notify::{BatterySample, NotificationEngine, NotificationError, NotificationOutcome};
+use crate::notify::{
+    notification_sample, BatterySample, NotificationEngine, NotificationError, NotificationOutcome,
+};
 use std::{
     collections::{hash_map::Entry, BTreeMap, HashMap, HashSet, VecDeque},
     error::Error,
     io,
     time::Instant,
 };
-use volty_battery::{BatteryState, BatteryStatus, DeviceId};
+use volty_battery::DeviceId;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum PendingAlertState {
@@ -191,26 +193,6 @@ pub(super) fn process_device_reading(
     Ok(())
 }
 
-fn notification_sample(battery: &BatteryStatus) -> Option<BatterySample> {
-    let percentage = battery.percentage.exact();
-    let charging = matches!(
-        battery.state,
-        BatteryState::Charging | BatteryState::ChargingNearlyFull | BatteryState::ChargingSlow
-    );
-    let full = battery_is_full(battery);
-    if percentage.is_none() && !charging && !full {
-        return None;
-    }
-
-    Some(BatterySample {
-        // Percentage is irrelevant while charging/full because the engine
-        // resets that device's discharge-cycle guard before checking thresholds.
-        percentage: percentage.unwrap_or(0),
-        charging,
-        full,
-    })
-}
-
 fn process_notification(
     notifications: &mut DeviceNotifications,
     state: Option<&mut DeviceState>,
@@ -320,50 +302,6 @@ fn record_notification_outcome(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use volty_battery::{
-        BatteryLevel, BatteryPercentage, BatteryPercentageEstimateMethod, BatteryStatus,
-    };
-
-    #[test]
-    fn estimated_bucket_mappings_are_not_used_as_percentage_alert_samples() {
-        let battery = BatteryStatus {
-            percentage: BatteryPercentage::Estimated {
-                value: 20,
-                method: BatteryPercentageEstimateMethod::XInputBucketMapping,
-            },
-            level: BatteryLevel::Low,
-            raw_level: 1,
-            state: BatteryState::Unknown,
-            raw_status: None,
-            voltage_mv: None,
-            source: "XInput coarse battery estimate",
-        };
-
-        assert_eq!(notification_sample(&battery), None);
-    }
-
-    #[test]
-    fn exact_percentages_remain_eligible_for_percentage_alerts() {
-        let battery = BatteryStatus {
-            percentage: BatteryPercentage::Exact(20),
-            level: BatteryLevel::Low,
-            raw_level: 20,
-            state: BatteryState::Discharging,
-            raw_status: None,
-            voltage_mv: None,
-            source: "test",
-        };
-
-        assert_eq!(
-            notification_sample(&battery),
-            Some(BatterySample {
-                percentage: 20,
-                charging: false,
-                full: false,
-            })
-        );
-    }
-
     #[test]
     fn disabled_devices_drop_notification_tracking_state() {
         let monitored = DeviceId::new("hid:monitored#1");

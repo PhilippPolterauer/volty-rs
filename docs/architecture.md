@@ -7,11 +7,19 @@ rendering and app behavior.
 volty-battery      Shared BatteryStatus, DeviceId, DeviceLabel, provider trait
 volty-hid          HID interface matching, HID++ and generic HID backends
 volty-bluetooth    Windows Bluetooth battery provider (enabled by default)
-volty-tray         Windows tray app, XInput and HID polling, settings, history and UI
+volty-tray         Windows and Linux tray apps, platform discovery, CLI, history and UI
 volty-capture      Versioned JSONL battery captures and raw HID trace schema
 ```
 
 ## Runtime flow
+
+On Linux, the status CLI and desktop tray use the same monitor. It merges
+HID++ readings with peripheral readings from UPower, BlueZ Battery1 and
+sysfs using device identities. The tray exports a StatusNotifierItem on the
+session bus. The history store, discharge-cycle notification policy,
+dashboard renderer, and capture replay code are shared with Windows.
+
+On Windows the provider flow is:
 
 ```text
 HID interfaces -> supported HID catalog -> HID backend --------+

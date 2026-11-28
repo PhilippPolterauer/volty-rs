@@ -1,0 +1,3 @@
+# Logitech G502 X PLUS wired mouse and LIGHTSPEED receiver.
+SUBSYSTEM=="hidraw", KERNEL=="hidraw*", ATTRS{idVendor}=="046d", ATTRS{idProduct}=="c095", TAG+="uaccess"
+SUBSYSTEM=="hidraw", KERNEL=="hidraw*", ATTRS{idVendor}=="046d", ATTRS{idProduct}=="c547", TAG+="uaccess"

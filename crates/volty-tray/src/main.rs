@@ -10,19 +10,29 @@ mod app_icon;
 mod capture;
 #[cfg(windows)]
 mod config;
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "linux"))]
 mod dashboard;
 #[cfg(windows)]
 mod diagnose;
 mod hid_cli;
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "linux"))]
 mod history;
+#[cfg(target_os = "linux")]
+mod linux;
+#[cfg(target_os = "linux")]
+mod linux_desktop;
+#[cfg(target_os = "linux")]
+mod linux_hid;
+#[cfg(target_os = "linux")]
+mod linux_power;
 #[cfg(windows)]
 mod logging;
 #[cfg(windows)]
 mod native_ui;
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "linux"))]
 mod notify;
+#[cfg(any(windows, target_os = "linux"))]
+mod os_battery;
 #[cfg(windows)]
 mod provider;
 #[cfg(any(windows, target_os = "linux"))]
@@ -219,7 +229,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         Some("hid") => hid_cli::run(&args.collect::<Vec<_>>()).map_err(Into::into),
         #[cfg(any(windows, target_os = "linux"))]
         Some("capture") => capture::run_cli(&args.collect::<Vec<_>>()),
-        #[cfg(windows)]
+        #[cfg(any(windows, target_os = "linux"))]
         Some("history") => history::run_cli(&args.collect::<Vec<_>>()),
         #[cfg(windows)]
         Some("dashboard") => run_dashboard_cli(&args.collect::<Vec<_>>()),
@@ -233,9 +243,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             run_tray()
         }
         #[cfg(target_os = "linux")]
-        None | Some("-h" | "--help" | "help") => capture::run_cli(&["--help".to_owned()]),
-        #[cfg(target_os = "linux")]
-        Some(command) => Err(format!("unknown command {command:?}. See volty --help.").into()),
+        command => linux::run(command, &args.collect::<Vec<_>>()),
         #[cfg(windows)]
         _ => run_tray(),
         #[cfg(not(any(windows, target_os = "linux")))]

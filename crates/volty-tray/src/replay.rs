@@ -26,6 +26,10 @@ use volty_hid::{
 };
 
 use crate::capture::battery_snapshot;
+use crate::os_battery::{
+    bluez_battery, upower_battery, BLUEZ_PROPERTY, BLUEZ_SOURCE, UPOWER_SOURCE,
+};
+use volty_capture::CaptureBluetoothKind;
 
 /// Counts produced by an offline replay.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -520,11 +524,11 @@ fn verify_generic_reading(
 }
 
 fn replay_bluetooth(file: &CaptureFile, report: &mut ReplayReport) -> Result<(), Box<dyn Error>> {
-    let devices: std::collections::HashSet<_> = file
+    let devices: std::collections::HashMap<_, _> = file
         .records
         .iter()
         .filter_map(|record| match record {
-            CaptureRecord::BluetoothDevice(device) => Some(device.id.as_str()),
+            CaptureRecord::BluetoothDevice(device) => Some((device.id.as_str(), device.kind)),
             _ => None,
         })
         .collect();
@@ -533,9 +537,23 @@ fn replay_bluetooth(file: &CaptureFile, report: &mut ReplayReport) -> Result<(),
         match record {
             CaptureRecord::BluetoothProperty(property) => {
                 report.bluetooth_evidence += 1;
-                if !devices.contains(property.id.as_str()) {
+                if !devices.contains_key(property.id.as_str()) {
                     return Err(io::Error::other(format!(
                         "property evidence for {} has no device record",
+                        property.id
+                    ))
+                    .into());
+                }
+                let bluez_device =
+                    devices.get(property.id.as_str()) == Some(&CaptureBluetoothKind::Bluez);
+                let bluez_property = property.property == BLUEZ_PROPERTY;
+                if bluez_device != bluez_property
+                    || (bluez_device
+                        && (property.property_type != "y"
+                            || bluez_battery(property.raw_value).is_none()))
+                {
+                    return Err(io::Error::other(format!(
+                        "invalid BlueZ Battery1 evidence for {}",
                         property.id
                     ))
                     .into());
@@ -548,9 +566,22 @@ fn replay_bluetooth(file: &CaptureFile, report: &mut ReplayReport) -> Result<(),
                     .into());
                 }
             }
+            CaptureRecord::UpowerBattery(evidence) => {
+                report.bluetooth_evidence += 1;
+                if devices.get(evidence.id.as_str()) != Some(&CaptureBluetoothKind::Upower)
+                    || upower_battery(evidence.percentage, evidence.battery_level, evidence.state)
+                        .is_none()
+                {
+                    return Err(io::Error::other(format!(
+                        "invalid UPower battery evidence for {}",
+                        evidence.id
+                    ))
+                    .into());
+                }
+            }
             CaptureRecord::BluetoothGatt(gatt) => {
                 report.bluetooth_evidence += 1;
-                if !devices.contains(gatt.id.as_str()) {
+                if !devices.contains_key(gatt.id.as_str()) {
                     return Err(io::Error::other(format!(
                         "GATT evidence for {} has no device record",
                         gatt.id
@@ -579,14 +610,60 @@ fn replay_bluetooth(file: &CaptureFile, report: &mut ReplayReport) -> Result<(),
         if reading.device_index.is_some() {
             continue;
         }
-        if !devices.contains(reading.id.as_str()) {
+        if !devices.contains_key(reading.id.as_str()) {
             return Err(io::Error::other(format!(
                 "Bluetooth reading for {} has no device record",
                 reading.id
             ))
             .into());
         }
-        let battery = match reading.backend.as_str() {
+        let kind = devices[reading.id.as_str()];
+        let expected_backend = match kind {
+            CaptureBluetoothKind::Bluez => Some(BLUEZ_SOURCE),
+            CaptureBluetoothKind::Upower => Some(UPOWER_SOURCE),
+            _ => None,
+        };
+        let backend = reading.backend.as_str();
+        if expected_backend.is_some_and(|expected| expected != backend)
+            || (matches!(backend, BLUEZ_SOURCE | UPOWER_SOURCE)
+                && expected_backend != Some(backend))
+        {
+            return Err(io::Error::other(format!(
+                "Bluetooth reading backend does not match device kind for {}",
+                reading.id
+            ))
+            .into());
+        }
+        let battery = match backend {
+            BLUEZ_SOURCE => {
+                let battery = latest_property(file, &reading.id, reading.t_ms)
+                    .and_then(|property| bluez_battery(property.raw_value))
+                    .ok_or_else(|| {
+                        io::Error::other(format!("no BlueZ Battery1 evidence for {}", reading.id))
+                    })?;
+                battery_snapshot(&battery)
+            }
+            UPOWER_SOURCE => {
+                let battery = file
+                    .records
+                    .iter()
+                    .filter_map(|record| match record {
+                        CaptureRecord::UpowerBattery(evidence)
+                            if evidence.id == reading.id && evidence.t_ms <= reading.t_ms =>
+                        {
+                            Some(evidence)
+                        }
+                        _ => None,
+                    })
+                    .max_by_key(|evidence| evidence.t_ms)
+                    .and_then(|evidence| {
+                        upower_battery(evidence.percentage, evidence.battery_level, evidence.state)
+                    })
+                    .ok_or_else(|| {
+                        io::Error::other(format!("no UPower battery evidence for {}", reading.id))
+                    })?;
+                battery_snapshot(&battery)
+            }
             SOURCE_DEVICE_PROPERTY => {
                 let property =
                     latest_property(file, &reading.id, reading.t_ms).ok_or_else(|| {
@@ -630,7 +707,7 @@ fn replay_bluetooth(file: &CaptureFile, report: &mut ReplayReport) -> Result<(),
                     "reading for {} has no HID device index and an unknown backend {other:?}",
                     reading.id
                 ))
-                .into())
+                .into());
             }
         };
         if battery != reading.battery {

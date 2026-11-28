@@ -11,8 +11,7 @@ use toml_edit::DocumentMut;
 
 use crate::state::{TrayIconStyle, TrayIconTheme};
 
-pub const DEFAULT_LOW_BATTERY_THRESHOLDS: &[u8] = &[20, 10, 5];
-pub const DEFAULT_LOW_BATTERY_COOLDOWN_MINUTES: u64 = 120;
+use crate::notify::{DEFAULT_LOW_BATTERY_COOLDOWN_MINUTES, DEFAULT_LOW_BATTERY_THRESHOLDS};
 pub const DEFAULT_POLL_INTERVAL_SECONDS: u64 = 120;
 pub const DEFAULT_RETRY_INTERVAL_SECONDS: u64 = 15;
 pub const DEFAULT_BATTERY_ETA_WINDOW_MINUTES: u64 = 10;

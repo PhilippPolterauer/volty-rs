@@ -1,12 +1,17 @@
-use std::{error::Error, io};
+use std::{error::Error, io, sync::LazyLock};
 
-use crate::{app_icon::favicon_data_uri, history::HistorySample};
+use crate::history::HistorySample;
+use base64::{engine::general_purpose::STANDARD, Engine};
 
 use super::model::{build_data, DashboardData};
 
 const SECONDS_PER_DAY: i64 = 86_400;
 const DATA_TOKEN: &str = "__VOLTY_DATA__";
 const FAVICON_TOKEN: &str = "__VOLTY_FAVICON__";
+static FAVICON_URI: LazyLock<String> = LazyLock::new(|| {
+    let png = include_bytes!("../../assets/volty-favicon.png");
+    format!("data:image/png;base64,{}", STANDARD.encode(png))
+});
 
 pub(super) fn render_dashboard(
     samples: Vec<HistorySample>,
@@ -32,7 +37,7 @@ pub(super) fn render_dashboard_data(data: &DashboardData) -> Result<String, Box<
     }
     Ok(template
         .replacen(DATA_TOKEN, &serialized, 1)
-        .replacen(FAVICON_TOKEN, favicon_data_uri(), 1))
+        .replacen(FAVICON_TOKEN, &FAVICON_URI, 1))
 }
 
 fn escape_script_end_tags(json: &str) -> String {

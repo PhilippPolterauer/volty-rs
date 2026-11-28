@@ -40,10 +40,13 @@ impl HidDeviceInfo {
 
 impl HidInterfaceInfo {
     fn from_hidapi(info: &DeviceInfo) -> Self {
-        #[cfg(windows)]
+        #[cfg(not(target_os = "linux"))]
         let (usage_page, usage) = (Some(info.usage_page()), Some(info.usage()));
-        #[cfg(not(windows))]
-        let (usage_page, usage) = (None, None);
+        // The Linux hidraw backend reads top-level collections through sysfs.
+        #[cfg(target_os = "linux")]
+        let usage_page = (info.usage_page() != 0).then_some(info.usage_page());
+        #[cfg(target_os = "linux")]
+        let usage = usage_page.map(|_| info.usage());
 
         Self {
             vendor_id: info.vendor_id(),

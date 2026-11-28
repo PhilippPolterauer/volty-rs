@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Linux desktop beta for Ubuntu 24.04 LTS amd64 with live peripheral battery readings, a tray icon, low-battery notifications, local history, dashboard export, and hardware capture and replay.
+
 ## [0.17.0] - 2026-11-24
 
 ### Added

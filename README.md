@@ -4,7 +4,7 @@
 
 <h1 align="center">Volty</h1>
 
-<p align="center">Volty is a wireless device battery monitor for Windows. See battery levels for supported mice, headsets, and game controllers in the system tray.</p>
+<p align="center">Volty monitors peripheral batteries in the Windows system tray and on Linux desktops.</p>
 
 <p align="center">
   <a href="docs/device-support.md#tested-devices">Check your device model</a> ·
@@ -37,6 +37,11 @@ See the [memory measurements](docs/diagnostics.md#memory-footprint).
 Battery readings and history stay on your PC.
 
 ## Install
+
+The Linux desktop beta targets Ubuntu 24.04 LTS on amd64. Run `volty status`
+to check which devices report a battery on your system, or `volty tray` to
+start recording history and receiving alerts. See the
+[Linux installation instructions](docs/installation.md#ubuntu-2404-lts).
 
 Before installing, [check your exact model and connection type](docs/device-support.md#tested-devices).
 

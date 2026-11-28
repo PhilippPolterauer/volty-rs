@@ -2,10 +2,7 @@ use std::{collections::BTreeMap, io};
 
 use serde::Serialize;
 
-use crate::{
-    history::{HistorySample, HistoryStore},
-    provider::is_invalid_hidpp_slot,
-};
+use crate::history::{HistorySample, HistoryStore};
 
 const OFFLINE_AFTER_SECONDS: i64 = 15 * 60;
 const SECONDS_PER_DAY: i64 = 86_400;
@@ -147,6 +144,27 @@ pub(super) fn build_data(
         inventory,
         settings: None,
     })
+}
+
+/// Identifies numbered slots that older scans recorded for a wired HID++ device.
+fn is_invalid_hidpp_slot(identity: &str) -> bool {
+    let Some((interface, index)) = identity
+        .strip_prefix("hid:")
+        .and_then(|id| id.rsplit_once('#'))
+    else {
+        return false;
+    };
+    let mut fields = interface.split(':');
+    let (Some(vid), Some(pid), Some("ff00"), Some("0002")) =
+        (fields.next(), fields.next(), fields.nth(1), fields.next())
+    else {
+        return false;
+    };
+    matches!(index, "1" | "2" | "3" | "4" | "5" | "6")
+        && u16::from_str_radix(vid, 16)
+            .ok()
+            .zip(u16::from_str_radix(pid, 16).ok())
+            .is_some_and(|(vid, pid)| volty_hid::is_direct_only_hidpp(vid, pid))
 }
 
 fn derive_sessions(

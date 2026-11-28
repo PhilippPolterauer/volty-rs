@@ -55,7 +55,7 @@ pub enum HidReportKind {
 /// The tag is serialized as `"type": "<snake_case variant>"`. The header and
 /// footer are written by [`crate::CaptureWriter`] and validated by
 /// [`crate::CaptureFile::validate`].
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum CaptureRecord {
     Header(CaptureHeader),
@@ -63,6 +63,7 @@ pub enum CaptureRecord {
     Match(CaptureMatch),
     BluetoothDevice(CaptureBluetoothDevice),
     BluetoothProperty(CaptureBluetoothProperty),
+    UpowerBattery(CaptureUpowerBattery),
     BluetoothGatt(CaptureBluetoothGatt),
     HidppFeatures(CaptureHidppFeatures),
     HidLayout(CaptureHidLayout),
@@ -83,6 +84,7 @@ impl CaptureRecord {
             Self::Match(_) => "match",
             Self::BluetoothDevice(_) => "bluetooth_device",
             Self::BluetoothProperty(_) => "bluetooth_property",
+            Self::UpowerBattery(_) => "upower_battery",
             Self::BluetoothGatt(_) => "bluetooth_gatt",
             Self::HidppFeatures(_) => "hidpp_features",
             Self::HidLayout(_) => "hid_layout",
@@ -150,7 +152,7 @@ pub struct CaptureMatch {
     pub detail: Option<String>,
 }
 
-/// Which Windows Bluetooth surface exposed a device.
+/// Which OS surface exposed a Bluetooth device.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CaptureBluetoothKind {
@@ -160,6 +162,10 @@ pub enum CaptureBluetoothKind {
     Pnp,
     /// A paired Bluetooth Low Energy device.
     Ble,
+    /// A connected device exposed by BlueZ Device1.
+    Bluez,
+    /// A Bluetooth peripheral identified by UPower.
+    Upower,
 }
 
 /// One Bluetooth device or PnP node observed during a capture.
@@ -175,18 +181,29 @@ pub struct CaptureBluetoothDevice {
     pub name: Option<String>,
 }
 
-/// A raw Windows battery property value observed for a Bluetooth device.
+/// A raw byte-valued OS battery property observed for a Bluetooth device.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CaptureBluetoothProperty {
     pub id: String,
     pub t_ms: u64,
-    /// Windows property name, such as `System.Devices.BatteryLife`.
+    /// Qualified OS property name, such as `org.bluez.Battery1.Percentage`.
     pub property: String,
-    /// Windows property type, such as `byte` or `uint8`.
+    /// OS property type, such as Windows `byte` or D-Bus `y`.
     pub property_type: String,
     /// Byte value before range validation.
     pub raw_value: u8,
+}
+
+/// Typed UPower Device properties used to decode a peripheral battery.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CaptureUpowerBattery {
+    pub id: String,
+    pub t_ms: u64,
+    pub percentage: Option<f64>,
+    pub battery_level: Option<u32>,
+    pub state: Option<u32>,
 }
 
 /// A raw GATT Battery Level payload observed for a Bluetooth device.

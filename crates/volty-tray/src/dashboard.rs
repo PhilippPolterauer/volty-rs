@@ -1,10 +1,14 @@
 //! CLI orchestration for the local HTML battery-history dashboard.
 
+#[cfg(windows)]
 mod ipc;
+#[cfg(windows)]
 mod management;
 mod model;
 mod render;
+#[cfg(windows)]
 mod settings_window;
+#[cfg(windows)]
 mod window;
 
 use std::{
@@ -15,11 +19,15 @@ use std::{
 };
 
 use crate::history::{unix_now, HistoryStore};
+#[cfg(windows)]
 use management::DashboardBackend;
-use render::{render_dashboard, render_dashboard_data};
+use render::render_dashboard;
+#[cfg(windows)]
+use render::render_dashboard_data;
 
 const DEFAULT_DAYS: u32 = 7;
 const SECONDS_PER_DAY: i64 = 86_400;
+#[cfg(windows)]
 const EMPTY_MESSAGE: &str = "No battery history recorded yet.";
 
 #[cfg(windows)]
@@ -27,6 +35,14 @@ pub(crate) fn settings_instance_mutex_name() -> &'static str {
     settings_window::instance_mutex_name()
 }
 
+#[cfg(target_os = "linux")]
+const DASHBOARD_USAGE: &str =
+    "Usage: volty dashboard [--days N] [--database PATH] [--output PATH] [--open]
+
+Writes a standalone HTML battery-history dashboard. The default output is
+$XDG_CACHE_HOME/volty/dashboard.html. Use --open to launch the default browser.";
+
+#[cfg(windows)]
 const DASHBOARD_USAGE: &str =
     "Usage: volty dashboard [--window | --settings] [--days N] [--database PATH] [--output PATH] [--no-open]
 
@@ -46,7 +62,9 @@ struct DashboardOptions {
     database: Option<PathBuf>,
     output: Option<PathBuf>,
     no_open: bool,
+    #[cfg(windows)]
     window: bool,
+    #[cfg(windows)]
     settings: bool,
     help: bool,
 }
@@ -57,8 +75,10 @@ impl Default for DashboardOptions {
             days: DEFAULT_DAYS,
             database: None,
             output: None,
-            no_open: false,
+            no_open: cfg!(target_os = "linux"),
+            #[cfg(windows)]
             window: false,
+            #[cfg(windows)]
             settings: false,
             help: false,
         }
@@ -75,15 +95,23 @@ pub fn run_cli(args: &[String]) -> Result<(), Box<dyn Error>> {
         Some(path) => path.clone(),
         None => HistoryStore::local_path()?,
     };
+    #[cfg(windows)]
     let output = options
         .output
         .unwrap_or_else(|| std::env::temp_dir().join("volty-dashboard.html"));
+    #[cfg(target_os = "linux")]
+    let output = match options.output {
+        Some(path) => path,
+        None => crate::linux::cache_dir()?.join("dashboard.html"),
+    };
 
+    #[cfg(windows)]
     if options.settings {
         let backend = DashboardBackend::new(database, options.database.is_none());
         return settings_window::open_settings_window(backend, options.days);
     }
 
+    #[cfg(windows)]
     if options.window {
         let backend = DashboardBackend::new(database, options.database.is_none());
         let mut data = backend.get_dashboard_data(options.days)?;
@@ -109,12 +137,16 @@ pub fn run_cli(args: &[String]) -> Result<(), Box<dyn Error>> {
     } else {
         Vec::new()
     };
+    #[cfg(windows)]
     if samples.is_empty() {
         println!("{EMPTY_MESSAGE}");
         return Ok(());
     }
     let html = render_dashboard(samples, options.days, generated_at)?;
+    #[cfg(windows)]
     fs::write(&output, html)?;
+    #[cfg(target_os = "linux")]
+    crate::linux::write_private_file(&output, html.as_bytes())?;
     println!("Wrote battery dashboard to {}", output.display());
 
     if !options.no_open {
@@ -124,6 +156,11 @@ pub fn run_cli(args: &[String]) -> Result<(), Box<dyn Error>> {
 }
 
 fn open_dashboard(path: &Path) -> Result<(), Box<dyn Error>> {
+    #[cfg(target_os = "linux")]
+    let status = Command::new("xdg-open")
+        .arg(fs::canonicalize(path)?)
+        .status()?;
+    #[cfg(windows)]
     let status = Command::new("cmd")
         .arg("/c")
         .arg("start")
@@ -132,7 +169,7 @@ fn open_dashboard(path: &Path) -> Result<(), Box<dyn Error>> {
         .status()?;
     if !status.success() {
         return Err(io::Error::other(format!(
-            "could not open dashboard in the default browser (cmd exited with {status})"
+            "could not open dashboard in the default browser ({status})"
         ))
         .into());
     }
@@ -147,7 +184,11 @@ fn parse_args(args: &[String]) -> Result<DashboardOptions, Box<dyn Error>> {
         match argument.as_str() {
             "-h" | "--help" | "help" => options.help = true,
             "--no-open" => options.no_open = true,
+            #[cfg(target_os = "linux")]
+            "--open" => options.no_open = false,
+            #[cfg(windows)]
             "--window" => options.window = true,
+            #[cfg(windows)]
             "--settings" => options.settings = true,
             "--days" => {
                 index += 1;
@@ -207,7 +248,7 @@ fn usage_error(message: impl std::fmt::Display) -> Box<dyn Error> {
     io::Error::other(format!("{message}\n{DASHBOARD_USAGE}")).into()
 }
 
-#[cfg(test)]
+#[cfg(all(test, windows))]
 mod tests {
     use super::*;
 

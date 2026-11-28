@@ -22,7 +22,7 @@ body:
     id: connection
     attributes:
       label: Connection
-      description: How the device is connected to this Windows PC.
+      description: How the device is connected to this computer.
       options:
         - USB cable
         - Lightspeed receiver
@@ -59,11 +59,11 @@ body:
       required: true
 
   - type: input
-    id: windows-version
+    id: operating-system
     attributes:
-      label: Windows version
-      description: For example, Windows 11 24H2 or Windows 10 22H2.
-      placeholder: Windows 11 24H2
+      label: Operating system
+      description: Include the Windows version or Linux distribution, kernel, and desktop session.
+      placeholder: Ubuntu 24.04 LTS, kernel 6.8, KDE Plasma on Wayland
     validations:
       required: true
 
@@ -72,7 +72,10 @@ body:
       value: |
         ### Attach a hardware capture
 
-        In the Volty tray, choose **Diagnose / Report an Issue**. Volty saves a
+        On Linux, run `volty status` and `volty capture --strict --output ./device.volty.jsonl`.
+        Check the capture with `volty capture replay ./device.volty.jsonl`.
+
+        In the Windows tray, choose **Diagnose / Report an Issue**. Volty saves a
         text report under `%APPDATA%\Volty\reports` and a machine-readable
         `.volty.jsonl` capture under `%APPDATA%\Volty\captures`. The Diagnose
         window shows the exact paths.
