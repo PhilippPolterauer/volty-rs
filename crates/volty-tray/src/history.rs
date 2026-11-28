@@ -8,7 +8,9 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
-use rusqlite::{params, types::Type, Connection, OptionalExtension, Row, TransactionBehavior};
+use rusqlite::{
+    params, types::Type, Connection, OpenFlags, OptionalExtension, Row, TransactionBehavior,
+};
 
 use crate::capture::unix_to_rfc3339;
 
@@ -128,6 +130,20 @@ impl HistoryStore {
 
     pub(crate) fn local_path() -> Result<PathBuf, io::Error> {
         Ok(crate::state::local_state_path()?.with_file_name("battery-history.sqlite3"))
+    }
+
+    pub(crate) fn open_read_only(path: &Path) -> Result<Self, Box<dyn Error>> {
+        Self::open_existing(path, OpenFlags::SQLITE_OPEN_READ_ONLY)
+    }
+
+    pub(crate) fn open_for_edit(path: &Path) -> Result<Self, Box<dyn Error>> {
+        Self::open_existing(path, OpenFlags::SQLITE_OPEN_READ_WRITE)
+    }
+
+    fn open_existing(path: &Path, flags: OpenFlags) -> Result<Self, Box<dyn Error>> {
+        let connection = Connection::open_with_flags(path, flags)?;
+        connection.busy_timeout(Duration::from_secs(2))?;
+        Ok(Self { connection })
     }
 
     /// Stores a reading unless the latest sample for the identity has the same

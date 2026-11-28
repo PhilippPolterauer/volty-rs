@@ -37,15 +37,26 @@ impl DashboardBackend {
         &self,
         days: u32,
     ) -> Result<DashboardData, Box<dyn std::error::Error>> {
+        self.load_data(days, self.mutations_allowed)
+    }
+
+    pub(super) fn get_history_data(
+        &self,
+        days: u32,
+    ) -> Result<DashboardData, Box<dyn std::error::Error>> {
+        self.load_data(days, false)
+    }
+
+    fn load_data(
+        &self,
+        days: u32,
+        include_settings: bool,
+    ) -> Result<DashboardData, Box<dyn std::error::Error>> {
         validate_days(days, MAX_DASHBOARD_DAYS)?;
         let generated_at = unix_now()?;
         let window_start =
             generated_at.saturating_sub(i64::from(days).saturating_mul(SECONDS_PER_DAY));
-        let history = if self.history_path.exists() {
-            Some(HistoryStore::open(&self.history_path)?)
-        } else {
-            None
-        };
+        let history = open_history_for_read(&self.history_path)?;
         let samples = match history.as_ref() {
             Some(store) => store.samples_since(window_start)?,
             None => Vec::new(),
@@ -64,7 +75,7 @@ impl DashboardBackend {
         );
         let mut data =
             self.build_dashboard_data(samples, days, generated_at, window_start, inventory)?;
-        if self.mutations_allowed {
+        if include_settings {
             data.settings = Some(self.load_settings(tray_display)?);
         }
         Ok(data)
@@ -217,7 +228,7 @@ impl DashboardBackend {
                 true,
             ));
         }
-        let mut store = HistoryStore::open(&self.history_path)?;
+        let mut store = HistoryStore::open_for_edit(&self.history_path)?;
         let counts = match kind {
             CleanupKind::OlderThan => store.delete_older_than(cutoff, identity)?,
             CleanupKind::InactiveDevices => store.delete_inactive(cutoff, identity)?,
@@ -234,7 +245,7 @@ impl DashboardBackend {
         self.require_mutations()?;
         validate_identity(Some(identity))?;
         let deletion = if self.history_path.exists() {
-            HistoryStore::open(&self.history_path)?.delete_identity(identity)?
+            HistoryStore::open_for_edit(&self.history_path)?.delete_identity(identity)?
         } else {
             HistoryDeletion::default()
         };
@@ -403,7 +414,7 @@ impl DashboardBackend {
 
 fn open_history_for_read(path: &Path) -> Result<Option<HistoryStore>, Box<dyn std::error::Error>> {
     if path.exists() {
-        Ok(Some(HistoryStore::open(path)?))
+        Ok(Some(HistoryStore::open_read_only(path)?))
     } else {
         Ok(None)
     }

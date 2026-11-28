@@ -1,6 +1,5 @@
-//! CLI orchestration for the local HTML battery-history dashboard.
+//! CLI orchestration for the native dashboard and standalone HTML export.
 
-mod ipc;
 mod management;
 mod model;
 mod render;
@@ -16,7 +15,7 @@ use std::{
 
 use crate::history::{unix_now, HistoryStore};
 use management::DashboardBackend;
-use render::{render_dashboard, render_dashboard_data};
+use render::render_dashboard;
 
 const DEFAULT_DAYS: u32 = 7;
 const SECONDS_PER_DAY: i64 = 86_400;
@@ -33,7 +32,7 @@ const DASHBOARD_USAGE: &str =
 Generates a self-contained local battery-history dashboard. Nothing is uploaded.
 
 Options:
-  --window         Show the battery dashboard in a native WebView2 window
+  --window         Show the native battery dashboard
   --settings       Open native Windows settings
   --days N          Number of days to include (default 7)
   --database PATH   Read a specific SQLite database instead of the default
@@ -86,23 +85,12 @@ pub fn run_cli(args: &[String]) -> Result<(), Box<dyn Error>> {
 
     if options.window {
         let backend = DashboardBackend::new(database, options.database.is_none());
-        let mut data = backend.get_dashboard_data(options.days)?;
-        data.settings = None;
-        let html = render_dashboard_data(&data)?;
-        if let Err(error) = window::open_dashboard_window(&html, backend) {
-            eprintln!(
-                "Could not open the native dashboard window ({error}); opening the HTML dashboard in the default browser."
-            );
-            fs::write(&output, html)?;
-            println!("Wrote battery dashboard to {}", output.display());
-            open_dashboard(&output)?;
-        }
-        return Ok(());
+        return window::open_dashboard_window(backend, options.days);
     }
 
     let generated_at = unix_now()?;
     let samples = if database.exists() {
-        let store = HistoryStore::open(&database)?;
+        let store = HistoryStore::open_read_only(&database)?;
         let window_start =
             generated_at.saturating_sub(i64::from(options.days).saturating_mul(SECONDS_PER_DAY));
         store.samples_since(window_start)?

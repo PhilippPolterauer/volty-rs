@@ -94,7 +94,7 @@ h1 { margin: 0; font-size: 20px; font-weight: 650; letter-spacing: -.025em; line
 .control-card { min-width: 0; }
 .control-card label, .field-label { display: block; margin-bottom: 7px; color: var(--muted); font-size: 11px; font-weight: 600; letter-spacing: .025em; }
 .control-row { display: flex; gap: 8px; align-items: center; }
-.control-row select, .control-row input, .manage-panel select, .manage-panel input {
+.control-row select, .control-row input {
   width: 100%;
   min-width: 0;
   min-height: 40px;
@@ -106,14 +106,13 @@ h1 { margin: 0; font-size: 20px; font-weight: 650; letter-spacing: -.025em; line
   font: inherit;
   font-size: 13px;
 }
-.control-row select:focus-visible, .control-row input:focus-visible, .manage-panel select:focus-visible, .manage-panel input:focus-visible {
+.control-row select:focus-visible, .control-row input:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 1px;
 }
-.control-row select:hover, .control-row input:hover, .manage-panel select:hover, .manage-panel input:hover { border-color: color-mix(in srgb, var(--accent) 34%, var(--line)); }
-.readonly-note, .status-message { margin: 6px 0 0; color: var(--muted); font-size: 11px; }
+.control-row select:hover, .control-row input:hover { border-color: color-mix(in srgb, var(--accent) 34%, var(--line)); }
+.readonly-note { margin: 6px 0 0; color: var(--muted); font-size: 11px; }
 .control-card .readonly-note { display: none; }
-.status-message { min-height: 1.5em; white-space: pre-line; }
 .summary { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; margin: 18px 0 20px; }
 .summary-card {
   display: flex;
@@ -211,9 +210,8 @@ h1 { margin: 0; font-size: 20px; font-weight: 650; letter-spacing: -.025em; line
 .button:focus-visible, summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .button:focus-visible { box-shadow: 0 0 0 4px color-mix(in srgb, var(--accent) 22%, transparent); }
 .button svg { width: 14px; height: 14px; }
-.button:disabled, .control-row :disabled, .manage-panel :disabled { opacity: .48; cursor: not-allowed; }
+.button:disabled, .control-row :disabled { opacity: .48; cursor: not-allowed; }
 .button:disabled:hover { background: var(--surface-raised); }
-.danger-button { color: var(--red); }
 .topbar-actions .button { border-color: color-mix(in srgb, var(--accent) 36%, var(--line)); background: linear-gradient(135deg, color-mix(in srgb, var(--accent) 23%, var(--surface-raised)), var(--surface-raised)); }
 .section { padding: 0; margin-top: 20px; }
 .section-heading { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin-bottom: 11px; }
@@ -301,47 +299,28 @@ tbody tr:hover { background: var(--hover); }
 .empty h2 { margin: 0; font-size: 15px; font-weight: 650; }
 .empty p { margin: 4px 0 0; color: var(--muted); font-size: 12px; }
 .chart-empty { display: grid; place-items: center; height: 190px; color: var(--muted); font-size: 12px; }
-.manage-panel, .artifacts-panel { margin-top: 12px; padding: 0 16px; border: 1px solid color-mix(in srgb, var(--accent) 12%, var(--line)); border-radius: 15px; background: linear-gradient(135deg, color-mix(in srgb, var(--accent) 5%, color-mix(in srgb, var(--surface) 84%, transparent)), color-mix(in srgb, var(--surface) 78%, transparent) 58%); box-shadow: 0 12px 32px #00000012; backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px); }
-.manage-panel>summary, .artifacts-panel>summary { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 13px 0; cursor: pointer; list-style: none; }
-.manage-panel>summary::-webkit-details-marker, .artifacts-panel>summary::-webkit-details-marker { display: none; }
-.manage-panel>summary::after, .artifacts-panel>summary::after { content: "+"; margin-left: 8px; color: var(--muted); font-size: 16px; line-height: 1; }
-.manage-panel[open]>summary::after, .artifacts-panel[open]>summary::after { content: "−"; }
-.manage-heading, .artifacts-heading { margin: 0; }
-.manage-heading>div, .artifacts-heading>div { flex: 1; }
-.manage-heading h2, .artifacts-heading h2 { margin: 0; font-size: 13px; font-weight: 650; }
-.manage-heading p, .artifacts-heading p { margin: 0; color: var(--muted); font-size: 11px; }
-.readonly-badge, .artifact-count { flex: 0 0 auto; color: var(--muted); font-size: 11px; }
-.manage-panel>:not(summary), .artifacts-panel>:not(summary) { margin-left: 0; }
-.manage-panel[open], .artifacts-panel[open] { padding-bottom: 14px; }
-.manage-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; margin-top: 8px; }
-.manage-box { padding: 13px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface-raised); }
-.manage-box h3 { margin: 0 0 8px; font-size: 12px; font-weight: 600; }
-.manage-fields { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; align-items: end; }
+.manage-panel { margin-top: 12px; padding: 0 16px; border: 1px solid color-mix(in srgb, var(--accent) 12%, var(--line)); border-radius: 15px; background: linear-gradient(135deg, color-mix(in srgb, var(--accent) 5%, color-mix(in srgb, var(--surface) 84%, transparent)), color-mix(in srgb, var(--surface) 78%, transparent) 58%); box-shadow: 0 12px 32px #00000012; backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px); }
+.manage-panel>summary { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 13px 0; cursor: pointer; list-style: none; }
+.manage-panel>summary::-webkit-details-marker { display: none; }
+.manage-panel>summary::after { content: "+"; margin-left: 8px; color: var(--muted); font-size: 16px; line-height: 1; }
+.manage-panel[open]>summary::after { content: "−"; }
+.manage-heading { margin: 0; }
+.manage-heading>div { flex: 1; }
+.manage-heading h2 { margin: 0; font-size: 13px; font-weight: 650; }
+.readonly-badge { flex: 0 0 auto; color: var(--muted); font-size: 11px; }
+.manage-panel>:not(summary) { margin-left: 0; }
+.manage-panel[open] { padding-bottom: 14px; }
 .inventory-management { margin-top: 18px; }
-.inventory-management h3 { margin: 0; font-size: 12px; font-weight: 600; }
-.inventory-management>p { margin: 2px 0 8px; color: var(--muted); font-size: 11px; }
 .inventory-list { display: grid; }
 .inventory-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 0; border-top: 1px solid var(--line); }
 .inventory-device { min-width: 0; }
 .inventory-device-name { font-size: 13px; font-weight: 550; overflow-wrap: anywhere; }
 .inventory-identity { color: var(--faint); font-size: 11px; overflow-wrap: anywhere; }
 .inventory-meta { margin-top: 2px; color: var(--muted); font-size: 11px; overflow-wrap: anywhere; }
-.inventory-actions { display: flex; flex: 0 0 auto; flex-wrap: wrap; justify-content: flex-end; gap: 6px; max-width: 440px; }
-.artifact-actions { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
-.artifact-actions .status-message { flex: 1; margin: 0; }
-.artifact-list { display: grid; margin-top: 8px; }
-.artifact-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 0; border-top: 1px solid var(--line); }
-.artifact-info { min-width: 0; overflow-wrap: anywhere; }
-.artifact-name { font-size: 13px; font-weight: 550; }
-.artifact-meta { margin-top: 2px; color: var(--muted); font-size: 11px; }
-.sensitive-warning { color: var(--yellow); }
 .footer { margin-top: 22px; color: var(--faint); text-align: center; font-size: 11px; }
-.page-nav { display: flex; gap: 18px; margin: 0 0 22px; border-bottom: 1px solid var(--line); }
-.page-tab { padding: 9px 2px 10px; border: 0; border-bottom: 2px solid transparent; border-radius: 0; color: var(--muted); background: transparent; cursor: pointer; }
-.page-tab[aria-current="page"] { border-bottom-color: var(--accent); color: var(--text); font-weight: 650; }
 @media (max-width: 760px) {
   .shell { width: min(calc(100% - 28px), 600px); padding-top: 20px; }
-  .controls, .manage-grid { grid-template-columns: 1fr; }
+  .controls { grid-template-columns: 1fr; }
   .summary { grid-template-columns: 1fr; gap: 9px; }
   .summary-card { padding: 12px 14px; }
   .device-head { grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 12px; }
@@ -366,10 +345,7 @@ tbody tr:hover { background: var(--hover); }
   .device-head .gauge-value { font-size: 18px; }
   .device-head .battery-info { max-width: 72px; }
   .device-head .battery-info-label, .device-head .battery-info-sub { font-size: 10px; }
-  .inventory-row, .artifact-row { align-items: flex-start; flex-direction: column; }
-  .inventory-actions { max-width: none; justify-content: flex-start; }
-  .manage-fields { grid-template-columns: 1fr; }
-  .artifact-actions { align-items: flex-start; flex-direction: column; }
+  .inventory-row { align-items: flex-start; flex-direction: column; }
   .chart-wrap { min-height: 196px; padding: 5px; }
   .chart { height: 184px; }
 }
@@ -397,11 +373,6 @@ tbody tr:hover { background: var(--hover); }
         </button>
       </div>
     </header>
-    <nav class="page-nav" aria-label="Volty pages">
-      <button class="page-tab" type="button" aria-current="page">Overview</button>
-      <button class="page-tab" type="button" id="settings-nav" hidden>Settings</button>
-    </nav>
-    <p class="status-message" id="page-nav-status" role="status" aria-live="polite" hidden></p>
     <section class="controls" aria-label="Dashboard filters">
       <div class="control-card">
         <label for="device-select">Device</label>
@@ -431,48 +402,18 @@ tbody tr:hover { background: var(--hover); }
     <section class="devices" id="devices" aria-label="Devices"></section>
     <details class="manage-panel" aria-labelledby="manage-title">
       <summary class="manage-heading">
-        <div><h2 id="manage-title">Manage data</h2><p>Preview cleanup impact before confirming any deletion.</p></div>
+        <div><h2 id="manage-title">Tracked devices</h2></div>
         <span class="readonly-badge" id="mode-badge">Read-only</span>
       </summary>
       <p class="readonly-note" id="readonly-note" role="status">Static export is read-only. Open the native Volty window to manage stored data.</p>
-      <div class="manage-grid">
-        <div class="manage-box">
-          <h3>Clean up by age</h3>
-          <div class="manage-fields">
-            <label><span class="field-label">Remove older than</span><select id="age-days" aria-label="Remove data older than"><option value="7">7 days</option><option value="14">14 days</option><option value="21">21 days</option></select></label>
-            <button class="button" type="button" id="cleanup-age">Preview cleanup</button>
-          </div>
-        </div>
-        <div class="manage-box">
-          <h3>Clean up inactive devices</h3>
-          <div class="manage-fields">
-            <label><span class="field-label">Inactive for</span><select id="inactive-days" aria-label="Inactive for"><option value="7">7 days</option><option value="14">14 days</option><option value="21">21 days</option></select></label>
-            <button class="button" type="button" id="cleanup-inactive">Preview cleanup</button>
-          </div>
-        </div>
-      </div>
       <div class="inventory-management">
-        <h3>Tracked device history</h3>
-        <p>All-history sample totals, last sample dates, and recording state for the matching inventory.</p>
         <div class="inventory-list" id="inventory-list"></div>
       </div>
-      <p class="status-message" id="manage-status" role="status" aria-live="polite"></p>
-    </details>
-    <details class="artifacts-panel">
-      <summary class="artifacts-heading">
-        <div><h2 id="artifacts-title">Artifacts</h2><p>Managed captures and reports. Raw HID traces are not included.</p></div>
-        <span class="artifact-count" id="artifact-count">0 artifacts</span>
-      </summary>
-      <div class="artifact-actions">
-        <p class="status-message" id="artifact-status" role="status" aria-live="polite">Artifact listing is available in the native Volty window.</p>
-        <button class="button danger-button" type="button" id="delete-all-artifacts" disabled>Delete all</button>
-      </div>
-      <div class="artifact-list" id="artifact-list"></div>
     </details>
     <div class="footer">All measurements are collected locally by Volty.</div>
   </main>
   <script>
-    let dashboardData = __VOLTY_DATA__;
+    const dashboardData = __VOLTY_DATA__;
 
     const $ = (selector, root = document) => root.querySelector(selector);
     const SVG_NS = "http://www.w3.org/2000/svg";
@@ -480,21 +421,8 @@ tbody tr:hover { background: var(--hover); }
     const dateFormat = new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" });
     const shortDateFormat = new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric" });
     const selectionStorageKey = "volty-dashboard-identity";
-    const pendingRequests = new Map();
-    let requestSequence = 0;
     let selectedIdentity = readStoredSelection();
     let deviceSearch = "";
-    let artifacts = [];
-    let artifactMutationBusy = false;
-
-    function hasNativeBridge() {
-      return typeof window.ipc === "object" && window.ipc !== null && typeof window.ipc.postMessage === "function";
-    }
-
-    function canMutate() {
-      return hasNativeBridge() && dashboardData && dashboardData.management_allowed !== false;
-    }
-
     function readStoredSelection() {
       try { return window.localStorage.getItem(selectionStorageKey) || "all"; }
       catch { return "all"; }
@@ -504,42 +432,6 @@ tbody tr:hover { background: var(--hover); }
       selectedIdentity = identity;
       try { window.localStorage.setItem(selectionStorageKey, identity); } catch { /* Storage may be disabled. */ }
     }
-
-    function request(command, payload = {}) {
-      if (!hasNativeBridge()) return Promise.reject(new Error("Native data management is unavailable in this read-only export."));
-      const id = typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
-        ? crypto.randomUUID()
-        : `volty-${Date.now()}-${++requestSequence}`;
-      return new Promise((resolve, reject) => {
-        const timeout = window.setTimeout(() => {
-          pendingRequests.delete(id);
-          reject(new Error("The native dashboard did not respond in time."));
-        }, 15000);
-        pendingRequests.set(id, { resolve, reject, timeout });
-        try {
-          window.ipc.postMessage(JSON.stringify({ id, command, payload }));
-        } catch (error) {
-          window.clearTimeout(timeout);
-          pendingRequests.delete(id);
-          reject(error instanceof Error ? error : new Error(String(error)));
-        }
-      });
-    }
-
-    function normalizeArtifacts(result) {
-      const items = Array.isArray(result) ? result : Array.isArray(result && result.artifacts) ? result.artifacts : [];
-      return items.filter(artifact => artifact && typeof artifact.id === "string");
-    }
-
-    window.__voltyDashboardResponse = response => {
-      if (!response || typeof response.id !== "string") return;
-      const pending = pendingRequests.get(response.id);
-      if (!pending) return;
-      pendingRequests.delete(response.id);
-      window.clearTimeout(pending.timeout);
-      if (response.ok) pending.resolve(response.result);
-      else pending.reject(new Error(typeof response.error === "string" ? response.error : "The native dashboard request failed."));
-    };
 
     function element(tag, className, text) {
       const node = document.createElement(tag);
@@ -682,8 +574,8 @@ tbody tr:hover { background: var(--hover); }
       const plotted = validPoints.map((point, index) => ({ point, index })).filter(item => item.point.p != null && Number.isFinite(Number(item.point.p)));
       let segment = [];
       const segments = [];
-      for (const item of plotted) {
-        const previous = plotted[plotted.indexOf(item) - 1];
+      for (const [index, item] of plotted.entries()) {
+        const previous = plotted[index - 1];
         if (previous && item.index !== previous.index + 1) {
           segments.push(segment);
           segment = [];
@@ -834,11 +726,6 @@ tbody tr:hover { background: var(--hover); }
       return details;
     }
 
-    function recordingStateLabel(item) {
-      if (typeof item.history_recording_enabled !== "boolean") return "Recording state unavailable";
-      return item.history_recording_enabled ? "Recording enabled" : "Recording paused";
-    }
-
     function makeInventoryRow(item) {
       const row = element("article", "inventory-row");
       const identity = typeof item.identity === "string" ? item.identity : "";
@@ -849,59 +736,9 @@ tbody tr:hover { background: var(--hover); }
       );
       const sampleCount = Number(item.samples);
       const samples = item.samples != null && Number.isFinite(sampleCount) && sampleCount >= 0 ? numberFormat.format(sampleCount) : "—";
-      const lastSample = item.last_sample_at == null ? "No samples recorded" : `Last sample ${formatArtifactDate(item.last_sample_at)}`;
-      const monitored = item.monitored == null ? "Monitoring state unavailable" : item.monitored ? "Monitored" : "Not monitored";
-      const pinned = item.pinned == null ? null : item.pinned ? "Pinned" : "Not pinned";
-      info.append(element("div", "inventory-meta", [
-        `${samples} all-history samples`,
-        lastSample,
-        recordingStateLabel(item),
-        monitored,
-        pinned
-      ].filter(Boolean).join(" · ")));
-
-      const actions = element("div", "inventory-actions");
-      const canManage = Boolean(identity) && canMutate();
-      const forgetHistory = element("button", "button danger-button", "Forget history");
-      forgetHistory.type = "button";
-      forgetHistory.disabled = !canManage;
-      forgetHistory.title = canManage ? "Preview and forget this device's stored history" : "Available only in the native Volty window";
-      forgetHistory.addEventListener("click", () => forgetDevice(item, false));
-      const forgetAll = element("button", "button danger-button", "Forget all Volty data");
-      forgetAll.type = "button";
-      forgetAll.disabled = !canManage;
-      forgetAll.title = canManage ? "Preview and forget this device's history and saved preferences" : "Available only in the native Volty window";
-      forgetAll.addEventListener("click", () => forgetDevice(item, true));
-      const hasRecordingState = typeof item.history_recording_enabled === "boolean";
-      const recording = element("button", "button", hasRecordingState
-        ? item.history_recording_enabled ? "Pause history" : "Resume history"
-        : "Recording state unavailable");
-      recording.type = "button";
-      recording.disabled = !canManage || !hasRecordingState;
-      recording.title = !canManage
-        ? "Available only in the native Volty window"
-        : hasRecordingState ? `${item.history_recording_enabled ? "Pause" : "Resume"} future history recording` : "Recording state unavailable";
-      recording.addEventListener("click", () => setRecording(identity, !item.history_recording_enabled));
-      actions.append(forgetHistory, forgetAll, recording);
-      row.append(info, actions);
+      info.append(element("div", "inventory-meta", `${samples} samples`));
+      row.append(info);
       return row;
-    }
-
-    function makeNoHistoryState(item) {
-      const empty = element("article", "empty");
-      const windowDays = Math.max(0, Number(dashboardData.window_days) || 0);
-      const sampleCount = Number(item.samples);
-      const allHistorySamples = item.samples != null && Number.isFinite(sampleCount) && sampleCount >= 0
-        ? numberFormat.format(sampleCount)
-        : "unavailable";
-      const lastSample = item.last_sample_at == null ? "No samples recorded" : `Last sample: ${formatArtifactDate(item.last_sample_at)}`;
-      empty.append(
-        element("h2", "", "No history in this dashboard window"),
-        element("p", "", `${item.name || "This device"} (${item.identity || "identity unavailable"}) has no samples in the last ${windowDays} days.`),
-        element("p", "", `All-history inventory: ${allHistorySamples} samples · ${lastSample} · ${recordingStateLabel(item)}.`),
-        element("p", "", "Its history and recording controls are available under Tracked device history.")
-      );
-      return empty;
     }
 
     function makeDashboardEmpty(title, message) {
@@ -1041,411 +878,20 @@ tbody tr:hover { background: var(--hover); }
         inventoryList.append(element("p", "readonly-note", inventory.length ? "No tracked devices match this filter." : "No tracked device inventory is available."));
       }
 
-      const selectedItem = selectedIdentity === "all" ? null : visibleInventory.find(item => item.identity === selectedIdentity);
-      const selectedDevice = selectedItem && visibleDevices.find(device => device.identity === selectedIdentity);
-      const selectedHasWindowSamples = selectedDevice && Array.isArray(selectedDevice.points) && selectedDevice.points.length > 0;
-      const showSelectedNoHistory = Boolean(selectedItem) && !selectedHasWindowSamples;
-      if (showSelectedNoHistory) {
-        visibleDevices = visibleDevices.filter(device => device.identity !== selectedIdentity);
-      }
       $("#summary-devices").textContent = numberFormat.format(visibleInventory.length);
       $("#summary-points").textContent = numberFormat.format(visibleDevices.reduce((sum, device) => sum + (Array.isArray(device.points) ? device.points.length : 0), 0));
       $("#summary-online").textContent = numberFormat.format(visibleDevices.filter(device => device.online).length);
 
       const container = $("#devices");
       container.replaceChildren();
-      if (showSelectedNoHistory) {
-        container.append(makeNoHistoryState(selectedItem));
-        return;
-      }
       if (!visibleDevices.length) {
-        if (visibleInventory.length && query) {
-          container.append(makeDashboardEmpty("No history in this dashboard window", "The matching tracked devices have no samples in the selected window. Their all-history totals and management controls are shown above."));
-        } else if (visibleInventory.length) {
-          container.append(makeDashboardEmpty("No history in this dashboard window", "Tracked devices exist, but none have samples in the selected window. Select a device to see its all-history details and controls."));
-        } else {
-          const title = inventory.length || devices.length ? "No matching devices" : "No devices yet";
-          const message = inventory.length || devices.length
-            ? "Try a different search or select All devices."
-            : "Battery readings will appear here once Volty starts collecting data.";
-          container.append(makeDashboardEmpty(title, message));
-        }
+        container.append(makeDashboardEmpty(devices.length ? "No matching devices" : "No devices yet", devices.length ? "Try a different search or select All devices." : "Battery readings will appear here once Volty starts collecting data."));
         return;
       }
       visibleDevices.forEach((device, index) => container.append(makeDeviceCard(device, index)));
     }
 
-    function setStatus(selector, message, isError = false) {
-      const node = $(selector);
-      node.textContent = message;
-      node.style.color = isError ? "var(--red)" : "";
-    }
-
-    function formatBytes(value) {
-      const bytes = Number(value);
-      if (!Number.isFinite(bytes) || bytes < 0) return null;
-      if (bytes < 1024) return `${numberFormat.format(bytes)} B`;
-      const units = ["KB", "MB", "GB", "TB"];
-      let size = bytes / 1024;
-      let unit = 0;
-      while (size >= 1024 && unit < units.length - 1) { size /= 1024; unit += 1; }
-      return `${size.toFixed(1)} ${units[unit]}`;
-    }
-
-    function formatArtifactDate(value) {
-      if (value == null) return "Date unavailable";
-      const numeric = Number(value);
-      if (Number.isFinite(numeric)) return formatDate(numeric);
-      const date = new Date(String(value));
-      return Number.isNaN(date.getTime()) ? String(value) : dateFormat.format(date);
-    }
-
-    function artifactIsSensitive(artifact) {
-      return /raw[\s_-]*hid|hid[\s_-]*trace/i.test(`${artifact.kind || ""} ${artifact.name || ""}`);
-    }
-
-    function renderArtifacts() {
-      const list = $("#artifact-list");
-      list.replaceChildren();
-      const count = artifacts.length;
-      $("#artifact-count").textContent = `${numberFormat.format(count)} artifact${count === 1 ? "" : "s"}`;
-      $("#delete-all-artifacts").disabled = !canMutate() || count === 0 || artifactMutationBusy;
-      artifacts.forEach(artifact => {
-        if (!artifact || typeof artifact.id !== "string") return;
-        const row = element("div", "artifact-row");
-        const info = element("div", "artifact-info");
-        const name = element("div", "artifact-name", artifact.name || "Unnamed artifact");
-        const metaParts = [artifact.kind || "Artifact", formatArtifactDate(artifact.created_at)];
-        const size = formatBytes(artifact.bytes);
-        if (size) metaParts.push(size);
-        if (artifact.device_identity) metaParts.push(`Device ${artifact.device_identity}`);
-        const meta = element("div", "artifact-meta", metaParts.join(" · "));
-        info.append(name, meta);
-        if (artifactIsSensitive(artifact)) {
-          info.append(element("div", "artifact-meta sensitive-warning", "Raw HID trace — may contain input data."));
-        }
-        const remove = element("button", "button danger-button", "Delete");
-        remove.type = "button";
-        remove.disabled = !canMutate() || artifactMutationBusy;
-        remove.setAttribute("aria-label", `Delete artifact ${artifact.name || "unnamed artifact"}`);
-        remove.addEventListener("click", () => deleteArtifact(artifact));
-        row.append(info, remove);
-        list.append(row);
-      });
-    }
-
-    function previewDescription(preview) {
-      if (!preview || typeof preview !== "object") return "The native service did not provide impact counts.";
-      const lines = [];
-      for (const [keys, label] of [
-        [["devices", "device_count"], "Devices"],
-        [["samples", "sample_count"], "Samples"],
-        [["files", "file_count"], "Files"]
-      ]) {
-        const key = keys.find(candidate => preview[candidate] != null);
-        if (key) lines.push(`${label}: ${numberFormat.format(Number(preview[key]) || 0)}`);
-      }
-      const size = formatBytes(preview.bytes ?? preview.byte_count);
-      if (size) lines.push(`Storage: ${size}`);
-      const from = preview.from ?? preview.from_at ?? preview.oldest_at ?? preview.first_at ?? preview.start ?? preview.range_start;
-      const to = preview.to ?? preview.to_at ?? preview.newest_at ?? preview.last_at ?? preview.end ?? preview.range_end;
-      if (from != null || to != null) lines.push(`Date range: ${from == null ? "—" : formatArtifactDate(from)} – ${to == null ? "—" : formatArtifactDate(to)}`);
-      const cutoff = preview.cutoff ?? preview.cutoff_at ?? preview.cutoff_date;
-      if (cutoff != null) lines.push(`Cutoff: ${formatArtifactDate(cutoff)}`);
-      if (preview.date_range != null && typeof preview.date_range === "string") lines.push(`Date range: ${preview.date_range}`);
-      return lines.length ? lines.join("\n") : "The native service did not provide impact counts.";
-    }
-
-    function hasPreviewCounts(preview) {
-      return preview && ["devices", "device_count", "samples", "sample_count", "files", "file_count", "bytes", "byte_count"]
-        .some(key => preview[key] != null);
-    }
-
-    function hasPreviewRange(preview) {
-      return preview && [
-        "from", "from_at", "oldest_at", "first_at", "start", "range_start", "to", "to_at",
-        "newest_at", "last_at", "end", "range_end", "cutoff", "cutoff_at", "cutoff_date", "date_range"
-      ].some(key => preview[key] != null);
-    }
-
-    function deviceHistoryPreviewDescription(preview) {
-      if (!preview || typeof preview !== "object") return null;
-      const devices = preview.devices ?? preview.device_count;
-      const samples = preview.samples ?? preview.sample_count;
-      const from = preview.from ?? preview.from_at ?? preview.oldest_at ?? preview.first_at ?? preview.start ?? preview.range_start;
-      const to = preview.to ?? preview.to_at ?? preview.newest_at ?? preview.last_at ?? preview.end ?? preview.range_end;
-      let range = preview.date_range;
-      if (typeof range !== "string" && (from != null || to != null)) {
-        range = `${from == null ? "—" : formatArtifactDate(from)} – ${to == null ? "—" : formatArtifactDate(to)}`;
-      }
-      if (devices == null || samples == null || typeof range !== "string") return null;
-      return `Devices: ${numberFormat.format(Number(devices) || 0)}\nSamples: ${numberFormat.format(Number(samples) || 0)}\nDate range: ${range}`;
-    }
-
-    function confirmedForgetDescription(result) {
-      if (!result || typeof result !== "object") return null;
-      const counts = result.deleted_counts ?? result.counts ?? result;
-      const devices = counts.deleted_devices ?? counts.devices ?? counts.device_count;
-      const samples = counts.deleted_samples ?? counts.samples ?? counts.sample_count;
-      const lines = [];
-      if (devices != null) lines.push(`Devices: ${numberFormat.format(Number(devices) || 0)}`);
-      if (samples != null) lines.push(`Samples: ${numberFormat.format(Number(samples) || 0)}`);
-      const range = result.deleted_range ?? result.date_range;
-      if (typeof range === "string") lines.push(`Date range: ${range}`);
-      return lines.length ? lines.join("\n") : null;
-    }
-
-    async function refreshDataAndArtifacts() {
-      const days = Math.max(1, Number(dashboardData && dashboardData.window_days) || 90);
-      const [dataResult, artifactResult] = await Promise.all([
-        request("get_dashboard_data", { days }),
-        request("list_artifacts", {})
-      ]);
-      if (dataResult && typeof dataResult === "object") dashboardData = dataResult;
-      artifacts = normalizeArtifacts(artifactResult);
-      render();
-      updateManagementMode();
-      renderArtifacts();
-      setStatus("#artifact-status", artifacts.length
-        ? `Loaded ${numberFormat.format(artifacts.length)} artifact${artifacts.length === 1 ? "" : "s"}.`
-        : "No artifacts found.");
-    }
-
-    async function runCleanup(kind) {
-      if (!canMutate()) {
-        setStatus("#manage-status", managementReadOnlyMessage(), true);
-        return;
-      }
-      const days = Number($(kind === "older_than" ? "#age-days" : "#inactive-days").value);
-      const payload = { kind, days };
-      if (selectedIdentity !== "all") payload.identity = selectedIdentity;
-      setStatus("#manage-status", "Preparing cleanup preview…");
-      try {
-        const preview = await request("preview_cleanup", payload);
-        if (!hasPreviewCounts(preview) || !hasPreviewRange(preview)) {
-          throw new Error("The cleanup preview did not include both affected counts and a date range. Nothing was deleted.");
-        }
-        const description = previewDescription(preview);
-        const label = kind === "older_than" ? `older than ${days} days` : `inactive for ${days} days`;
-        if (!window.confirm(`Cleanup ${label}?\n\n${description}\n\nThis permanently deletes the listed data. Continue?`)) {
-          setStatus("#manage-status", "Cleanup canceled. No data was changed.");
-          return;
-        }
-        setStatus("#manage-status", "Cleaning up…");
-        const result = await request("execute_cleanup", payload);
-        const deleted = previewDescription(result);
-        setStatus("#manage-status", `Cleanup completed. ${deleted}`);
-        try {
-          await refreshDataAndArtifacts();
-        } catch (error) {
-          setStatus("#manage-status", `Cleanup completed, but refreshing the dashboard failed: ${error.message}`, true);
-        }
-      } catch (error) {
-        setStatus("#manage-status", `Cleanup failed: ${error.message}`, true);
-      }
-    }
-
-    async function forgetDevice(device, includePreferences) {
-      if (!canMutate()) {
-        setStatus("#manage-status", managementReadOnlyMessage(), true);
-        return;
-      }
-      const identity = typeof device.identity === "string" ? device.identity : "";
-      if (!identity) return;
-      const action = includePreferences ? "Forget all Volty data" : "Forget history";
-      setStatus("#manage-status", `Preparing ${action.toLocaleLowerCase()} preview…`);
-      try {
-        const preview = await request("preview_cleanup", { kind: "device_history", identity });
-        const previewDetails = deviceHistoryPreviewDescription(preview);
-        if (!previewDetails) {
-          throw new Error("The device-history preview did not include device, sample, and date-range counts. Nothing was changed.");
-        }
-        const preferences = includePreferences ? " Saved preferences are included in this request." : " Saved preferences are not included.";
-        const confirmed = window.confirm(`${action} for ${device.name || "this device"}?\nIdentity: ${identity}\n\nBackend-reported history preview:\n${previewDetails}${preferences}\n\nConfirm the forget request. Final deleted counts will be reported only if returned by the backend.`);
-        if (!confirmed) {
-          setStatus("#manage-status", `${action} canceled. No data was changed.`);
-          return;
-        }
-        setStatus("#manage-status", `${action}…`);
-        const result = await request("forget_device", { identity, include_preferences: includePreferences });
-        const confirmedDetails = confirmedForgetDescription(result);
-        setStatus("#manage-status", confirmedDetails
-          ? `Backend confirmed ${action.toLocaleLowerCase()} for ${identity}:\n${confirmedDetails}`
-          : `Backend confirmed the ${action.toLocaleLowerCase()} request for ${identity}; it did not return deleted counts.`);
-        try { await refreshDataAndArtifacts(); }
-        catch (error) { setStatus("#manage-status", `Change completed, but refreshing the dashboard failed: ${error.message}`, true); }
-      } catch (error) {
-        setStatus("#manage-status", `${action} failed: ${error.message}`, true);
-      }
-    }
-
-    async function setRecording(identity, enabled) {
-      if (!canMutate()) {
-        setStatus("#manage-status", managementReadOnlyMessage(), true);
-        return;
-      }
-      if (!identity) return;
-      const action = enabled ? "Resume" : "Pause";
-      setStatus("#manage-status", `${action} future history…`);
-      try {
-        await request("set_history_recording", { identity, enabled });
-        setStatus("#manage-status", `${action}d future history for ${identity}.`);
-        try { await refreshDataAndArtifacts(); }
-        catch (error) { setStatus("#manage-status", `Recording setting changed, but refreshing the dashboard failed: ${error.message}`, true); }
-      } catch (error) {
-        setStatus("#manage-status", `${action} failed: ${error.message}`, true);
-      }
-    }
-
-    async function deleteArtifact(artifact) {
-      if (!canMutate()) {
-        setStatus("#artifact-status", managementReadOnlyMessage(), true);
-        return;
-      }
-      if (artifactMutationBusy) return;
-      const size = formatBytes(artifact.bytes);
-      const details = [artifact.kind || "Artifact", formatArtifactDate(artifact.created_at), size].filter(Boolean).join(" · ");
-      const warning = artifactIsSensitive(artifact) ? "\n\nWarning: raw HID traces may contain input data." : "";
-      if (!window.confirm(`Delete artifact “${artifact.name || "Unnamed artifact"}”?\n${details}${warning}\n\nThis cannot be undone.`)) return;
-      artifactMutationBusy = true;
-      renderArtifacts();
-      setStatus("#artifact-status", "Deleting artifact…");
-      try {
-        await request("delete_artifact", { id: artifact.id });
-        setStatus("#artifact-status", `Deleted ${artifact.name || "artifact"}.`);
-        artifacts = artifacts.filter(item => item.id !== artifact.id);
-        renderArtifacts();
-        try { await refreshDataAndArtifacts(); }
-        catch (error) { setStatus("#artifact-status", `Artifact deleted, but refreshing the listing failed: ${error.message}`, true); }
-      } catch (error) {
-        setStatus("#artifact-status", `Could not delete artifact: ${error.message}`, true);
-      } finally {
-        artifactMutationBusy = false;
-        renderArtifacts();
-      }
-    }
-
-    async function deleteAllArtifacts() {
-      if (!canMutate()) {
-        setStatus("#artifact-status", managementReadOnlyMessage(), true);
-        return;
-      }
-      if (artifactMutationBusy) return;
-      artifactMutationBusy = true;
-      renderArtifacts();
-      try {
-        setStatus("#artifact-status", "Refreshing the managed artifact list…");
-        const listed = normalizeArtifacts(await request("list_artifacts", {}));
-        artifacts = listed;
-        renderArtifacts();
-        if (!listed.length) {
-          setStatus("#artifact-status", "No managed artifacts to delete.");
-          return;
-        }
-
-        const totalBytes = listed.reduce((total, artifact) => {
-          const bytes = Number(artifact.bytes);
-          return total + (Number.isFinite(bytes) && bytes > 0 ? bytes : 0);
-        }, 0);
-        const size = formatBytes(totalBytes) || "unknown size";
-        const names = listed.slice(0, 5).map(artifact => `- ${artifact.name || "Unnamed artifact"}`).join("\n");
-        const remainingNames = listed.length > 5 ? `\n- and ${listed.length - 5} more` : "";
-        const sensitiveCount = listed.filter(artifactIsSensitive).length;
-        const warning = sensitiveCount
-          ? `\n\nWarning: ${sensitiveCount} raw HID trace${sensitiveCount === 1 ? "" : "s"} may contain input data.`
-          : "";
-        if (!window.confirm(`Delete all ${numberFormat.format(listed.length)} managed artifacts (${size})?\n\n${names}${remainingNames}${warning}\n\nOnly files in the current managed-artifact inventory are included. This cannot be undone.`)) {
-          setStatus("#artifact-status", "Bulk deletion canceled. No artifacts were changed.");
-          return;
-        }
-
-        setStatus("#artifact-status", `Deleting ${numberFormat.format(listed.length)} managed artifacts…`);
-        const failures = [];
-        for (const [index, artifact] of listed.entries()) {
-          setStatus("#artifact-status", `Deleting artifact ${numberFormat.format(index + 1)} of ${numberFormat.format(listed.length)}…`);
-          try {
-            await request("delete_artifact", { id: artifact.id });
-          } catch (error) {
-            failures.push({ artifact, message: error.message });
-          }
-        }
-
-        let refreshError = null;
-        try {
-          artifacts = normalizeArtifacts(await request("list_artifacts", {}));
-        } catch (error) {
-          refreshError = error;
-          const failedIds = new Set(failures.map(failure => failure.artifact.id));
-          artifacts = listed.filter(artifact => failedIds.has(artifact.id));
-        }
-        renderArtifacts();
-
-        const remainingIds = new Set(artifacts.map(artifact => artifact.id));
-        const remainingListed = listed.filter(artifact => remainingIds.has(artifact.id));
-        const deletedCount = listed.length - remainingListed.length;
-        const failureDetails = failures
-          .filter(failure => remainingIds.has(failure.artifact.id))
-          .slice(0, 3)
-          .map(failure => `${failure.artifact.name || "Unnamed artifact"}: ${failure.message}`);
-        const moreFailures = Math.max(0, remainingListed.length - failureDetails.length);
-        const outcome = remainingListed.length
-          ? `Deleted ${numberFormat.format(deletedCount)} of ${numberFormat.format(listed.length)} artifacts. ${numberFormat.format(remainingListed.length)} remain${failureDetails.length ? `: ${failureDetails.join("; ")}` : "."}${moreFailures ? ` ${numberFormat.format(moreFailures)} additional failure(s).` : ""}`
-          : failures.length
-            ? `All ${numberFormat.format(listed.length)} artifacts are absent from the current inventory, though ${numberFormat.format(failures.length)} deletion response(s) were inconclusive.`
-            : `Deleted all ${numberFormat.format(listed.length)} managed artifacts (${size}).`;
-        setStatus("#artifact-status", refreshError
-          ? `${outcome} The final listing could not be refreshed: ${refreshError.message}`
-          : outcome, Boolean(refreshError || remainingListed.length || failures.length));
-      } catch (error) {
-        setStatus("#artifact-status", `Could not delete all managed artifacts: ${error.message}`, true);
-      } finally {
-        artifactMutationBusy = false;
-        renderArtifacts();
-      }
-    }
-
-    function managementReadOnlyMessage() {
-      return hasNativeBridge()
-        ? "Read-only: custom --database mode does not allow data changes. Dashboard data and artifact listings remain available."
-        : "Static export is read-only. Open the native Volty window to manage stored data.";
-    }
-
-    function updateManagementMode() {
-      const native = hasNativeBridge();
-      const allowed = canMutate();
-      $("#mode-badge").textContent = allowed ? "Native controls" : "Read-only";
-      $("#readonly-note").textContent = allowed
-        ? "Changes are sent to the native Volty service. Cleanup is previewed before execution."
-        : managementReadOnlyMessage();
-      $("#readonly-note").hidden = allowed;
-      document.querySelectorAll(".manage-panel button, .manage-panel select").forEach(control => { control.disabled = !allowed; });
-    }
-
-    function setNativeMode() {
-      const native = hasNativeBridge();
-      updateManagementMode();
-      $("#settings-nav").hidden = !native;
-      $("#artifact-status").textContent = native ? "Loading artifacts…" : "Artifact listing is available in the native Volty window.";
-      renderArtifacts();
-    }
-
-    async function openSettings() {
-      if (!hasNativeBridge()) return;
-      try {
-        await request("open_settings", {});
-      } catch (error) {
-        $("#page-nav-status").hidden = false;
-        setStatus("#page-nav-status", `Could not open Settings: ${error.message}`, true);
-      }
-    }
-
-    function refreshDashboard() {
-      if (typeof window.__voltyRefreshDashboard === "function") return window.__voltyRefreshDashboard();
-      window.location.reload();
-    }
-
-    $("#refresh-dashboard").addEventListener("click", refreshDashboard);
-    $("#settings-nav").addEventListener("click", openSettings);
+    $("#refresh-dashboard").addEventListener("click", () => window.location.reload());
     $("#device-select").addEventListener("change", event => {
       storeSelection(event.currentTarget.value || "all");
       render();
@@ -1454,18 +900,7 @@ tbody tr:hover { background: var(--hover); }
       deviceSearch = event.currentTarget.value;
       render();
     });
-    $("#cleanup-age").addEventListener("click", () => runCleanup("older_than"));
-    $("#cleanup-inactive").addEventListener("click", () => runCleanup("inactive_devices"));
-    $("#delete-all-artifacts").addEventListener("click", deleteAllArtifacts);
     render();
-    setNativeMode();
-    if (hasNativeBridge()) {
-      window.__voltyRefreshDashboard = () => refreshDataAndArtifacts().catch(error => {
-        setStatus("#manage-status", `Could not refresh dashboard data: ${error.message}`, true);
-        setStatus("#artifact-status", `Could not load artifacts: ${error.message}`, true);
-      });
-      window.__voltyRefreshDashboard();
-    }
   </script>
 </body>
 </html>

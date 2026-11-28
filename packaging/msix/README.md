@@ -101,7 +101,7 @@ The app depends on Win32 APIs that have no AppContainer or UWP equivalent:
   notifications.
 - Local configuration and battery history in a local SQLite database under the
   user's %APPDATA%.
-- An embedded WebView2 control that renders the local battery dashboard.
+- A native window that renders the local battery dashboard.
 
 Scope and risk: volty-rs runs only as the signed-in user at medium integrity,
 exactly like a normal desktop app. It never requests elevation, and it installs
@@ -130,7 +130,7 @@ process to launch. It needs Win32 APIs with no AppContainer equivalent: HID
 (hidapi) for peripheral battery reports, Bluetooth LE (GATT) and XInput for
 headset and controller battery levels, Shell_NotifyIcon and window messages for
 the tray icon, a local SQLite database under %APPDATA% for configuration and
-history, and WebView2 for the local dashboard. It runs as the signed-in user at
+history. It runs as the signed-in user at
 medium integrity, never elevates, installs no drivers or services, and reads
 device data read-only without uploading anything. runFullTrust is the only
 restricted capability and cannot be removed without removing all app
@@ -165,9 +165,6 @@ For a real certificate, pass `-CertificatePath <pfx>` and optionally
   it in **Settings > Apps > Startup**.
 - **Command line:** the `windows.appExecutionAlias` extension makes
   `volty.exe` available in a terminal.
-- **WebView2:** the dashboard needs the Evergreen WebView2 Runtime. It ships
-  with Windows 11 and current Windows 10 installations; the package cannot
-  install it.
 - **Data:** packaged Windows apps virtualize `%APPDATA%`, so configuration and
   history live under
   `%LOCALAPPDATA%\Packages\philipp.polterauer.volty-rs_azjq5m2u7g0\LocalCache\Roaming\Volty`.

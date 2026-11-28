@@ -64,11 +64,8 @@ learning, percentage history, or numeric low-battery thresholds.
 The XInput player slot is the best available device identity. See
 [HID support and adding devices](hid-battery-support.md).
 
-The Windows tray crate centralizes executable-resource icon loading, native
-window icons, the WebView window icon, and the dashboard favicon in
-`app_icon.rs`. The local dashboard is organized as `dashboard/model.rs` for
-history aggregation, `dashboard/render.rs` for HTML generation, and
-`dashboard/window.rs` for the native WebView host; CLI orchestration remains in
-`dashboard.rs`. Native dashboard data-management requests use a typed local
-WebView IPC bridge and operate on Volty-owned history, preferences, and managed
-diagnostic files; standalone HTML exports remain read-only.
+The Windows tray crate centralizes application icons in `app_icon.rs`.
+`dashboard/model.rs` aggregates history and `dashboard/render.rs` generates
+standalone HTML exports. The native dashboard uses egui with the OpenGL
+renderer. A worker loads history, prepares chart data, and runs management
+actions on Volty-owned history, preferences, and diagnostic files.

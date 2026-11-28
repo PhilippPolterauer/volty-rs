@@ -28,9 +28,8 @@ affiliated with Logitech.
 - Windows 10/11, 64-bit x86; standalone executable, no installer.
 - Theme-aware battery tray icon and menu, per-device monitoring, configurable
   low-battery alerts, estimated time remaining, and local history.
-- Left-click the tray icon to open the responsive battery-history dashboard in
-  a native WebView2 window, with a browser fallback; right-click for device
-  stats and other actions.
+- Left-click the tray icon to open the native battery-history dashboard.
+  Right-click for device stats and other actions.
 - Hardware captures can be inspected and replayed locally; Volty never uploads
   diagnostics automatically.
 - The default build monitors HID devices, XInput gamepads, and Bluetooth
