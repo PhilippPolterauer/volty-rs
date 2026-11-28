@@ -13,19 +13,22 @@ use dbus_crossroads::{Context, Crossroads, MethodErr};
 use std::{
     collections::{BTreeMap, BTreeSet},
     error::Error,
-    process::{Child, Command},
+    io::{BufRead, BufReader, Write},
+    process::{Child, Command, Stdio},
     sync::{
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU8, Ordering},
         mpsc, Arc, Mutex,
     },
     thread::{self, JoinHandle},
-    time::{Duration, Instant},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 const WATCHER: &str = "org.kde.StatusNotifierWatcher";
 const WATCHER_PATH: &str = "/StatusNotifierWatcher";
 const ITEM: &str = "org.kde.StatusNotifierItem";
 const MENU: &str = "com.canonical.dbusmenu";
+const UPOWER: &str = "org.freedesktop.UPower";
+const G502_X_MODEL: &str = "Logitech G502 X PLUS";
 const EXPECTED_ID_SUBSTRING: &str = "volty";
 const ITEM_UNREGISTERED: &str = "StatusNotifierItemUnregistered";
 const CALL_TIMEOUT: Duration = Duration::from_secs(1);
@@ -66,8 +69,51 @@ struct Watcher {
     worker: Option<JoinHandle<()>>,
 }
 
+// Volty reads peripherals from UPower on the system bus, which the test redirects
+// to its private session bus.
+fn export_g502_x(server: &mut Crossroads, percentage: Arc<AtomicU8>) {
+    const MOUSE: &str = "/org/freedesktop/UPower/devices/mouse_volty_g502_x_plus";
+    let root = server.register(UPOWER, |interface| {
+        interface.method("EnumerateDevices", (), ("devices",), |_, _: &mut (), ()| {
+            Ok((vec![dbus::Path::from(MOUSE)],))
+        });
+    });
+    server.insert("/org/freedesktop/UPower", &[root], ());
+    let mouse = server.register("org.freedesktop.UPower.Device", |interface| {
+        interface
+            .property("Type")
+            .get(|_, _: &mut Arc<AtomicU8>| Ok(5_u32)); // Mouse
+        interface
+            .property("Model")
+            .get(|_, _: &mut Arc<AtomicU8>| Ok(G502_X_MODEL.to_owned()));
+        interface
+            .property("PowerSupply")
+            .get(|_, _: &mut Arc<AtomicU8>| Ok(false));
+        interface
+            .property("IsPresent")
+            .get(|_, _: &mut Arc<AtomicU8>| Ok(true));
+        interface
+            .property("State")
+            .get(|_, _: &mut Arc<AtomicU8>| Ok(2_u32)); // Discharging
+        interface
+            .property("Percentage")
+            .get(|_, percentage: &mut Arc<AtomicU8>| {
+                Ok(f64::from(percentage.load(Ordering::Relaxed)))
+            });
+        interface
+            .property("UpdateTime")
+            .get(|_, _: &mut Arc<AtomicU8>| {
+                Ok(SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap()
+                    .as_secs())
+            });
+    });
+    server.insert(MOUSE, &[mouse], percentage);
+}
+
 impl Watcher {
-    fn start() -> TestResult<Self> {
+    fn start(percentage: Option<Arc<AtomicU8>>) -> TestResult<Self> {
         let connection = Connection::new_session()?;
         let registrations = Arc::new(Mutex::new(Registrations::default()));
         let mut server = Crossroads::new();
@@ -130,6 +176,12 @@ impl Watcher {
             );
         });
         server.insert(WATCHER_PATH, &[interface], registrations.clone());
+        let names = if let Some(percentage) = percentage {
+            export_g502_x(&mut server, percentage);
+            &[WATCHER, UPOWER][..]
+        } else {
+            &[WATCHER][..]
+        };
         connection.start_receive(
             MatchRule::new_method_call(),
             Box::new(move |message, conn| {
@@ -165,8 +217,11 @@ impl Watcher {
                 true
             },
         )?;
-        if connection.request_name(WATCHER, false, false, true)? != RequestNameReply::PrimaryOwner {
-            return Err("Could not own the watcher name on the test session bus".into());
+        for &name in names {
+            if connection.request_name(name, false, false, true)? != RequestNameReply::PrimaryOwner
+            {
+                return Err(format!("Could not own {name} on the test session bus").into());
+            }
         }
 
         let stop = Arc::new(AtomicBool::new(false));
@@ -206,6 +261,105 @@ impl Drop for TrayProcess {
     }
 }
 
+struct HidppSimulator {
+    process: TrayProcess,
+    output: mpsc::Receiver<std::io::Result<String>>,
+    root: String,
+    _directory: tempfile::TempDir,
+}
+
+impl HidppSimulator {
+    fn start() -> TestResult<Self> {
+        let executable = std::env::var_os("VOLTY_TEST_HIDPP_SIMULATOR")
+            .ok_or("VOLTY_TEST_HIDPP_SIMULATOR must point to the compiled g502x_hidpp helper")?;
+        let directory = tempfile::tempdir()?;
+        let mut process = TrayProcess(
+            Command::new(executable)
+                .env("TMPDIR", directory.path())
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .spawn()?,
+        );
+        let stdout = process.0.stdout.take().unwrap();
+        let (sender, output) = mpsc::channel();
+        thread::Builder::new()
+            .name("hidpp-simulator-output".into())
+            .spawn(move || {
+                for line in BufReader::new(stdout).lines() {
+                    if sender.send(line).is_err() {
+                        break;
+                    }
+                }
+            })?;
+        let root = output
+            .recv_timeout(WAIT_TIMEOUT)
+            .map_err(|err| format!("Waiting for the HID++ simulator testbed: {err}"))??;
+        if !std::path::Path::new(&root).starts_with(directory.path()) {
+            return Err(
+                format!("HID++ simulator returned an invalid testbed path: {root:?}").into(),
+            );
+        }
+        Ok(Self {
+            process,
+            output,
+            root,
+            _directory: directory,
+        })
+    }
+
+    fn set_percentage(&mut self, percentage: u8) -> TestResult<()> {
+        self.process
+            .0
+            .stdin
+            .as_mut()
+            .unwrap()
+            .write_all(&[percentage])?;
+        let response = self.output.recv_timeout(CALL_TIMEOUT).map_err(|err| {
+            format!("Waiting for the HID++ battery update acknowledgement: {err}")
+        })??;
+        if response != "ok" {
+            return Err(
+                format!("HID++ simulator failed to set the battery level: {response:?}").into(),
+            );
+        }
+        Ok(())
+    }
+}
+
+impl Drop for HidppSimulator {
+    fn drop(&mut self) {
+        drop(self.process.0.stdin.take());
+        let deadline = Instant::now() + CALL_TIMEOUT;
+        while matches!(self.process.0.try_wait(), Ok(None)) && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(10));
+        }
+    }
+}
+
+enum Mouse {
+    UPower(Arc<AtomicU8>),
+    Hidpp(HidppSimulator),
+}
+
+impl Mouse {
+    fn model(&self) -> &str {
+        match self {
+            Self::UPower(_) => G502_X_MODEL,
+            Self::Hidpp(_) => "G502 X PLUS",
+        }
+    }
+
+    fn set_percentage(&mut self, value: u8) -> TestResult<()> {
+        match self {
+            Self::UPower(percentage) => {
+                percentage.store(value, Ordering::Relaxed);
+                Ok(())
+            }
+            Self::Hidpp(simulator) => simulator.set_percentage(value),
+        }
+    }
+}
+
 fn wait_for<T>(
     description: &str,
     mut poll: impl FnMut() -> TestResult<Option<T>>,
@@ -238,11 +392,27 @@ fn item_proxy<'a>(
 #[test]
 #[ignore = "run under xvfb-run and dbus-run-session, as in Linux CI"]
 fn volty_registers_status_notifier_item_at_startup() {
+    verify_tray(Mouse::UPower(Arc::new(AtomicU8::new(63))));
+}
+
+#[test]
+#[ignore = "run with the compiled HID++ simulator, Xvfb and a private D-Bus, as in Linux CI"]
+fn volty_shows_hidpp_battery_in_status_notifier() {
+    verify_tray(Mouse::Hidpp(
+        HidppSimulator::start().expect("start simulated wired G502 X PLUS"),
+    ));
+}
+
+fn verify_tray(mut mouse: Mouse) {
     let display = std::env::var_os("DISPLAY").expect("run the test under xvfb-run");
     let bus_address =
         std::env::var_os("DBUS_SESSION_BUS_ADDRESS").expect("run the test under dbus-run-session");
     let dir = tempfile::tempdir().unwrap();
-    let _watcher = Watcher::start().expect("start mock watcher before launching Volty");
+    let upower = match &mouse {
+        Mouse::UPower(percentage) => Some(percentage.clone()),
+        Mouse::Hidpp(_) => None,
+    };
+    let _watcher = Watcher::start(upower).expect("start mock watcher before launching Volty");
     let client = Connection::new_session().unwrap();
     let watcher = client.with_proxy(WATCHER, WATCHER_PATH, CALL_TIMEOUT);
     let (signal_tx, signal_rx) = mpsc::channel();
@@ -265,8 +435,18 @@ fn volty_registers_status_notifier_item_at_startup() {
         .get::<bool>(WATCHER, "IsStatusNotifierHostRegistered")
         .unwrap());
 
+    let mut command = match &mouse {
+        Mouse::Hidpp(simulator) => {
+            let mut command = Command::new("umockdev-wrapper");
+            command
+                .env("UMOCKDEV_DIR", &simulator.root)
+                .arg(env!("CARGO_BIN_EXE_volty"));
+            command
+        }
+        Mouse::UPower(_) => Command::new(env!("CARGO_BIN_EXE_volty")),
+    };
     let mut tray = TrayProcess(
-        Command::new(env!("CARGO_BIN_EXE_volty"))
+        command
             .arg("tray")
             .env("DISPLAY", display)
             .env("DBUS_SESSION_BUS_ADDRESS", &bus_address)
@@ -280,6 +460,7 @@ fn volty_registers_status_notifier_item_at_startup() {
 
     let registered = || watcher.get::<Vec<String>>(WATCHER, "RegisteredStatusNotifierItems");
     let mut discovered = BTreeMap::new();
+    let mut last_battery_view = None;
     let result = (|| -> TestResult<()> {
         let description =
             format!("a StatusNotifierItem address containing {EXPECTED_ID_SUBSTRING:?}");
@@ -328,19 +509,48 @@ fn volty_registers_status_notifier_item_at_startup() {
         if root != 0 || children.is_empty() {
             return Err(format!("{address} has no D-Bus menu items").into());
         }
-        let (entries,): (Vec<(i32, PropMap)>,) = menu.method_call(
-            MENU,
-            "GetGroupProperties",
-            (Vec::<i32>::new(), vec!["label"]),
-        )?;
-        let quit = entries
-            .iter()
-            .find(|(_, properties)| {
-                prop_cast::<String>(properties, "label").is_some_and(|label| label == "Quit")
-            })
-            .map(|(id, _)| *id)
-            .ok_or_else(|| format!("{address} has no Quit menu item"))?;
-        menu.method_call::<(), _, _, _>(MENU, "Event", (quit, "clicked", Variant(0_i32), 0_u32))?;
+        let model = mouse.model().to_owned();
+        let mut wait_for_mouse = |percent, expected_icon| {
+            let label = format!("{model}: {percent}%");
+            wait_for(
+                &format!("menu label {label:?} and tray icon {expected_icon:?}"),
+                || {
+                    let (entries,): (Vec<(i32, PropMap)>,) = menu.method_call(
+                        MENU,
+                        "GetGroupProperties",
+                        (Vec::<i32>::new(), vec!["label"]),
+                    )?;
+                    let labels: BTreeMap<String, i32> = entries
+                        .iter()
+                        .filter_map(|(id, properties)| {
+                            prop_cast::<String>(properties, "label")
+                                .map(|label| (label.clone(), *id))
+                        })
+                        .collect();
+                    let icon: String = item.get(ITEM, "IconName")?;
+                    let matches = labels.contains_key(&label) && icon == expected_icon;
+                    last_battery_view = Some(format!("icon={icon:?}, labels={labels:?}"));
+                    Ok(matches.then_some(labels))
+                },
+            )
+        };
+        let click = |labels: &BTreeMap<String, i32>, label: &str| -> TestResult<()> {
+            let id = labels
+                .get(label)
+                .ok_or_else(|| format!("{address} has no {label:?} menu item"))?;
+            menu.method_call::<(), _, _, _>(
+                MENU,
+                "Event",
+                (*id, "clicked", Variant(0_i32), 0_u32),
+            )?;
+            Ok(())
+        };
+
+        let labels = wait_for_mouse(63, "battery-good")?;
+        mouse.set_percentage(35)?;
+        click(&labels, "Refresh now")?;
+        let labels = wait_for_mouse(35, "battery-low")?;
+        click(&labels, "Quit")?;
         let status = wait_for("volty tray to quit via its D-Bus menu", || {
             Ok(tray.0.try_wait()?)
         })?;
@@ -369,6 +579,6 @@ fn volty_registers_status_notifier_item_at_startup() {
                     .or_insert_with(|| format!("{properties:?}"));
             }
         }
-        panic!("{err}\nDiscovered StatusNotifierItem addresses and properties: {discovered:#?}");
+        panic!("{err}\nLast battery view: {last_battery_view:?}\nDiscovered StatusNotifierItem addresses and properties: {discovered:#?}");
     }
 }
