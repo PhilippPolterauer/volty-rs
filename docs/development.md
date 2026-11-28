@@ -40,9 +40,9 @@ normal tray path.
 ## Native UI preview
 
 Use PowerShell 7 from the workspace root. The script builds incrementally with
-the `ui-preview` Cargo profile, then opens the production egui dashboard or
-Win32 Settings renderer with a disposable fixture. The first build prepares
-the preview profile's dependency cache.
+the `ui-preview` Cargo profile, then opens the requested page in the native
+Volty window with a disposable fixture. The first build prepares the preview
+profile's dependency cache.
 
 ```powershell
 ./scripts/ui-preview.ps1 History

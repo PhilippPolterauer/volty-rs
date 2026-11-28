@@ -576,6 +576,7 @@ impl eframe::App for Dashboard {
         }
         if let Some(system) = &self.system {
             if system.appearance.swap(false, Ordering::AcqRel) {
+                self.settings.refresh_taskbar_theme();
                 let animation = animation_seconds();
                 install_heading_font(ctx);
                 ctx.all_styles_mut(|style| style.animation_time = animation);

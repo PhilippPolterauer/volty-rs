@@ -298,9 +298,10 @@ impl HistoryView {
         };
         let focus_index = focused.and_then(|row| rows[row].index);
         let Some((reference_row, reference_index)) = focused.zip(focus_index).or_else(|| {
-            rows.iter().enumerate().find_map(|(index, row)| {
-                Some((index, row.index?)).filter(|_| self.visible(row.identity))
-            })
+            rows.iter()
+                .enumerate()
+                .filter(|(_, row)| self.visible(row.identity))
+                .find_map(|(index, row)| row.index.map(|device| (index, device)))
         }) else {
             ui.horizontal_wrapped(|ui| {
                 ui.heading(focused.map_or("Battery history", |index| rows[index].name));
@@ -548,6 +549,7 @@ impl HistoryView {
                 let active = self.forecast.iter().filter(|enabled| **enabled).count();
                 ComboBox::from_id_salt("analytics-forecast")
                     .width(104.0)
+                    .height(410.0)
                     .selected_text(if active == 0 {
                         "Forecast · Off".to_owned()
                     } else {
@@ -1262,17 +1264,31 @@ impl HistoryView {
                         .max_height(216.0)
                         .min_scrolled_height(216.0)
                         .auto_shrink([false, true]);
-                    let nearest = cursor.filter(|_| !slice.is_empty()).map(|at| {
-                        let after = slice
-                            .partition_point(|row| time(row) < at)
-                            .min(slice.len() - 1);
-                        let before = after.saturating_sub(1);
-                        if time(&slice[before]).abs_diff(at) < time(&slice[after]).abs_diff(at) {
-                            before
-                        } else {
-                            after
-                        }
-                    });
+                    let nearest = cursor
+                        .filter(|at| {
+                            slice
+                                .first()
+                                .zip(slice.last())
+                                .is_some_and(|(first, last)| {
+                                    (time(first)..=time(last)).contains(at)
+                                })
+                        })
+                        .and_then(|at| {
+                            let after = slice
+                                .partition_point(|row| time(row) < at)
+                                .min(slice.len() - 1);
+                            let before = after.saturating_sub(1);
+                            let nearest = if time(&slice[before]).abs_diff(at)
+                                < time(&slice[after]).abs_diff(at)
+                            {
+                                before
+                            } else {
+                                after
+                            };
+                            (time(&slice[nearest]).abs_diff(at)
+                                <= (super::super::model::OFFLINE_AFTER_SECONDS / 2) as u64)
+                                .then_some(nearest)
+                        });
                     let display_index = |index| {
                         if self.oldest_first {
                             index

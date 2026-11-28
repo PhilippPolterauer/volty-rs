@@ -30,6 +30,10 @@ enum Action {
 enum Reply {
     Loaded(Result<SettingsData, String>),
     Saved(Result<SettingsData, String>),
+    SaveFailed {
+        error: String,
+        stored: Option<SettingsData>,
+    },
     Tested(Result<(), String>),
 }
 
@@ -54,7 +58,13 @@ impl Worker {
                                 .update_settings(&update)
                                 .map_err(|err| err.to_string());
                             backend.notify_preferences();
-                            Reply::Saved(result.and_then(|()| load()))
+                            match result {
+                                Ok(()) => Reply::Saved(load()),
+                                Err(error) => Reply::SaveFailed {
+                                    error,
+                                    stored: load().ok(),
+                                },
+                            }
                         }
                         Action::Test => Reply::Tested(
                             backend.test_notification().map_err(|err| err.to_string()),
@@ -171,6 +181,7 @@ pub(super) struct Settings {
     previews: Vec<egui::TextureHandle>,
     icons: [egui::TextureHandle; 4],
     custom_colors: [u32; 16],
+    taskbar_dark: bool,
 }
 
 const SECTIONS: [&str; 4] = [
@@ -193,7 +204,7 @@ impl Settings {
                 .expect("bundled Settings icon")
                 .into_rgba8();
             let mut pixels = png.into_raw();
-            for pixel in pixels.chunks_exact_mut(4) {
+            for pixel in pixels.as_chunks_mut::<4>().0 {
                 pixel[..3].fill(255);
             }
             ctx.load_texture(
@@ -223,7 +234,13 @@ impl Settings {
             previews: Vec::new(),
             icons,
             custom_colors: [0; 16],
+            taskbar_dark: crate::tray::system_taskbar_is_dark(),
         }
+    }
+
+    pub(super) fn refresh_taskbar_theme(&mut self) {
+        self.taskbar_dark = crate::tray::system_taskbar_is_dark();
+        self.icon_key = None;
     }
 
     pub(super) fn open(&mut self) {
@@ -310,6 +327,15 @@ impl Settings {
                         }
                     }
                 }
+                Reply::SaveFailed { error, stored } => {
+                    self.saving = false;
+                    self.after_save = None;
+                    if let Some(stored) = stored {
+                        self.original = stored.settings.map(Draft::new);
+                        self.inventory = stored.inventory;
+                    }
+                    self.status = Some(Err(format!("Could not finish saving settings. {error}")));
+                }
                 Reply::Tested(result) => {
                     self.testing = false;
                     self.status = Some(result.map(|()| "Test notification sent.".into()));
@@ -378,7 +404,7 @@ impl Settings {
 
     fn index(&mut self, ui: &mut Ui, wide: bool) {
         if wide {
-            ui.label(RichText::new("SETTINGS").small().strong());
+            ui.label(RichText::new("SETTINGS").size(12.0).strong().weak());
         }
         for (i, section) in SECTIONS.iter().enumerate() {
             let selected = self.section == i;
@@ -405,11 +431,11 @@ impl Settings {
             }
         }
         if wide {
-            ui.add_space(22.0);
+            ui.add_space(18.0);
             ui.separator();
             ui.label(
                 RichText::new("Preferences apply across Volty. Changes are saved explicitly.")
-                    .small()
+                    .size(12.0)
                     .weak(),
             );
         }
@@ -443,9 +469,12 @@ impl Settings {
                     .fill(ui.visuals().faint_bg_color)
                     .inner_margin(16)
                     .show(ui, |ui| {
-                        ui.set_width(188.0);
-                        ui.set_min_height((height - 32.0).max(0.0));
-                        self.index(ui, true);
+                        ui.vertical(|ui| {
+                            ui.set_width(188.0);
+                            ui.set_min_height((height - 32.0).max(0.0));
+                            ui.spacing_mut().item_spacing.y = 6.0;
+                            self.index(ui, true);
+                        });
                     });
             }
             ui.vertical(|ui| {
@@ -457,12 +486,7 @@ impl Settings {
                         });
                     ui.separator();
                 }
-                let dirty = self.dirty();
-                let actions = if dirty || self.saving || self.status.is_some() {
-                    58.0
-                } else {
-                    0.0
-                };
+                let actions = 58.0;
                 egui::ScrollArea::vertical()
                     .id_salt("settings-content")
                     .auto_shrink([false, false])
@@ -515,6 +539,12 @@ impl Settings {
                     }
                 } else if self.dirty() {
                     ui.label("Unsaved changes");
+                } else {
+                    ui.label(
+                        RichText::new("Your preferences are up to date.")
+                            .size(12.0)
+                            .weak(),
+                    );
                 }
             });
         });
@@ -672,20 +702,26 @@ impl Settings {
                 &mut String,
                 Option<(_, &mut String)>,
             )| {
-                ui.label(RichText::new(label).small().weak());
+                ui.label(RichText::new(label).size(12.0).weak());
                 ui.horizontal(|ui| {
                     let rgb = validation::parse_hex_color(value);
                     let fill = rgb
                         .map(|[r, g, b]| Color32::from_rgb(r, g, b))
                         .unwrap_or(ui.visuals().extreme_bg_color);
-                    if ui
+                    let response = ui
                         .add_enabled(
                             owner.is_some(),
                             egui::Button::new(" ").fill(fill).min_size(vec2(34.0, 32.0)),
                         )
-                        .on_hover_text(format!("Choose {label} color"))
-                        .clicked()
-                    {
+                        .on_hover_text(format!("Choose {label} color"));
+                    response.widget_info(|| {
+                        egui::WidgetInfo::labeled(
+                            egui::Role::Button,
+                            ui.is_enabled() && owner.is_some(),
+                            format!("Choose {label} color"),
+                        )
+                    });
+                    if response.clicked() {
                         if let Some(result) = owner
                             .and_then(|window| choose_color(window, &mut self.custom_colors, rgb))
                         {
@@ -696,11 +732,11 @@ impl Settings {
                 });
                 if let Some((label, threshold)) = threshold {
                     ui.horizontal(|ui| {
-                        ui.label(RichText::new(label).small().weak());
+                        ui.label(RichText::new(label).size(12.0).weak());
                         field(ui, threshold, label, "%", 58.0);
                     });
                 } else {
-                    ui.label(RichText::new("Green at 100%").small().weak());
+                    ui.label(RichText::new("Green at 100%").size(12.0).weak());
                 }
             };
             if ui.available_width() >= 540.0 {
@@ -736,7 +772,7 @@ impl Settings {
         let dark = match theme {
             TrayIconTheme::Dark => true,
             TrayIconTheme::Light => false,
-            _ => ui.visuals().dark_mode,
+            _ => self.taskbar_dark,
         };
         let key = (
             self.colors,
@@ -776,7 +812,7 @@ impl Settings {
             }
         };
         let taskbars = |this: &Self, ui: &mut Ui| {
-            ui.label(RichText::new("Taskbar appearance").small().weak());
+            ui.label(RichText::new("Taskbar appearance").size(12.0).weak());
             for (index, light) in [false, true].into_iter().enumerate() {
                 let (bg, fg, label) = if light {
                     (
@@ -794,7 +830,7 @@ impl Settings {
                 Frame::new()
                     .fill(bg)
                     .corner_radius(4)
-                    .inner_margin(8)
+                    .inner_margin(egui::Margin::symmetric(8, 4))
                     .show(ui, |ui| {
                         ui.horizontal(|ui| {
                             ui.label(RichText::new(label).size(12.0).color(fg));
@@ -807,12 +843,10 @@ impl Settings {
         };
         if self.icon_key != Some(key) {
             self.icon_key = Some(key);
-            self.previews = [(64, dark), (24, true), (24, false)]
+            let tray_size = if ui.pixels_per_point() > 1.0 { 32 } else { 16 };
+            self.previews = [(32, dark), (tray_size, true), (tray_size, false)]
                 .into_iter()
-                .filter_map(|(base, sample_dark)| {
-                    let size = (base as f32 * ui.pixels_per_point())
-                        .round()
-                        .clamp(16.0, 128.0) as u32;
+                .filter_map(|(size, sample_dark)| {
                     let theme = match theme {
                         TrayIconTheme::System if sample_dark => TrayIconTheme::Dark,
                         TrayIconTheme::System => TrayIconTheme::Light,
@@ -998,36 +1032,47 @@ fn row(ui: &mut Ui, name: &str, description: &str, control: impl FnOnce(&mut Ui)
                 ui.label(RichText::new(name).strong());
                 ui.label(RichText::new(description).size(13.0).weak());
             };
-            if ui.available_width() < 530.0 {
+            if ui.available_width() < 660.0 {
                 label(ui);
                 ui.add_space(5.0);
                 control(ui);
             } else {
                 let width = ui.available_width();
-                ui.horizontal_centered(|ui| {
-                    ui.allocate_ui_with_layout(
-                        vec2(width - 254.0, 40.0),
-                        egui::Layout::top_down(egui::Align::Min)
-                            .with_main_align(egui::Align::Center),
-                        label,
-                    );
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        ui.horizontal(control);
-                    });
-                });
+                ui.allocate_ui_with_layout(
+                    vec2(width, 46.0),
+                    egui::Layout::left_to_right(egui::Align::Center),
+                    |ui| {
+                        ui.allocate_ui_with_layout(
+                            vec2(width - 254.0, 40.0),
+                            egui::Layout::top_down(egui::Align::Min)
+                                .with_main_align(egui::Align::Center),
+                            label,
+                        );
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            ui.horizontal(control);
+                        });
+                    },
+                );
             }
         });
 }
 
 fn field(ui: &mut Ui, value: &mut String, name: &str, suffix: &str, width: f32) {
     ui.horizontal(|ui| {
+        let rtl = ui.layout().prefer_right_to_left();
+        if rtl && !suffix.is_empty() {
+            ui.label(RichText::new(suffix).size(12.0).weak());
+        }
         let response = ui.add_sized(
             vec2(width, 34.0),
-            egui::TextEdit::singleline(value).id_salt(name),
+            egui::TextEdit::singleline(value)
+                .id_salt(name)
+                .hint_text(name),
         );
-        response
-            .labelled_by(ui.label(RichText::new(suffix).small().weak()).id)
-            .on_hover_text(name);
+        if !rtl && !suffix.is_empty() {
+            ui.label(RichText::new(suffix).size(12.0).weak());
+        }
+        response.on_hover_text(name);
     });
 }
 

@@ -488,7 +488,7 @@ mod tests {
         );
 
         writer.execute_batch("BEGIN EXCLUSIVE").unwrap();
-        let worker = Worker::start(Context::default(), backend).unwrap();
+        let (worker, _settings) = Worker::start(Context::default(), backend).unwrap();
         worker.load(1, false).unwrap();
         let export = directory.join("history.csv");
         worker

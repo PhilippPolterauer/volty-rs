@@ -478,30 +478,29 @@ impl DeviceState {
         Ok(settings)
     }
 
-    pub fn set_tray_icon_style(
+    #[cfg(any(test, windows))]
+    pub(crate) fn set_tray_display(
         &mut self,
         style: TrayIconStyle,
-    ) -> Result<(), Box<dyn std::error::Error>> {
-        self.connection.execute(
-            "INSERT INTO settings (key, value) VALUES (?1, ?2)
-             ON CONFLICT (key) DO UPDATE SET value = excluded.value",
-            params![TRAY_ICON_STYLE_KEY, style.as_str()],
-        )?;
-        Ok(())
-    }
-
-    pub fn set_tray_icon_theme(
-        &mut self,
         theme: TrayIconTheme,
-    ) -> Result<(), Box<dyn std::error::Error>> {
+        pinned: Option<&str>,
+    ) -> rusqlite::Result<()> {
         self.connection.execute(
-            "INSERT INTO settings (key, value) VALUES (?1, ?2)
+            "INSERT INTO settings (key, value) VALUES (?1, ?2), (?3, ?4), (?5, ?6)
              ON CONFLICT (key) DO UPDATE SET value = excluded.value",
-            params![TRAY_ICON_THEME_KEY, theme.as_str()],
+            params![
+                TRAY_ICON_STYLE_KEY,
+                style.as_str(),
+                TRAY_ICON_THEME_KEY,
+                theme.as_str(),
+                PINNED_DEVICE_KEY,
+                pinned.unwrap_or_default(),
+            ],
         )?;
         Ok(())
     }
 
+    #[cfg(any(test, all(windows, feature = "ui-preview")))]
     pub fn set_pinned_device(&mut self, identity: &str) -> Result<(), Box<dyn std::error::Error>> {
         if identity.is_empty() {
             return Err(io::Error::new(
@@ -514,15 +513,6 @@ impl DeviceState {
             "INSERT INTO settings (key, value) VALUES (?1, ?2)
              ON CONFLICT (key) DO UPDATE SET value = excluded.value",
             params![PINNED_DEVICE_KEY, identity],
-        )?;
-        Ok(())
-    }
-
-    pub fn clear_pinned_device(&mut self) -> Result<(), Box<dyn std::error::Error>> {
-        self.connection.execute(
-            "INSERT INTO settings (key, value) VALUES (?1, '')
-             ON CONFLICT (key) DO UPDATE SET value = excluded.value",
-            [PINNED_DEVICE_KEY],
         )?;
         Ok(())
     }
@@ -1105,10 +1095,12 @@ mod tests {
                 "pinned device identity must not be empty"
             );
             state
-                .set_tray_icon_style(TrayIconStyle::Percentage)
+                .set_tray_display(
+                    TrayIconStyle::Percentage,
+                    TrayIconTheme::Dark,
+                    Some("bluetooth:headset"),
+                )
                 .unwrap();
-            state.set_tray_icon_theme(TrayIconTheme::Dark).unwrap();
-            state.set_pinned_device("bluetooth:headset").unwrap();
         }
 
         {
@@ -1125,7 +1117,9 @@ mod tests {
 
         {
             let mut state = DeviceState::open(&path).unwrap();
-            state.clear_pinned_device().unwrap();
+            state
+                .set_tray_display(TrayIconStyle::Percentage, TrayIconTheme::Dark, None)
+                .unwrap();
             assert_eq!(state.tray_display().unwrap().pinned_device, None);
             state
                 .connection
@@ -1235,9 +1229,12 @@ mod tests {
                 .unwrap();
             assert_eq!(version, 5);
             state
-                .set_tray_icon_style(TrayIconStyle::Percentage)
+                .set_tray_display(
+                    TrayIconStyle::Percentage,
+                    TrayIconTheme::System,
+                    Some("hid:keep#1"),
+                )
                 .unwrap();
-            state.set_pinned_device("hid:keep#1").unwrap();
         }
 
         let state = DeviceState::open(&path).unwrap();

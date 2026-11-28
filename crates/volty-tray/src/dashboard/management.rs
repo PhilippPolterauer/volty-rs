@@ -414,46 +414,24 @@ impl DashboardBackend {
     ) -> Result<(), Box<dyn std::error::Error>> {
         self.require_mutations()?;
         validate_identity(update.pinned_device.as_deref())?;
+        let style = TrayIconStyle::parse(&update.tray_icon_style)
+            .ok_or_else(|| io::Error::other("invalid tray icon style"))?;
+        let theme = TrayIconTheme::parse(&update.tray_icon_theme)
+            .ok_or_else(|| io::Error::other("invalid tray icon theme"))?;
+        let mut state = self.device_state()?;
         match &self.preview_directory {
             Some(directory) => {
                 crate::config::update_dashboard_settings_at(directory.join("config.toml"), update)?
             }
             None => crate::config::update_dashboard_settings(update)?,
         }
-
-        let mut state = self.device_state().map_err(|error| {
-            io::Error::other(format!(
-                "configuration was saved, but pinned-device state could not be opened: {error}"
-            ))
-        })?;
-        match update.pinned_device.as_deref() {
-            Some(identity) => {
-                state.set_pinned_device(identity).map_err(|error| {
-                    io::Error::other(format!(
-                        "configuration was saved, but the pinned device could not be updated: {error}"
-                    ))
-                })?;
-            }
-            None => state.clear_pinned_device().map_err(|error| {
+        state
+            .set_tray_display(style, theme, update.pinned_device.as_deref())
+            .map_err(|error| {
                 io::Error::other(format!(
-                    "configuration was saved, but the pinned device could not be cleared: {error}"
+                    "configuration was saved, but tray preferences could not be updated: {error}"
                 ))
-            })?,
-        }
-        let style = TrayIconStyle::parse(&update.tray_icon_style)
-            .ok_or_else(|| io::Error::other("invalid tray icon style"))?;
-        state.set_tray_icon_style(style).map_err(|error| {
-            io::Error::other(format!(
-                "configuration was saved, but tray icon style could not be stored: {error}"
-            ))
-        })?;
-        let theme = TrayIconTheme::parse(&update.tray_icon_theme)
-            .ok_or_else(|| io::Error::other("invalid tray icon theme"))?;
-        state.set_tray_icon_theme(theme).map_err(|error| {
-            io::Error::other(format!(
-                "configuration was saved, but tray icon theme could not be stored: {error}"
-            ))
-        })?;
+            })?;
 
         if let Some(enabled) = update.start_on_boot {
             if self.is_preview() {

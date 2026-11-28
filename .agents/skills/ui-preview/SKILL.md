@@ -5,7 +5,7 @@ description: Iterate on Volty's native Windows dashboard and Settings UI using i
 
 # Volty UI preview
 
-Run [scripts/ui-preview.ps1](../../../scripts/ui-preview.ps1) from the Volty workspace root in PowerShell 7 on Windows. It builds the dedicated incremental Cargo profile and opens the real egui dashboard or Win32 Settings renderer. The first build prepares the profile's dependency cache. Rerun the launcher after changing Rust or layout code. Use `-NoBuild` to switch views, themes, or sizes with the executable you just built.
+Run [scripts/ui-preview.ps1](../../../scripts/ui-preview.ps1) from the Volty workspace root in PowerShell 7 on Windows. It builds the dedicated incremental Cargo profile and opens the real native Volty window, including its Settings page. The first build prepares the profile's dependency cache. Rerun the launcher after changing Rust or layout code. Use `-NoBuild` to switch views, themes, or sizes with the executable you just built.
 
 ```powershell
 ./scripts/ui-preview.ps1 History -Screenshot "$env:TEMP/volty-history.png"
@@ -18,7 +18,7 @@ Run [scripts/ui-preview.ps1](../../../scripts/ui-preview.ps1) from the Volty wor
 
 - `Cleanup` opens Manage data with the actual delete confirmation displayed. `InvalidSettings` opens the native Settings form with an invalid alert threshold.
 - `-Screenshot` waits for the selected scenario to be ready and saves the native window as a PNG. Inspect the image to verify the affected layout and interaction state.
-- The default theme is dark. Use `-Theme Light` or `-Theme System` as needed. `-Narrow` selects 700 × 560 logical pixels. `-Size WIDTHxHEIGHT` sets the dashboard client area or the Settings outer window.
+- The default theme is dark. Use `-Theme Light` or `-Theme System` as needed. `-Narrow` selects 700 × 560 logical pixels. `-Size WIDTHxHEIGHT` sets the shared window's client area.
 - Each launch starts with fresh fixture data and restarts this checkout's preview. The installed tray and its windows can stay open. Cleanup and Settings saves affect the disposable profile. Startup registration and test notifications are simulated.
 - Use `./scripts/ui-preview.ps1 -Stop` when finished, or leave the preview open if the user wants to inspect it.
 
