@@ -200,14 +200,29 @@ struct SettingsWindow {
     activation_listener: Option<SettingsEventListener>,
     create_complete: bool,
     controls_ready: bool,
+    preview: bool,
+    invalid_preview: bool,
 }
 
-pub(super) fn open_settings_window(backend: DashboardBackend) -> Result<(), Box<dyn Error>> {
+#[derive(Default)]
+pub(super) struct WindowOptions {
+    pub(super) size: Option<[u32; 2]>,
+    pub(super) invalid_preview: bool,
+}
+
+pub(super) fn open_settings_window(
+    backend: DashboardBackend,
+    options: WindowOptions,
+) -> Result<(), Box<dyn Error>> {
     // SAFETY: Settings owns this process's UI thread and has yet to create a window.
     unsafe { SetThreadDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2) };
     win32::enable_system_dark_menus();
     let class_name = win32::to_wide(WINDOW_CLASS);
-    let title = win32::to_wide("Volty Settings — Loading…");
+    let title = win32::to_wide(if backend.is_preview() {
+        "Volty UI Preview — Settings (Loading)"
+    } else {
+        "Volty Settings — Loading…"
+    });
     // SAFETY: a null module name requests the current process executable's module handle.
     let instance = unsafe { GetModuleHandleW(ptr::null()) };
     if instance.is_null() {
@@ -248,9 +263,14 @@ pub(super) fn open_settings_window(backend: DashboardBackend) -> Result<(), Box<
         activation_listener: None,
         create_complete: false,
         controls_ready: false,
+        preview: backend.is_preview(),
+        invalid_preview: options.invalid_preview,
     });
 
-    let (window_width, window_height) = initial_window_size(dpi);
+    let (window_width, window_height) = options
+        .size
+        .map(|[width, height]| (scale(width as i32, dpi), scale(height as i32, dpi)))
+        .unwrap_or_else(|| initial_window_size(dpi));
     // SAFETY: class/title are NUL-terminated and live through creation; the Box-backed state pointer
     // remains valid until the window is destroyed and the message loop exits.
     let window = unsafe {
@@ -283,7 +303,9 @@ pub(super) fn open_settings_window(backend: DashboardBackend) -> Result<(), Box<
 
     let services = SettingsWorker::start(window, backend).and_then(|worker| {
         state.worker = Some(worker);
-        state.activation_listener = Some(SettingsEventListener::start(window)?);
+        if !state.preview {
+            state.activation_listener = Some(SettingsEventListener::start(window)?);
+        }
         Ok(())
     });
     if let Err(error) = services {
@@ -346,9 +368,7 @@ impl SettingsWorker {
                         SettingsAction::Save(update) => {
                             let result =
                                 backend.update_settings(&update).map_err(|e| e.to_string());
-                            crate::app::notify_preferences();
-                            super::notify_appearance();
-                            super::notify_dashboard();
+                            backend.notify_preferences();
                             SettingsReply::Saved(result)
                         }
                         SettingsAction::Test => SettingsReply::Tested(
@@ -2521,7 +2541,6 @@ fn apply_worker_reply(window: HWND, state: &mut SettingsWindow, reply: SettingsR
                 create_controls(window, instance, &data.inventory, state)
                     .map_err(|error| error.to_string())
             });
-            set_control_text(window, WINDOW_TITLE);
             match result {
                 Ok(()) => {
                     state.controls_ready = true;
@@ -2544,6 +2563,18 @@ fn apply_worker_reply(window: HWND, state: &mut SettingsWindow, reply: SettingsR
                     refresh_appearance(window, state);
                     refresh_preview_icon(state);
                     state.appearance.apply_native_theme(window, state);
+                    if state.invalid_preview {
+                        set_control_text(control(state, ControlRole::ThresholdEdit), "120");
+                        update_validation(window, state);
+                    }
+                    set_control_text(
+                        window,
+                        if state.preview {
+                            "Volty UI Preview — Settings"
+                        } else {
+                            WINDOW_TITLE
+                        },
+                    );
                 }
                 Err(error) => {
                     let message = win32::to_wide(&format!("Could not load Settings. {error}"));
@@ -2591,7 +2622,9 @@ fn close_window(window: HWND, state: &SettingsWindow) {
         set_control_text(control(state, ControlRole::Status), "Saving changes…");
         return;
     }
-    if current_form(state).is_some_and(|form| state.original.as_ref() != Some(&form)) {
+    if !state.preview
+        && current_form(state).is_some_and(|form| state.original.as_ref() != Some(&form))
+    {
         let message = win32::to_wide("Discard unsaved Settings changes and close this window?");
         let title = win32::to_wide(WINDOW_TITLE);
         // SAFETY: the live Settings window is a valid owner for this confirmation dialog.

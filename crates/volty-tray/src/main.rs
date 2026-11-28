@@ -41,7 +41,11 @@ mod win32;
 
 fn main() {
     #[cfg(windows)]
-    if let Err(error) = app_icon::set_process_app_user_model_id() {
+    let command = std::env::args().nth(1);
+    #[cfg(windows)]
+    let preview = cfg!(feature = "ui-preview") && command.as_deref() == Some("ui-preview");
+    #[cfg(windows)]
+    if let Err(error) = app_icon::set_process_app_user_model_id(preview) {
         show_error(&format!(
             "volty: could not set the Windows application identity: {error}"
         ));
@@ -50,14 +54,17 @@ fn main() {
 
     #[cfg(windows)]
     let cli_mode = matches!(
-        std::env::args().nth(1).as_deref(),
-        Some("hid" | "capture" | "history" | "dashboard")
+        command.as_deref(),
+        Some("hid" | "capture" | "history" | "dashboard" | "ui-preview")
     );
     #[cfg(windows)]
     let dashboard_window_mode = std::env::args()
         .skip(2)
         .any(|argument| argument == "--window" || argument == "--settings")
-        && std::env::args().nth(1).as_deref() == Some("dashboard");
+        && command.as_deref() == Some("dashboard");
+    #[cfg(windows)]
+    let dashboard_window_mode = dashboard_window_mode
+        || preview && !std::env::args().any(|arg| arg == "--help" || arg == "-h");
 
     #[cfg(windows)]
     if !cli_mode {
@@ -222,6 +229,12 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         Some("history") => return history::run_cli(&args.collect::<Vec<_>>()),
         #[cfg(windows)]
         Some("dashboard") => return run_dashboard_cli(&args.collect::<Vec<_>>()),
+        #[cfg(all(windows, feature = "ui-preview"))]
+        Some("ui-preview") => return dashboard::run_preview(&args.collect::<Vec<_>>()),
+        #[cfg(all(windows, not(feature = "ui-preview")))]
+        Some("ui-preview") => {
+            return Err("Build with the ui-preview feature or run scripts/ui-preview.ps1".into())
+        }
         #[cfg(all(windows, feature = "self-update"))]
         Some("--apply-update") => return update::apply_update_cli(&args.collect::<Vec<_>>()),
         #[cfg(all(windows, feature = "self-update"))]

@@ -28,19 +28,39 @@ use super::{
 use platform::{LiveUpdate, Signal, SystemChanges, WindowSignals};
 use worker::{Action, Confirmation, Reply, Snapshot, Worker};
 
+#[derive(Default)]
+pub(super) struct WindowOptions {
+    pub(super) size: Option<[u32; 2]>,
+    pub(super) preview: Option<PreviewOptions>,
+}
+
+pub(super) struct PreviewOptions {
+    pub(super) theme: AppTheme,
+    pub(super) live: Vec<LiveDevice>,
+    pub(super) manage: bool,
+    pub(super) cleanup: bool,
+}
+
 pub(super) fn open_dashboard_window(
     backend: DashboardBackend,
     days: u32,
+    launch: WindowOptions,
 ) -> Result<(), Box<dyn Error>> {
+    let size = launch.size.unwrap_or([1080, 760]).map(|value| value as f32);
+    let title = if backend.is_preview() {
+        "Volty UI Preview — Dashboard (Loading)"
+    } else {
+        "Volty Dashboard"
+    };
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_inner_size([1080.0, 760.0])
+            .with_inner_size(size)
             .with_min_inner_size([660.0, 460.0])
             .with_icon(app_icon::dashboard_icon()?),
         ..Default::default()
     };
     Ok(eframe::run_native(
-        "Volty Dashboard",
+        title,
         options,
         Box::new(move |cc| {
             let ctx = &cc.egui_ctx;
@@ -60,7 +80,23 @@ pub(super) fn open_dashboard_window(
             apply_visuals(ctx, contrast);
             let system = platform::hwnd(cc)
                 .and_then(|window| platform::listen_to_system(window, ctx.clone()).ok());
-            let signals = WindowSignals::start(ctx.clone())?;
+            let signals = if backend.is_preview() {
+                None
+            } else {
+                Some(WindowSignals::start(ctx.clone())?)
+            };
+            let preview_theme = launch.preview.as_ref().map(|preview| preview.theme);
+            if let Some(theme) = preview_theme {
+                apply_theme(ctx, theme);
+            }
+            let manage = launch
+                .preview
+                .as_ref()
+                .is_some_and(|preview| preview.manage);
+            let cleanup = launch
+                .preview
+                .as_ref()
+                .is_some_and(|preview| preview.cleanup);
             let backend_is_local = backend.is_local();
             let worker = Worker::start(ctx.clone(), backend)?;
             let mut dashboard = Dashboard {
@@ -70,7 +106,10 @@ pub(super) fn open_dashboard_window(
                 contrast,
                 title_theme: None,
                 colors: BatteryColorMap::default(),
-                live: None,
+                live: launch.preview.map(|preview| preview.live),
+                preview_theme,
+                preview_cleanup: cleanup,
+                preview_ready: false,
                 show_live: backend_is_local,
                 days,
                 snapshot: None,
@@ -80,14 +119,14 @@ pub(super) fn open_dashboard_window(
                 exporting: false,
                 opening_settings: false,
                 discard_load: false,
-                artifacts_pending: false,
+                artifacts_pending: manage,
                 artifacts: None,
                 export_status: None,
                 refresh_pending: false,
                 status: None,
                 confirmation: None,
                 confirmation_focus: None,
-                page: Page::History,
+                page: if manage { Page::Manage } else { Page::History },
                 older_days: 7,
                 inactive_days: 7,
                 search: String::new(),
@@ -106,12 +145,15 @@ enum Page {
 
 struct Dashboard {
     worker: Worker,
-    signals: WindowSignals,
+    signals: Option<WindowSignals>,
     system: Option<Arc<SystemChanges>>,
     contrast: Option<Palette>,
     title_theme: Option<egui::Theme>,
     colors: BatteryColorMap,
     live: Option<Vec<LiveDevice>>,
+    preview_theme: Option<AppTheme>,
+    preview_cleanup: bool,
+    preview_ready: bool,
     show_live: bool,
     days: u32,
     snapshot: Option<Arc<Snapshot>>,
@@ -207,7 +249,7 @@ impl Dashboard {
                     .add_enabled(!self.opening_settings, Button::new("Settings"))
                     .clicked()
                 {
-                    match self.worker.launch_settings() {
+                    match self.worker.launch_settings(self.preview_theme) {
                         Ok(()) => self.opening_settings = true,
                         Err(error) => self.status = Some(Err(error.to_string())),
                     }
@@ -686,7 +728,11 @@ impl Dashboard {
 
 impl eframe::App for Dashboard {
     fn logic(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
-        if let Some(LiveUpdate(live)) = self.signals.take_live(ctx) {
+        if let Some(LiveUpdate(live)) = self
+            .signals
+            .as_ref()
+            .and_then(|signals| signals.take_live(ctx))
+        {
             if self.show_live {
                 if self.selected.is_none() {
                     self.selected = live
@@ -710,10 +756,18 @@ impl eframe::App for Dashboard {
             }
             self.refresh_pending |= system.resume.swap(false, Ordering::AcqRel);
         }
-        if self.signals.take_change() {
+        if self
+            .signals
+            .as_ref()
+            .is_some_and(WindowSignals::take_change)
+        {
             self.refresh_pending = true;
         }
-        while let Ok(signal) = self.signals.receive.try_recv() {
+        while let Some(signal) = self
+            .signals
+            .as_ref()
+            .and_then(|signals| signals.receive.try_recv().ok())
+        {
             match signal {
                 Signal::Activate => {
                     ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
@@ -726,11 +780,7 @@ impl eframe::App for Dashboard {
                 }
                 Signal::Appearance(theme, colors) => {
                     self.colors = colors;
-                    ctx.set_theme(match theme {
-                        AppTheme::System => ThemePreference::System,
-                        AppTheme::Light => ThemePreference::Light,
-                        AppTheme::Dark => ThemePreference::Dark,
-                    });
+                    apply_theme(ctx, theme);
                 }
             }
         }
@@ -765,6 +815,12 @@ impl eframe::App for Dashboard {
                     }
                     if days == self.days && !self.discard_load {
                         self.set_snapshot(snapshot);
+                        if std::mem::take(&mut self.preview_cleanup) {
+                            self.send(Action::PreviewCleanup(
+                                CleanupKind::OlderThan,
+                                self.older_days,
+                            ));
+                        }
                     }
                 }
                 Err(error) if days == self.days && !self.discard_load => {
@@ -806,7 +862,25 @@ impl eframe::App for Dashboard {
                 }
             });
         self.confirm(ui.ctx());
+        if self.preview_theme.is_some()
+            && !self.preview_ready
+            && self.snapshot.is_some()
+            && !self.busy
+        {
+            self.preview_ready = true;
+            ui.ctx().send_viewport_cmd(egui::ViewportCommand::Title(
+                "Volty UI Preview — Dashboard".to_owned(),
+            ));
+        }
     }
+}
+
+fn apply_theme(ctx: &egui::Context, theme: AppTheme) {
+    ctx.set_theme(match theme {
+        AppTheme::System => ThemePreference::System,
+        AppTheme::Light => ThemePreference::Light,
+        AppTheme::Dark => ThemePreference::Dark,
+    });
 }
 
 fn selected_inventory<'a>(

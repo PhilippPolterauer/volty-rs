@@ -23,17 +23,50 @@ const MAX_CLEANUP_DAYS: u32 = 30;
 pub(super) struct DashboardBackend {
     history_path: PathBuf,
     mutations_allowed: bool,
+    preview_directory: Option<PathBuf>,
+    preview_startup: std::sync::atomic::AtomicBool,
 }
 
 impl DashboardBackend {
     pub(super) fn is_local(&self) -> bool {
-        self.mutations_allowed
+        self.mutations_allowed && !self.is_preview()
+    }
+
+    pub(super) fn is_preview(&self) -> bool {
+        self.preview_directory.is_some()
     }
 
     pub(super) fn new(history_path: PathBuf, mutations_allowed: bool) -> Self {
         Self {
             history_path,
             mutations_allowed,
+            preview_directory: None,
+            preview_startup: false.into(),
+        }
+    }
+
+    #[cfg(feature = "ui-preview")]
+    pub(super) fn preview(directory: PathBuf) -> Self {
+        Self {
+            history_path: directory.join("battery-history.sqlite3"),
+            preview_directory: Some(directory),
+            mutations_allowed: true,
+            preview_startup: false.into(),
+        }
+    }
+
+    fn device_state(&self) -> Result<DeviceState, Box<dyn std::error::Error>> {
+        match &self.preview_directory {
+            Some(directory) => DeviceState::open(&directory.join("device-state.sqlite3")),
+            None => DeviceState::open_local(),
+        }
+    }
+
+    pub(super) fn notify_preferences(&self) {
+        if !self.is_preview() {
+            crate::app::notify_preferences();
+            super::notify_appearance();
+            super::notify_dashboard();
         }
     }
 
@@ -45,7 +78,7 @@ impl DashboardBackend {
             });
         }
         let history = open_history_for_read(&self.history_path)?;
-        let state = DeviceState::open_local()?;
+        let state = self.device_state()?;
         let (inventory, tray_display) = self.inventory(history.as_ref(), &state)?;
         Ok(SettingsData {
             settings: Some(self.load_settings(tray_display)),
@@ -67,8 +100,7 @@ impl DashboardBackend {
             None => Vec::new(),
         };
         let inventory = if self.mutations_allowed {
-            self.inventory(history.as_ref(), &DeviceState::open_local()?)?
-                .0
+            self.inventory(history.as_ref(), &self.device_state()?)?.0
         } else {
             build_inventory(
                 history
@@ -105,7 +137,7 @@ impl DashboardBackend {
             state.history_recording_preferences()?,
             tray_display.pinned_device.clone(),
         );
-        if self.mutations_allowed {
+        if self.is_local() {
             if let Some(live) = super::live::read() {
                 for device in live {
                     match inventory.binary_search_by(|item| item.identity.cmp(&device.identity)) {
@@ -123,11 +155,22 @@ impl DashboardBackend {
     }
 
     fn load_settings(&self, tray_display: crate::state::TrayDisplaySettings) -> DashboardSettings {
-        let (config, config_error) = match AppConfig::load() {
+        let config = match &self.preview_directory {
+            Some(directory) => AppConfig::load_from(directory.join("config.toml")),
+            None => AppConfig::load(),
+        };
+        let (config, config_error) = match config {
             Ok(config) => (config, None),
             Err(error) => (AppConfig::default(), Some(error.to_string())),
         };
-        let (start_on_boot, startup_error) = match crate::tray::start_on_boot_enabled() {
+        let startup = if self.is_preview() {
+            Ok(self
+                .preview_startup
+                .load(std::sync::atomic::Ordering::Relaxed))
+        } else {
+            crate::tray::start_on_boot_enabled()
+        };
+        let (start_on_boot, startup_error) = match startup {
             Ok(enabled) => (Some(enabled), None),
             Err(error) => (None, Some(error.to_string())),
         };
@@ -300,7 +343,8 @@ impl DashboardBackend {
             });
         }
 
-        let preferences_cleared = match DeviceState::open_local()
+        let preferences_cleared = match self
+            .device_state()
             .and_then(|mut state| state.forget_device_preferences(identity))
         {
             Ok(cleared) => cleared,
@@ -312,7 +356,9 @@ impl DashboardBackend {
                 .into());
             }
         };
-        crate::app::notify_preferences();
+        if !self.is_preview() {
+            crate::app::notify_preferences();
+        }
         Ok(ForgetResult {
             identity: identity.to_owned(),
             deleted_samples: deletion.samples,
@@ -330,7 +376,8 @@ impl DashboardBackend {
     ) -> Result<HistoryRecordingResult, Box<dyn std::error::Error>> {
         self.require_mutations()?;
         validate_identity(Some(identity))?;
-        DeviceState::open_local()?.set_history_recording_enabled(identity, enabled)?;
+        self.device_state()?
+            .set_history_recording_enabled(identity, enabled)?;
         Ok(HistoryRecordingResult {
             identity: identity.to_owned(),
             enabled,
@@ -345,8 +392,11 @@ impl DashboardBackend {
     ) -> Result<(), Box<dyn std::error::Error>> {
         self.require_mutations()?;
         validate_identity(Some(identity))?;
-        DeviceState::open_local()?.set_device_monitored(identity, enabled)?;
-        crate::app::notify_preferences();
+        self.device_state()?
+            .set_device_monitored(identity, enabled)?;
+        if !self.is_preview() {
+            crate::app::notify_preferences();
+        }
         Ok(())
     }
 
@@ -356,9 +406,14 @@ impl DashboardBackend {
     ) -> Result<(), Box<dyn std::error::Error>> {
         self.require_mutations()?;
         validate_identity(update.pinned_device.as_deref())?;
-        crate::config::update_dashboard_settings(update)?;
+        match &self.preview_directory {
+            Some(directory) => {
+                crate::config::update_dashboard_settings_at(directory.join("config.toml"), update)?
+            }
+            None => crate::config::update_dashboard_settings(update)?,
+        }
 
-        let mut state = DeviceState::open_local().map_err(|error| {
+        let mut state = self.device_state().map_err(|error| {
             io::Error::other(format!(
                 "configuration was saved, but pinned-device state could not be opened: {error}"
             ))
@@ -393,6 +448,11 @@ impl DashboardBackend {
         })?;
 
         if let Some(enabled) = update.start_on_boot {
+            if self.is_preview() {
+                self.preview_startup
+                    .store(enabled, std::sync::atomic::Ordering::Relaxed);
+                return Ok(());
+            }
             crate::tray::set_start_on_boot_enabled(enabled).map_err(|error| {
                 io::Error::other(format!(
                     "configuration and pinned-device settings were saved, but Windows startup could not be updated: {error}"
@@ -404,14 +464,16 @@ impl DashboardBackend {
 
     pub(super) fn test_notification(&self) -> Result<(), Box<dyn std::error::Error>> {
         self.require_mutations()?;
-        crate::notify::show_low_battery_notification("Volty test", 15)?;
+        if !self.is_preview() {
+            crate::notify::show_low_battery_notification("Volty test", 15)?;
+        }
         Ok(())
     }
 
     pub(super) fn list_artifacts(
         &self,
     ) -> Result<Vec<ManagedArtifact>, Box<dyn std::error::Error>> {
-        Ok(artifact_inventory()?
+        Ok(artifact_inventory(self.preview_directory.as_deref())?
             .into_iter()
             .map(|entry| entry.artifact)
             .collect())
@@ -425,7 +487,7 @@ impl DashboardBackend {
         if id.is_empty() || id.len() > 128 {
             return Err(io::Error::new(io::ErrorKind::InvalidInput, "invalid artifact id").into());
         }
-        let matches = artifact_inventory()?
+        let matches = artifact_inventory(self.preview_directory.as_deref())?
             .into_iter()
             .filter(|entry| entry.artifact.id == id)
             .collect::<Vec<_>>();
@@ -678,11 +740,17 @@ const ARTIFACT_ROOTS: [ArtifactRoot; 2] = [
     },
 ];
 
-fn artifact_inventory() -> Result<Vec<ArtifactEntry>, Box<dyn std::error::Error>> {
-    let app_data = env::var_os("APPDATA")
-        .map(PathBuf::from)
-        .ok_or_else(|| io::Error::other("could not determine the user application data folder"))?;
-    let volty_directory = app_data.join("Volty");
+fn artifact_inventory(
+    preview_directory: Option<&Path>,
+) -> Result<Vec<ArtifactEntry>, Box<dyn std::error::Error>> {
+    let volty_directory = match preview_directory {
+        Some(directory) => directory.to_owned(),
+        None => env::var_os("APPDATA")
+            .map(|path| PathBuf::from(path).join("Volty"))
+            .ok_or_else(|| {
+                io::Error::other("could not determine the user application data folder")
+            })?,
+    };
     let mut artifacts = Vec::new();
     for root in ARTIFACT_ROOTS {
         let directory = volty_directory.join(root.directory);

@@ -117,7 +117,7 @@ impl DeviceState {
         })
     }
 
-    fn open(path: &Path) -> Result<Self, Box<dyn std::error::Error>> {
+    pub(crate) fn open(path: &Path) -> Result<Self, Box<dyn std::error::Error>> {
         if let Some(parent) = path
             .parent()
             .filter(|parent| !parent.as_os_str().is_empty())

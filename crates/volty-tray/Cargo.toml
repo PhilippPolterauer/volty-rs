@@ -8,6 +8,7 @@ rust-version.workspace = true
 description = "Windows system tray application for Volty"
 
 [features]
+ui-preview = []
 default = ["bluetooth", "self-update"]
 bluetooth = ["volty-bluetooth/windows-backend"]
 self-update = [

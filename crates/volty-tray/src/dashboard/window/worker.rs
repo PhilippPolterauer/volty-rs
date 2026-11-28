@@ -7,7 +7,7 @@ use std::{
 
 use eframe::egui::Context;
 
-use crate::history::HistoryDeletion;
+use crate::{config::AppTheme, history::HistoryDeletion};
 
 use super::{
     super::{
@@ -187,7 +187,7 @@ impl Worker {
         self.exports.try_recv().ok()
     }
 
-    pub(super) fn launch_settings(&self) -> io::Result<()> {
+    pub(super) fn launch_settings(&self, preview: Option<AppTheme>) -> io::Result<()> {
         use std::os::windows::process::CommandExt;
         let launched = self.launched.clone();
         let ctx = self.ctx.clone();
@@ -195,8 +195,13 @@ impl Worker {
             .name("volty-open-settings".to_owned())
             .spawn(move || {
                 let result = std::env::current_exe().and_then(|executable| {
-                    std::process::Command::new(executable)
-                        .args(["dashboard", "--settings"])
+                    let mut command = std::process::Command::new(executable);
+                    if let Some(theme) = preview {
+                        command.args(["ui-preview", "settings", "--theme", theme.as_str()]);
+                    } else {
+                        command.args(["dashboard", "--settings"]);
+                    }
+                    command
                         .creation_flags(windows_sys::Win32::System::Threading::CREATE_NO_WINDOW)
                         .spawn()
                         .map(|_| ())

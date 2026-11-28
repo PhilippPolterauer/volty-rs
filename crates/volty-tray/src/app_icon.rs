@@ -20,8 +20,13 @@ const FAVICON_PNG: &[u8] = include_bytes!("../assets/volty-favicon.png");
 
 static FAVICON_DATA_URI: OnceLock<String> = OnceLock::new();
 
-pub fn set_process_app_user_model_id() -> io::Result<()> {
-    let app_user_model_id: Vec<u16> = APP_USER_MODEL_ID.encode_utf16().chain([0]).collect();
+pub fn set_process_app_user_model_id(preview: bool) -> io::Result<()> {
+    let identity = if preview {
+        "PhilippPolterauer.Volty.UiPreview"
+    } else {
+        APP_USER_MODEL_ID
+    };
+    let app_user_model_id: Vec<u16> = identity.encode_utf16().chain([0]).collect();
     // SAFETY: app_user_model_id is NUL-terminated and remains alive for this call.
     let result = unsafe { SetCurrentProcessExplicitAppUserModelID(app_user_model_id.as_ptr()) };
     if result < 0 {
