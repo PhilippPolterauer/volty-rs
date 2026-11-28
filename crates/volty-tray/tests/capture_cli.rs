@@ -1,4 +1,4 @@
-#![cfg(windows)]
+#![cfg(any(windows, target_os = "linux"))]
 
 use std::{
     path::{Path, PathBuf},
@@ -80,6 +80,21 @@ fn capture_subcommands_reject_a_missing_path() {
 }
 
 #[test]
+fn capture_subcommands_reject_an_invalid_capture() {
+    let invalid_capture = Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml");
+    for command in ["inspect", "replay"] {
+        let output = volty()
+            .args(["capture", command])
+            .arg(&invalid_capture)
+            .output()
+            .expect("run capture command");
+        assert_eq!(output.status.code(), Some(2), "{command}");
+        assert!(!output.stderr.is_empty(), "{command}");
+    }
+}
+
+#[test]
+#[cfg(windows)]
 fn hid_sniff_requires_explicit_input_acknowledgment() {
     let output = volty()
         .args(["hid", "sniff", "--output", "unused.hidtrace.jsonl"])
@@ -94,6 +109,7 @@ fn hid_sniff_requires_explicit_input_acknowledgment() {
 }
 
 #[test]
+#[cfg(windows)]
 fn hid_sniff_help_and_duration_validation_are_available_without_hardware() {
     let help = volty()
         .args(["hid", "sniff", "--help"])
@@ -127,6 +143,7 @@ fn hid_sniff_help_and_duration_validation_are_available_without_hardware() {
 }
 
 #[test]
+#[cfg(windows)]
 fn hid_trace_requires_a_trace_file() {
     let output = volty()
         .args(["hid", "trace"])

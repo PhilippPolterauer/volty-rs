@@ -37,6 +37,21 @@ behavior need Windows and compatible hardware. A successful diagnostic command
 alone does not establish that the tray polls a device; verify it through the
 normal tray path.
 
+## Linux capture preview
+
+The Linux build supports offline capture inspection and replay. Build it and
+try both commands against the checked-in Logitech capture:
+
+```sh
+cargo build -p volty-tray --locked
+target/debug/volty capture inspect tests/hardware/g502x-plus-unified.volty.jsonl
+target/debug/volty capture replay tests/hardware/g502x-plus-unified.volty.jsonl
+```
+
+On Debian and Ubuntu, install `libudev-dev` and `pkg-config` before enabling
+all workspace features. The Linux CI job lints and tests the full workspace
+and builds the CLI with its default features.
+
 ## README visuals
 
 The renderer test generates temporary PNG previews for the README hero and tray

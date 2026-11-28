@@ -5,7 +5,7 @@ publish = false
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
-description = "Windows system tray application for Volty"
+description = "Volty battery monitor and diagnostics CLI"
 
 [features]
 default = ["bluetooth", "self-update"]
@@ -21,17 +21,18 @@ self-update = [
 name = "volty"
 path = "src/main.rs"
 
-[dependencies]
-toml.workspace = true
-toml_edit = "0.25"
-
 [build-dependencies]
 winresource = { version = "0.1", default-features = false }
 
-[target.'cfg(windows)'.dependencies]
+[target.'cfg(any(windows, target_os = "linux"))'.dependencies]
 volty-battery.workspace = true
 volty-bluetooth = { path = "../volty-bluetooth", default-features = false }
 volty-capture = { path = "../volty-capture" }
+volty-hid = { path = "../volty-hid" }
+
+[target.'cfg(windows)'.dependencies]
+toml.workspace = true
+toml_edit = "0.25"
 volty-hid = { path = "../volty-hid", features = ["hidapi", "profile"] }
 tray-icon = { version = "0.26", default-features = false }
 image = { version = "0.25", default-features = false, features = ["png"] }

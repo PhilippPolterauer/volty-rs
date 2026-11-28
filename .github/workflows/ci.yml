@@ -43,6 +43,35 @@ jobs:
       - name: Test tray without self-updates
         run: cargo test -p volty-tray --locked --no-default-features --features bluetooth
 
+  linux:
+    name: Linux checks
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Install HID build dependencies
+        run: sudo apt-get update && sudo apt-get install -y libudev-dev pkg-config
+
+      - name: Install stable Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+
+      - name: Lint workspace
+        run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+
+      - name: Test workspace
+        run: cargo test --workspace --all-features --locked
+
+      - name: Build CLI with default features
+        run: cargo build -p volty-tray --locked
+
   msrv:
     name: MSRV (Rust 1.99.0)
     runs-on: windows-latest
