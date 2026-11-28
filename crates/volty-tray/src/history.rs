@@ -8,9 +8,12 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
-use rusqlite::{params, types::Type, Connection, OptionalExtension, Row, TransactionBehavior};
+use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
+#[cfg(any(windows, test))]
+use rusqlite::{types::Type, Row};
 
 use crate::capture::unix_to_rfc3339;
+use volty_battery::{BatteryStatus, DeviceId, DeviceLabel};
 
 const DEFAULT_DAYS: u32 = 7;
 const RETENTION_SECONDS: i64 = 30 * 86_400;
@@ -40,6 +43,44 @@ pub struct HistorySample {
     pub voltage_mv: Option<u16>,
 }
 
+impl HistorySample {
+    pub(crate) fn from_reading(
+        id: &DeviceId,
+        label: &DeviceLabel,
+        battery: &BatteryStatus,
+        recorded_at: i64,
+    ) -> Self {
+        Self {
+            identity: id.as_str().to_owned(),
+            name: label.display(),
+            recorded_at,
+            percent: battery.percentage.exact(),
+            charging: crate::notify::charging(battery.state),
+            voltage_mv: battery.voltage_mv,
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+pub(crate) fn record_readings(
+    readings: &[volty_battery::SourceReading],
+) -> Result<(), Box<dyn Error>> {
+    if readings.is_empty() {
+        return Ok(());
+    }
+    let mut store = HistoryStore::open_local()?;
+    let recorded_at = unix_now()?;
+    for reading in readings {
+        store.record(&HistorySample::from_reading(
+            &reading.id,
+            &reading.label,
+            &reading.battery,
+            recorded_at,
+        ))?;
+    }
+    Ok(())
+}
+
 /// Per-device aggregates over a history window.
 #[derive(Clone, Debug, PartialEq)]
 pub struct HistorySummary {
@@ -57,6 +98,7 @@ pub struct HistorySummary {
 }
 
 /// A device represented by one or more samples in the history database.
+#[cfg(any(windows, test))]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct HistoryInventoryEntry {
     pub(crate) identity: String,
@@ -66,6 +108,7 @@ pub(crate) struct HistoryInventoryEntry {
 }
 
 /// Counts returned after deleting one or more devices' history.
+#[cfg(any(windows, test))]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) struct HistoryDeletion {
     pub(crate) samples: u64,
@@ -73,6 +116,7 @@ pub(crate) struct HistoryDeletion {
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[cfg(any(windows, test))]
 pub(crate) struct HistoryRangePreview {
     pub(crate) samples: u64,
     pub(crate) devices: u64,
@@ -101,7 +145,10 @@ impl HistoryStore {
             .parent()
             .filter(|parent| !parent.as_os_str().is_empty())
         {
-            fs::create_dir_all(parent)?;
+            let mut dirs = fs::DirBuilder::new();
+            #[cfg(target_os = "linux")]
+            std::os::unix::fs::DirBuilderExt::mode(&mut dirs, 0o700);
+            dirs.recursive(true).create(parent)?;
         }
         let connection = Connection::open(path)?;
         connection.busy_timeout(Duration::from_secs(2))?;
@@ -127,6 +174,11 @@ impl HistoryStore {
     }
 
     pub(crate) fn local_path() -> Result<PathBuf, io::Error> {
+        #[cfg(target_os = "linux")]
+        {
+            Ok(crate::linux::state_dir()?.join("battery-history.sqlite3"))
+        }
+        #[cfg(windows)]
         Ok(crate::state::local_state_path()?.with_file_name("battery-history.sqlite3"))
     }
 
@@ -219,7 +271,10 @@ impl HistoryStore {
         })?;
         Ok(rows.collect::<Result<Vec<_>, _>>()?)
     }
+}
 
+#[cfg(any(windows, test))]
+impl HistoryStore {
     /// Lists exact identities represented in history, including each device's
     /// latest recorded name and last sample time.
     pub(crate) fn inventory(&self) -> Result<Vec<HistoryInventoryEntry>, Box<dyn Error>> {
@@ -451,7 +506,9 @@ impl HistoryStore {
             rusqlite::Error::FromSqlConversionFailure(column, Type::Integer, Box::new(error))
         })
     }
+}
 
+impl HistoryStore {
     /// Per-device aggregates for the requested window.
     pub fn summary(&self, days: u32) -> Result<Vec<HistorySummary>, Box<dyn Error>> {
         let samples = self.samples(days)?;

@@ -23,19 +23,37 @@ workspace on Rust 1.99.0, and audits dependencies:
 ```powershell
 cargo build -p volty-tray --locked
 cargo check --workspace --all-features --locked
-cargo audit
+cargo audit --deny warnings
 ```
 
-The audit reports informational notices such as unmaintained crates and
-unsound APIs, but only known vulnerabilities fail the check. Some
-platform-specific dependencies are included in `Cargo.lock` even when they
-are not built for Windows.
+The audit checks the shared lockfile and fails on vulnerabilities and advisory warnings for either platform.
 
 Protocol frame tests use mock byte buffers and do not need connected hardware.
 Device communication, Windows HID parsing, Bluetooth discovery, and tray
 behavior need Windows and compatible hardware. A successful diagnostic command
 alone does not establish that the tray polls a device; verify it through the
 normal tray path.
+
+## Linux desktop beta
+
+On Debian or Ubuntu, install `pkg-config`, `libudev-dev`, and `libdbus-1-dev`.
+Use a normal desktop account to check hardware access. The status command also
+runs in a terminal without a graphical session.
+
+```sh
+cargo build -p volty-tray --locked
+target/debug/volty status
+target/debug/volty tray
+target/debug/volty capture inspect tests/hardware/g502x-plus-unified.volty.jsonl
+target/debug/volty capture replay tests/hardware/g502x-plus-unified.volty.jsonl
+```
+
+Run `cargo test --workspace --all-features --locked` with `dbus-daemon` and
+`busctl` installed. The Linux desktop integration test starts a private bus
+with a synthetic BlueZ headset and checks the CLI, running tray, history
+database, and dashboard export. Ubuntu packaging CI also installs, upgrades,
+and removes the built package. For physical device tests, follow the
+[Linux capture procedure](hardware-capture.md#linux-snapshots).
 
 ## README visuals
 

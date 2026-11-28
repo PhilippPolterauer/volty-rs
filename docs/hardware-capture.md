@@ -206,3 +206,35 @@ hardware.
 
 The capture schema is versioned independently from raw HID traces, which use
 the separate `volty.hid_trace/v1` schema.
+
+## Linux snapshots
+
+On Linux, `volty capture --output ./g502.volty.jsonl --strict` records HID
+interface metadata and the HID++ battery queries and replies visible to the
+current user. With no output argument the file goes under
+`$XDG_STATE_HOME/volty/captures` or `~/.local/state/volty/captures`.
+Linux snapshots also record the selected Bluetooth battery source. Volty uses
+a fresh UPower percentage when available, followed by a connected BlueZ
+Battery1 percentage or a UPower coarse level. Both privacy profiles omit Bluetooth names,
+addresses, object paths, and raw service errors. Run
+`volty capture replay ./g502.volty.jsonl` to verify the readings offline.
+Builds using the Linux hidraw backend require `libudev-dev` and `pkg-config`
+on Debian and Ubuntu.
+
+The Debian package installs `70-volty-hidraw.rules`. For a source build,
+install that file from `packaging/linux/` into `/etc/udev/rules.d/`, reload
+the rules with `sudo udevadm control --reload-rules`, and reconnect the devices
+when convenient. The rule grants the active local seat access to hidraw nodes
+for the Logitech wired mouse (`046d:c095`) and receiver (`046d:c547`).
+
+For a hardware validation run, capture the wired mouse, the LIGHTSPEED
+receiver, and both connections present together as an ordinary desktop user.
+Verify the battery provider reports one G502 X PLUS when both paths yield the
+same HID++ unit ID, and verify the displayed identity and battery across
+reconnect, charging, and suspend/resume. Check the connected Bluetooth headset
+through the OS provider and record the source it reports. Inspect and replay
+the captures locally and review them before sharing.
+
+Debian WSL had no `/dev/hidraw*` devices during implementation. Wired,
+LIGHTSPEED, and Bluetooth headset behavior still needs validation on a Linux
+desktop with the hardware attached.

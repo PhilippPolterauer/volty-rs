@@ -31,11 +31,16 @@ impl CaptureWriter {
                 path.display()
             ))
         })?;
-        Ok(Self {
+        Ok(Self::from_file(file))
+    }
+
+    /// Writes a capture to an open, empty file.
+    pub fn from_file(file: File) -> Self {
+        Self {
             writer: BufWriter::new(file),
             count: 0,
             header_written: false,
-        })
+        }
     }
 
     /// Writes one record followed by a newline.

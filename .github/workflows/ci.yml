@@ -43,6 +43,65 @@ jobs:
       - name: Test tray without self-updates
         run: cargo test -p volty-tray --locked --no-default-features --features bluetooth
 
+  linux:
+    name: Linux checks
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Install Linux build dependencies
+        run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev libudev-dev pkg-config dbus xauth xvfb umockdev libumockdev-dev
+
+      - name: Install stable Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+
+      - name: Lint workspace
+        run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+
+      - name: Test workspace
+        run: cargo test --workspace --all-features --locked
+
+      - name: Test tray registration on a headless desktop
+        run: |
+          export VOLTY_TEST_HIDPP_SIMULATOR="$RUNNER_TEMP/g502x-hidpp"
+          cc -D_GNU_SOURCE -std=c11 -Wall -Wextra -Werror \
+            crates/volty-tray/tests/support/g502x_hidpp.c -o "$VOLTY_TEST_HIDPP_SIMULATOR" \
+            $(pkg-config --cflags --libs umockdev-1.0)
+          xvfb-run -a -s "-screen 0 1280x800x24" dbus-run-session -- \
+            cargo test -p volty-tray --all-features --locked --test linux_status_notifier -- --ignored --test-threads=1
+
+      - name: Build CLI with default features
+        run: cargo build -p volty-tray --locked
+
+  debian-package:
+    name: Ubuntu 24.04 Debian package
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install packaging dependencies
+        run: sudo apt-get update && sudo apt-get install -y desktop-file-utils dpkg-dev jq libdbus-1-dev libudev-dev pkg-config
+      - name: Build package
+        run: bash scripts/build-deb.sh
+      - name: Smoke test install, upgrade and removal
+        run: bash scripts/smoke-deb.sh dist/*.deb
+      - uses: actions/upload-artifact@v7
+        with:
+          name: linux-amd64-deb
+          path: dist/*.deb*
+          if-no-files-found: error
+
   msrv:
     name: MSRV (Rust 1.99.0)
     runs-on: windows-latest

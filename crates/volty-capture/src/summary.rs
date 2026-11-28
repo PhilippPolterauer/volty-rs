@@ -14,6 +14,7 @@ struct RecordCounts {
     bluetooth_devices: usize,
     bluetooth_properties: usize,
     bluetooth_gatt: usize,
+    upower_batteries: usize,
     hidpp_features: usize,
     hid_layouts: usize,
     hidpp_exchanges: usize,
@@ -32,6 +33,7 @@ impl RecordCounts {
                 CaptureRecord::Match(_) => counts.matches += 1,
                 CaptureRecord::BluetoothDevice(_) => counts.bluetooth_devices += 1,
                 CaptureRecord::BluetoothProperty(_) => counts.bluetooth_properties += 1,
+                CaptureRecord::UpowerBattery(_) => counts.upower_batteries += 1,
                 CaptureRecord::BluetoothGatt(_) => counts.bluetooth_gatt += 1,
                 CaptureRecord::HidppFeatures(_) => counts.hidpp_features += 1,
                 CaptureRecord::HidLayout(_) => counts.hid_layouts += 1,
@@ -71,6 +73,7 @@ impl CaptureFile {
             format!("bluetooth_devices: {}", counts.bluetooth_devices),
             format!("bluetooth_properties: {}", counts.bluetooth_properties),
             format!("bluetooth_gatt: {}", counts.bluetooth_gatt),
+            format!("upower_batteries: {}", counts.upower_batteries),
             format!("hidpp_features: {}", counts.hidpp_features),
             format!("hid_layouts: {}", counts.hid_layouts),
             format!("hidpp_exchanges: {}", counts.hidpp_exchanges),
@@ -217,6 +220,8 @@ fn bluetooth_kind_name(kind: crate::CaptureBluetoothKind) -> &'static str {
         crate::CaptureBluetoothKind::Classic => "classic",
         crate::CaptureBluetoothKind::Pnp => "pnp",
         crate::CaptureBluetoothKind::Ble => "ble",
+        crate::CaptureBluetoothKind::Bluez => "bluez",
+        crate::CaptureBluetoothKind::Upower => "upower",
     }
 }
 

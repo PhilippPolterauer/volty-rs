@@ -21,7 +21,6 @@ const FAVICON_PNG: &[u8] = include_bytes!("../assets/volty-favicon.png");
 
 type IconPixels = Result<(Vec<u8>, u32, u32), String>;
 
-static FAVICON_DATA_URI: OnceLock<String> = OnceLock::new();
 static TAO_ICON_PIXELS: OnceLock<IconPixels> = OnceLock::new();
 
 pub fn set_process_app_user_model_id() -> io::Result<()> {
@@ -148,46 +147,4 @@ pub fn show_message_box(text: &str, title: &str, style: u32) -> i32 {
     };
     // SAFETY: parameters and both NUL-terminated strings remain live for the synchronous call.
     unsafe { MessageBoxIndirectW(&parameters) }
-}
-
-pub fn favicon_data_uri() -> &'static str {
-    FAVICON_DATA_URI
-        .get_or_init(|| format!("data:image/png;base64,{}", base64_encode(FAVICON_PNG)))
-        .as_str()
-}
-
-fn base64_encode(bytes: &[u8]) -> String {
-    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut encoded = String::with_capacity(bytes.len().div_ceil(3) * 4);
-    for chunk in bytes.chunks(3) {
-        let first = chunk[0];
-        let second = chunk.get(1).copied().unwrap_or(0);
-        let third = chunk.get(2).copied().unwrap_or(0);
-        encoded.push(ALPHABET[(first >> 2) as usize] as char);
-        encoded.push(ALPHABET[(((first & 0x03) << 4) | (second >> 4)) as usize] as char);
-        encoded.push(if chunk.len() > 1 {
-            ALPHABET[(((second & 0x0f) << 2) | (third >> 6)) as usize] as char
-        } else {
-            '='
-        });
-        encoded.push(if chunk.len() > 2 {
-            ALPHABET[(third & 0x3f) as usize] as char
-        } else {
-            '='
-        });
-    }
-    encoded
-}
-
-#[cfg(test)]
-mod tests {
-    use super::base64_encode;
-
-    #[test]
-    fn base64_encoding_handles_partial_chunks() {
-        assert_eq!(base64_encode(b""), "");
-        assert_eq!(base64_encode(b"f"), "Zg==");
-        assert_eq!(base64_encode(b"fo"), "Zm8=");
-        assert_eq!(base64_encode(b"foo"), "Zm9v");
-    }
 }

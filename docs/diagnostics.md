@@ -52,6 +52,23 @@ created with `volty hid sniff --output <path>` are stored at the selected path,
 may contain button or keyboard input, and are not scanned or deleted by the
 dashboard. All data stays local; nothing is uploaded.
 
+## Memory footprint
+
+The native Rust tray app runs without WebView2. Opening the battery history
+dashboard starts a separate Volty process that uses Microsoft's WebView2
+runtime to render the local HTML. Closing that window releases the dashboard's
+memory as its Volty and WebView2 processes exit.
+
+On one Windows PC running Volty 0.17.0, the tray used **4.1 MiB of private
+RAM** with the dashboard closed. Two snapshots with the seven-day dashboard
+open showed **126–131 MiB total**, including the tray, the dashboard process,
+and its six WebView2 processes. WebView2 accounted for most of the increase.
+
+These figures use the Windows `WorkingSetPrivate` counter
+(`Win32_PerfFormattedData_PerfProc_Process` in PowerShell), which counts
+physical memory resident in RAM and private to each process. The figures
+reflect snapshots on one machine and can vary with the system and workload.
+
 ## Command-line capture
 
 From a PowerShell prompt, use the release executable or run through Cargo from

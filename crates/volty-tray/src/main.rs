@@ -6,25 +6,36 @@ mod about;
 mod app;
 #[cfg(windows)]
 mod app_icon;
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "linux"))]
 mod capture;
-mod config;
 #[cfg(windows)]
+mod config;
+#[cfg(any(windows, target_os = "linux"))]
 mod dashboard;
 #[cfg(windows)]
 mod diagnose;
 mod hid_cli;
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "linux"))]
 mod history;
+#[cfg(target_os = "linux")]
+mod linux;
+#[cfg(target_os = "linux")]
+mod linux_desktop;
+#[cfg(target_os = "linux")]
+mod linux_hid;
+#[cfg(target_os = "linux")]
+mod linux_power;
 #[cfg(windows)]
 mod logging;
 #[cfg(windows)]
 mod native_ui;
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "linux"))]
 mod notify;
+#[cfg(any(windows, target_os = "linux"))]
+mod os_battery;
 #[cfg(windows)]
 mod provider;
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "linux"))]
 mod replay;
 #[cfg(windows)]
 mod report;
@@ -215,38 +226,41 @@ fn attach_cli_console() -> std::io::Result<()> {
 fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut args = std::env::args().skip(1);
     match args.next().as_deref() {
-        Some("hid") => return hid_cli::run(&args.collect::<Vec<_>>()).map_err(Into::into),
+        Some("hid") => hid_cli::run(&args.collect::<Vec<_>>()).map_err(Into::into),
+        #[cfg(any(windows, target_os = "linux"))]
+        Some("capture") => capture::run_cli(&args.collect::<Vec<_>>()),
+        #[cfg(any(windows, target_os = "linux"))]
+        Some("history") => history::run_cli(&args.collect::<Vec<_>>()),
         #[cfg(windows)]
-        Some("capture") => return capture::run_cli(&args.collect::<Vec<_>>()),
-        #[cfg(windows)]
-        Some("history") => return history::run_cli(&args.collect::<Vec<_>>()),
-        #[cfg(windows)]
-        Some("dashboard") => return run_dashboard_cli(&args.collect::<Vec<_>>()),
+        Some("dashboard") => run_dashboard_cli(&args.collect::<Vec<_>>()),
         #[cfg(all(windows, feature = "self-update"))]
-        Some("--apply-update") => return update::apply_update_cli(&args.collect::<Vec<_>>()),
+        Some("--apply-update") => update::apply_update_cli(&args.collect::<Vec<_>>()),
         #[cfg(all(windows, feature = "self-update"))]
         Some(update::FINISH_UPDATE_ARGUMENT) => {
             if let Err(error) = update::finish_update_cli(&args.collect::<Vec<_>>()) {
                 show_error(&format!("volty: update cleanup failed: {error}"));
             }
+            run_tray()
         }
-        _ => {}
-    }
-
-    #[cfg(windows)]
-    {
-        let _single_instance = SingleInstance::acquire()?;
-        if !_single_instance.is_first() {
-            return Ok(());
+        #[cfg(target_os = "linux")]
+        command => linux::run(command, &args.collect::<Vec<_>>()),
+        #[cfg(windows)]
+        _ => run_tray(),
+        #[cfg(not(any(windows, target_os = "linux")))]
+        _ => {
+            eprintln!("volty-tray is a Windows application.");
+            Ok(())
         }
-
-        app::run()?;
     }
+}
 
-    #[cfg(not(windows))]
-    eprintln!("volty-tray is a Windows application.");
-
-    Ok(())
+#[cfg(windows)]
+fn run_tray() -> Result<(), Box<dyn std::error::Error>> {
+    let _single_instance = SingleInstance::acquire()?;
+    if !_single_instance.is_first() {
+        return Ok(());
+    }
+    app::run()
 }
 
 #[cfg(windows)]

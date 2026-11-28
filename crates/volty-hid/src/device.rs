@@ -8,6 +8,16 @@ use crate::{
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct G502XPlusUnitId(u64);
 
+impl G502XPlusUnitId {
+    /// Normalizes the four identity bytes reported by HID++ and the Linux HID++ driver.
+    pub fn from_unit_bytes(unit: [u8; 4]) -> Option<Self> {
+        if unit == [0; 4] || unit == [0xff; 4] {
+            return None;
+        }
+        Some(Self(crate::interface::fnv1a(&unit)))
+    }
+}
+
 impl std::fmt::Display for G502XPlusUnitId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{:016x}", self.0)
@@ -48,10 +58,10 @@ fn g502_x_plus_unit_id(params: &[u8]) -> Option<G502XPlusUnitId> {
     // DEVICE INFORMATION reports the same unit ID and model ID on both transports.
     let unit: [u8; 4] = params.get(1..5)?.try_into().ok()?;
     let model = params.get(7..13)?;
-    if model != [0x40, 0x99, 0xc0, 0x95, 0, 0] || unit == [0; 4] || unit == [0xff; 4] {
+    if model != [0x40, 0x99, 0xc0, 0x95, 0, 0] {
         return None;
     }
-    Some(G502XPlusUnitId(crate::interface::fnv1a(&unit)))
+    G502XPlusUnitId::from_unit_bytes(unit)
 }
 
 /// Reads a device name from the HID++ Device Name and Type feature.

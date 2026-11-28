@@ -1,6 +1,6 @@
 # Supported devices and limits
 
-Volty reads battery data exposed through supported Windows device interfaces.
+The tested devices in the following table were observed on Windows.
 The entries below describe specific tested devices and connections; they do not
 guarantee that every device using the same protocol will behave identically.
 
@@ -22,6 +22,14 @@ Volty uses the USB reading. History recorded by older versions may still show
 separate USB and receiver entries.
 
 ## Implemented battery sources
+
+The Linux beta reads peripheral battery data through UPower, BlueZ Battery1,
+the kernel power supply class, and Logitech HID++ over hidraw. Run
+`volty status` to see the device, reading, charge state, and source. The
+G502 X PLUS over USB and LIGHTSPEED and Bluetooth headsets still need physical
+Linux validation. See the [Linux capture procedure](hardware-capture.md#linux-snapshots).
+
+### Windows
 
 Only the devices in the table above have named hardware validation.
 

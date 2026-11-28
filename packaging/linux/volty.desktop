@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Volty
+Comment=Monitor device battery levels
+Exec=volty tray
+Icon=volty
+Terminal=false
+Categories=Utility;

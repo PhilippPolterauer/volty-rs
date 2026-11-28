@@ -6,12 +6,33 @@ on:
       - "v*"
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: release-${{ github.ref }}
 
 jobs:
+  linux-package:
+    name: Build Ubuntu 24.04 Debian package
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install packaging dependencies
+        run: sudo apt-get update && sudo apt-get install -y desktop-file-utils dpkg-dev jq libdbus-1-dev libudev-dev pkg-config
+      - name: Build package
+        run: bash scripts/build-deb.sh dist "$GITHUB_REF_NAME"
+      - name: Smoke test package
+        run: bash scripts/smoke-deb.sh dist/*.deb
+      - uses: actions/upload-artifact@v7
+        with:
+          name: linux-amd64-deb
+          path: dist/*.deb*
+          if-no-files-found: error
+
   windows-release:
     name: Build Windows standalone, Store, and WinGet packages
     runs-on: windows-latest
@@ -84,10 +105,37 @@ jobs:
           $hash = (Get-FileHash -LiteralPath $asset -Algorithm SHA256).Hash.ToLowerInvariant()
           Set-Content -LiteralPath "${asset}.sha256" -Encoding ascii -NoNewline -Value "$hash  $assetName`n"
 
+      - uses: actions/upload-artifact@v7
+        with:
+          name: windows-x64-packages
+          path: |
+            dist/Volty-*.exe
+            dist/Volty-*.exe.sha256
+            dist/Volty-*.zip
+            dist/msix/*/Volty_*_x64.msixupload
+            dist/msix/*/Volty_*_x64.msixbundle
+          if-no-files-found: error
+
+  publish:
+    name: Publish GitHub Release
+    runs-on: windows-latest
+    needs: [windows-release, linux-package]
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: windows-x64-packages
+          path: dist
+      - uses: actions/download-artifact@v8
+        with:
+          name: linux-amd64-deb
+          path: dist
       - name: Publish GitHub Release
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
         run: |
           $assetName = "Volty-$env:GITHUB_REF_NAME-x86_64-pc-windows-msvc.exe"
           $dist = Join-Path $env:GITHUB_WORKSPACE "dist"
@@ -97,6 +145,8 @@ jobs:
             (Join-Path $dist "${assetName}.sha256")
             (Join-Path $dist "Volty-$env:GITHUB_REF_NAME-winget-x64.zip")
             (Join-Path $dist "Volty-$env:GITHUB_REF_NAME-winget-manifests.zip")
+            (Join-Path $dist "Volty-$env:GITHUB_REF_NAME-linux-amd64.deb")
+            (Join-Path $dist "Volty-$env:GITHUB_REF_NAME-linux-amd64.deb.sha256")
           )
           foreach ($extension in @("msixupload", "msixbundle")) {
             $packages = @(Get-ChildItem -LiteralPath $storeDist -Filter "Volty_*_x64.$extension" -File)
@@ -104,6 +154,11 @@ jobs:
               throw "Expected exactly one .$extension package, found $($packages.Count)."
             }
             $assets += $packages[0].FullName
+          }
+          foreach ($asset in $assets) {
+            if (-not (Test-Path -LiteralPath $asset -PathType Leaf)) {
+              throw "Missing release asset: $asset"
+            }
           }
           $releaseJson = gh release view $env:GITHUB_REF_NAME --json isDraft,assets 2>$null
           if ($LASTEXITCODE -ne 0) {

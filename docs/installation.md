@@ -40,7 +40,42 @@ installs the portable executable for your Windows user and handles upgrades.
 The Microsoft Store package receives updates through the Store. To start this
 edition at sign-in, enable **volty-rs** in **Windows Settings → Apps → Startup**.
 
-## Use the tray app
+## Ubuntu 24.04 LTS
+
+For a preview, download and extract the `linux-amd64-deb` artifact from the
+branch's successful GitHub Actions CI run. Tagged releases built with Linux
+support include `Volty-vX.Y.Z-linux-amd64.deb` and its matching `.deb.sha256`
+on the [releases page](https://github.com/PhilippPolterauer/volty-rs/releases).
+From the download directory, replace `X.Y.Z` with the release version:
+
+```sh
+sha256sum --check Volty-vX.Y.Z-linux-amd64.deb.sha256 &&
+  sudo apt install ./Volty-vX.Y.Z-linux-amd64.deb
+```
+
+Open **Volty** from the applications menu or run `volty tray` as your desktop
+user. The tray icon requires a desktop session with StatusNotifierItem
+support, such as GNOME with the AppIndicator extension enabled. If a
+supported USB HID device was already plugged in, run
+`sudo udevadm control --reload-rules` and reconnect the device so udev can
+apply the packaged access rule.
+
+Verify the package version with `dpkg-query -W volty` and the executable
+with `volty --help`. To check desktop integration, open Volty in your desktop
+session and confirm that its tray icon appears.
+
+- `volty status` prints live peripheral readings and their sources.
+- `volty history --csv` shows samples collected while the tray was running.
+- `volty dashboard --open` exports the dashboard and opens it in your browser.
+- `volty autostart enable` starts the installed tray at login for the current
+  user. Use `volty autostart disable` to turn it off.
+
+Quit Volty and install the newer verified `.deb` with the same `apt install`
+command to upgrade. Use `sudo apt remove volty` to remove it. Both operations
+preserve user data in `$XDG_STATE_HOME/volty`, which defaults to
+`~/.local/state/volty` when `XDG_STATE_HOME` is unset.
+
+## Use the Windows tray app
 
 Volty monitors supported devices while it runs. The icon shows the lowest
 reported battery level by default; you can pin a device or choose a numeric
