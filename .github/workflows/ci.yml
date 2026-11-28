@@ -52,8 +52,8 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Install HID build dependencies
-        run: sudo apt-get update && sudo apt-get install -y libudev-dev pkg-config
+      - name: Install Linux build dependencies
+        run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev libudev-dev pkg-config
 
       - name: Install stable Rust
         uses: dtolnay/rust-toolchain@stable
