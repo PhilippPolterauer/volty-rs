@@ -1,14 +1,18 @@
 use std::{path::PathBuf, sync::OnceLock};
 
-use fontdue::Font;
 use image::{Rgba, RgbaImage};
+use swash::{
+    scale::{image::Image, Render, ScaleContext, Source},
+    shape::ShapeContext,
+    FontRef,
+};
 use tray_icon::Icon;
 
 use super::TrayError;
 use crate::config::BatteryColorMap;
 
 pub(super) const ICON_SIZE: u32 = 16;
-static PERCENTAGE_FONT: OnceLock<Result<Font, String>> = OnceLock::new();
+static PERCENTAGE_FONT: OnceLock<Result<Vec<u8>, String>> = OnceLock::new();
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum IconTheme {
@@ -190,10 +194,11 @@ fn render_percentage(
     Ok(image)
 }
 
-fn percentage_font() -> Result<&'static Font, TrayError> {
+fn percentage_font() -> Result<FontRef<'static>, TrayError> {
     PERCENTAGE_FONT
         .get_or_init(load_percentage_font)
-        .as_ref()
+        .as_deref()
+        .map(|bytes| FontRef::from_index(bytes, 0).expect("font validated at load"))
         .map_err(|error| {
             TrayError::new(format!(
                 "could not load Segoe UI for tray percentage icon: {error}"
@@ -201,15 +206,16 @@ fn percentage_font() -> Result<&'static Font, TrayError> {
         })
 }
 
-fn load_percentage_font() -> Result<Font, String> {
+fn load_percentage_font() -> Result<Vec<u8>, String> {
     let windows_directory = std::env::var_os("WINDIR")
         .map(PathBuf::from)
         .ok_or_else(|| "WINDIR environment variable is not set".to_owned())?;
     let font_path = windows_directory.join("Fonts").join("segoeui.ttf");
     let font_bytes = std::fs::read(&font_path)
         .map_err(|error| format!("could not read {}: {error}", font_path.display()))?;
-    Font::from_bytes(font_bytes, fontdue::FontSettings::default())
-        .map_err(|error| format!("could not parse {}: {error:?}", font_path.display()))
+    FontRef::from_index(&font_bytes, 0)
+        .ok_or_else(|| format!("could not parse {}", font_path.display()))?;
+    Ok(font_bytes)
 }
 
 fn draw_battery_percentage(
@@ -250,11 +256,7 @@ fn draw_battery_percentage(
         .map(|alpha| alpha.saturating_mul(2))
         .collect();
     composite_mask(image, &opaque_outline, outline_color);
-    let bold_mask: Vec<u8> = mask
-        .0
-        .iter()
-        .map(|alpha| (u16::from(*alpha) * 3 / 2).min(255) as u8)
-        .collect();
+    let bold_mask: Vec<u8> = mask.0.iter().map(|alpha| alpha.saturating_mul(2)).collect();
     composite_mask(image, &bold_mask, text_color);
     Ok(())
 }
@@ -296,59 +298,93 @@ fn percentage_text_mask(
     font_size: f32,
     center: (f32, f32),
 ) -> Result<(Vec<u8>, [f32; 4]), TrayError> {
-    let text = percentage.to_string();
+    let (glyphs, bounds) = rasterize_text(&percentage.to_string(), font_size)?;
+    let [left, top, right, bottom] = bounds;
+    let origin = (
+        center.0 - (left + right) / 2.0,
+        center.1 - (top + bottom) / 2.0,
+    );
+    Ok((glyph_mask(glyphs, canvas_size, canvas_size, origin), bounds))
+}
+
+struct RasterizedGlyph {
+    x: f32,
+    y: f32,
+    image: Image,
+}
+
+fn rasterize_text(
+    text: &str,
+    font_size: f32,
+) -> Result<(Vec<RasterizedGlyph>, [f32; 4]), TrayError> {
     let font = percentage_font()?;
+    let mut shape_context = ShapeContext::new();
+    let mut shaper = shape_context.builder(font).size(font_size).build();
+    shaper.add_str(text);
+
+    let mut scale_context = ScaleContext::new();
+    let mut scaler = scale_context
+        .builder(font)
+        .size(font_size)
+        .hint(true)
+        .build();
+    let renderer = Render::new(&[Source::Outline]);
     let mut glyphs = Vec::with_capacity(text.len());
     let mut pen_x = 0.0;
-    let mut previous = None;
-    let mut left = f32::INFINITY;
-    let mut top = f32::INFINITY;
-    let mut right = f32::NEG_INFINITY;
-    let mut bottom = f32::NEG_INFINITY;
-
-    for character in text.chars() {
-        if let Some(previous) = previous {
-            pen_x += font
-                .horizontal_kern(previous, character, font_size)
-                .unwrap_or(0.0);
+    let mut bounds = [
+        f32::INFINITY,
+        f32::INFINITY,
+        f32::NEG_INFINITY,
+        f32::NEG_INFINITY,
+    ];
+    shaper.shape_with(|cluster| {
+        for glyph in cluster.glyphs {
+            if let Some(image) = renderer.render(&mut scaler, glyph.id) {
+                let placement = image.placement;
+                let x = pen_x + glyph.x + placement.left as f32;
+                let y = -glyph.y - placement.top as f32;
+                if placement.width > 0 && placement.height > 0 {
+                    bounds[0] = bounds[0].min(x);
+                    bounds[1] = bounds[1].min(y);
+                    bounds[2] = bounds[2].max(x + placement.width as f32);
+                    bounds[3] = bounds[3].max(y + placement.height as f32);
+                    glyphs.push(RasterizedGlyph { x, y, image });
+                }
+            }
+            pen_x += glyph.advance;
         }
-        let (metrics, bitmap) = font.rasterize(character, font_size);
-        let glyph_left = pen_x + metrics.xmin as f32;
-        let glyph_top = -metrics.ymin as f32 - metrics.height as f32;
-        left = left.min(glyph_left);
-        top = top.min(glyph_top);
-        right = right.max(glyph_left + metrics.width as f32);
-        bottom = bottom.max(glyph_top + metrics.height as f32);
-        glyphs.push((metrics, bitmap, pen_x));
-        pen_x += metrics.advance_width;
-        previous = Some(character);
+    });
+    if glyphs.is_empty() {
+        return Err(TrayError::new(
+            "could not rasterize Segoe UI text".to_owned(),
+        ));
     }
+    Ok((glyphs, bounds))
+}
 
-    let origin_x = center.0 - (left + right) / 2.0;
-    let origin_y = center.1 - (top + bottom) / 2.0;
-    let mut mask = vec![0; (canvas_size * canvas_size) as usize];
-    for (metrics, bitmap, pen_x) in glyphs {
-        let glyph_x = (origin_x + pen_x + metrics.xmin as f32).round() as i32;
-        let glyph_y = (origin_y - metrics.ymin as f32 - metrics.height as f32).round() as i32;
-        for row in 0..metrics.height {
-            for column in 0..metrics.width {
-                let alpha = bitmap[row * metrics.width + column];
+fn glyph_mask(
+    glyphs: Vec<RasterizedGlyph>,
+    width: u32,
+    height: u32,
+    origin: (f32, f32),
+) -> Vec<u8> {
+    let mut mask = vec![0; (width * height) as usize];
+    for RasterizedGlyph { x, y, image } in glyphs {
+        let glyph_x = (origin.0 + x).round() as i32;
+        let glyph_y = (origin.1 + y).round() as i32;
+        let glyph_width = image.placement.width as usize;
+        for (row, alphas) in image.data.chunks_exact(glyph_width).enumerate() {
+            for (column, &alpha) in alphas.iter().enumerate() {
                 let pixel_x = glyph_x + column as i32;
                 let pixel_y = glyph_y + row as i32;
-                if alpha > 0
-                    && pixel_x >= 0
-                    && pixel_x < canvas_size as i32
-                    && pixel_y >= 0
-                    && pixel_y < canvas_size as i32
-                {
-                    let index = pixel_y as usize * canvas_size as usize + pixel_x as usize;
+                if (0..width as i32).contains(&pixel_x) && (0..height as i32).contains(&pixel_y) {
+                    let index = pixel_y as usize * width as usize + pixel_x as usize;
                     mask[index] = mask[index].max(alpha);
                 }
             }
         }
     }
-
-    Ok((mask, [left, top, right, bottom]))
+    mask
 }
 
 fn composite_mask(image: &mut RgbaImage, mask: &[u8], color: [u8; 3]) {
@@ -1210,56 +1246,9 @@ mod tests {
         font_size: f32,
         color: [u8; 3],
     ) -> Result<(), TrayError> {
-        let font = percentage_font()?;
-        let mut glyphs = Vec::with_capacity(text.len());
-        let mut pen_x = 0.0;
-        let mut previous = None;
-        let mut left = f32::INFINITY;
-        let mut top = f32::INFINITY;
-        let mut right = f32::NEG_INFINITY;
-        let mut bottom = f32::NEG_INFINITY;
-
-        for character in text.chars() {
-            if let Some(previous) = previous {
-                pen_x += font
-                    .horizontal_kern(previous, character, font_size)
-                    .unwrap_or(0.0);
-            }
-            let (metrics, bitmap) = font.rasterize(character, font_size);
-            let glyph_left = pen_x + metrics.xmin as f32;
-            let glyph_top = -metrics.ymin as f32 - metrics.height as f32;
-            left = left.min(glyph_left);
-            top = top.min(glyph_top);
-            right = right.max(glyph_left + metrics.width as f32);
-            bottom = bottom.max(glyph_top + metrics.height as f32);
-            glyphs.push((metrics, bitmap, pen_x));
-            pen_x += metrics.advance_width;
-            previous = Some(character);
-        }
-
-        let origin_x = center_x - (left + right) / 2.0;
-        let origin_y = top_y - top;
-        let mut mask = vec![0; (image.width() * image.height()) as usize];
-        for (metrics, bitmap, pen_x) in glyphs {
-            let glyph_x = (origin_x + pen_x + metrics.xmin as f32).round() as i32;
-            let glyph_y = (origin_y - metrics.ymin as f32 - metrics.height as f32).round() as i32;
-            for row in 0..metrics.height {
-                for column in 0..metrics.width {
-                    let alpha = bitmap[row * metrics.width + column];
-                    let pixel_x = glyph_x + column as i32;
-                    let pixel_y = glyph_y + row as i32;
-                    if alpha > 0
-                        && pixel_x >= 0
-                        && pixel_x < image.width() as i32
-                        && pixel_y >= 0
-                        && pixel_y < image.height() as i32
-                    {
-                        let index = pixel_y as usize * image.width() as usize + pixel_x as usize;
-                        mask[index] = mask[index].max(alpha);
-                    }
-                }
-            }
-        }
+        let (glyphs, [left, top, right, _]) = rasterize_text(text, font_size)?;
+        let origin = (center_x - (left + right) / 2.0, top_y - top);
+        let mask = glyph_mask(glyphs, image.width(), image.height(), origin);
         composite_mask(image, &mask, color);
         Ok(())
     }

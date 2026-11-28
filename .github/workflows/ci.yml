@@ -81,4 +81,4 @@ jobs:
           tool: cargo-audit
 
       - name: Audit dependencies
-        run: cargo audit
+        run: cargo audit --deny warnings
