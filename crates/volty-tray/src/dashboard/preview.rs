@@ -193,12 +193,20 @@ fn seed(directory: &Path, theme: AppTheme, empty: bool) -> Result<Vec<LiveDevice
                     continue;
                 }
                 let cycle = (step + 19 + index as i64 * 26) % 288;
-                let charging = cycle < 24;
-                let percent = (index != 2 || step % 17 != 0).then_some(if charging {
-                    36 + cycle * 2
+                let (charging, level) = if index == 0 && minutes_ago < 7 * 24 * 60 {
+                    let minutes_since_charge = 6 * 24 * 60 - minutes_ago;
+                    match minutes_since_charge {
+                        ..=-241 => (false, 24),
+                        -240..=-1 => (true, 24 + (minutes_since_charge + 240) * 76 / 240),
+                        0..=7_199 => (false, 100 - minutes_since_charge * 24 / 7_200),
+                        _ => (false, 76 - (minutes_since_charge - 7_200) * 8 / 1_440),
+                    }
+                } else if cycle < 24 {
+                    (true, 36 + cycle * 2)
                 } else {
-                    84 - (cycle - 24) * 48 / 264
-                });
+                    (false, 84 - (cycle - 24) * 48 / 264)
+                };
+                let percent = (index != 2 || step % 17 != 0).then_some(level);
                 insert.execute(rusqlite::params![
                     identity,
                     name,
@@ -225,8 +233,8 @@ fn seed(directory: &Path, theme: AppTheme, empty: bool) -> Result<Vec<LiveDevice
             identity: devices[0].0.to_owned(),
             name: devices[0].1.to_owned(),
             reading: Some(LiveReading {
-                level: LiveLevel::Exact(74),
-                charging: true,
+                level: LiveLevel::Exact(68),
+                charging: false,
                 remaining_seconds: None,
             }),
         },
@@ -269,7 +277,10 @@ mod tests {
 
         let profile = Profile::create().unwrap();
         let live = seed(&profile.0, AppTheme::Light, false).unwrap();
-        assert!(live[0].reading.unwrap().charging);
+        assert!(matches!(
+            live[0].reading.unwrap().level,
+            LiveLevel::Exact(68)
+        ));
         let backend = DashboardBackend::preview(profile.0.clone());
         let cleanup = backend
             .preview_cleanup(CleanupKind::OlderThan, Some(7), None)

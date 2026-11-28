@@ -154,11 +154,19 @@ impl DashboardBackend {
         Ok((inventory, tray_display))
     }
 
-    fn load_settings(&self, tray_display: crate::state::TrayDisplaySettings) -> DashboardSettings {
-        let config = match &self.preview_directory {
+    fn config(&self) -> Result<AppConfig, crate::config::ConfigError> {
+        match &self.preview_directory {
             Some(directory) => AppConfig::load_from(directory.join("config.toml")),
             None => AppConfig::load(),
-        };
+        }
+    }
+
+    pub(super) fn alert_thresholds(&self) -> Vec<u8> {
+        self.config().unwrap_or_default().low_battery_thresholds
+    }
+
+    fn load_settings(&self, tray_display: crate::state::TrayDisplaySettings) -> DashboardSettings {
+        let config = self.config();
         let (config, config_error) = match config {
             Ok(config) => (config, None),
             Err(error) => (AppConfig::default(), Some(error.to_string())),

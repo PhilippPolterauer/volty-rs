@@ -12,16 +12,19 @@ use crate::{config::AppTheme, history::HistoryDeletion};
 use super::{
     super::{
         management::{CleanupKind, CleanupResult, DashboardBackend, ManagedArtifact},
-        model::{DashboardData, DashboardPoint, SECONDS_PER_DAY},
+        model::{DashboardData, DashboardPoint},
     },
+    analytics::Export,
     chart::Chart,
 };
 
+type ExportRequest = (PathBuf, Arc<Snapshot>, Export);
 type BackendError = Box<dyn std::error::Error>;
 
 pub(super) struct Snapshot {
     pub(super) data: DashboardData,
     pub(super) charts: Vec<Chart>,
+    pub(super) thresholds: Vec<u8>,
     pub(super) artifacts: Option<Result<Vec<ManagedArtifact>, String>>,
 }
 
@@ -79,7 +82,7 @@ pub(super) struct Worker {
     receive: mpsc::Receiver<Result<Reply, Failure>>,
     load: mpsc::SyncSender<(u32, bool)>,
     snapshots: mpsc::Receiver<(u32, Result<Snapshot, String>)>,
-    export: mpsc::SyncSender<(PathBuf, Arc<Snapshot>, usize)>,
+    export: mpsc::SyncSender<ExportRequest>,
     exports: mpsc::Receiver<Result<String, String>>,
 }
 
@@ -89,7 +92,7 @@ impl Worker {
         let (responses, receive) = mpsc::channel();
         let (load, loads) = mpsc::sync_channel(1);
         let (loaded, snapshots) = mpsc::channel();
-        let (export, export_requests) = mpsc::sync_channel::<(PathBuf, Arc<Snapshot>, usize)>(1);
+        let (export, export_requests) = mpsc::sync_channel::<ExportRequest>(1);
         let (exported, exports) = mpsc::channel();
         let (launched, launches) = mpsc::channel();
         let backend = Arc::new(backend);
@@ -111,11 +114,9 @@ impl Worker {
         thread::Builder::new()
             .name("volty-dashboard-export".to_owned())
             .spawn(move || {
-                while let Ok((path, snapshot, index)) = export_requests.recv() {
+                while let Ok((path, snapshot, selection)) = export_requests.recv() {
                     let result = std::fs::File::create(&path)
-                        .and_then(|file| {
-                            write_csv(BufWriter::new(file), &snapshot.data.devices[index].points)
-                        })
+                        .and_then(|file| write_export(BufWriter::new(file), &snapshot, selection))
                         .map(|()| format!("Exported {}", path.display()))
                         .map_err(|error| error.to_string());
                     if exported.send(result).is_err() {
@@ -176,10 +177,10 @@ impl Worker {
         &self,
         path: PathBuf,
         snapshot: Arc<Snapshot>,
-        index: usize,
+        selection: Export,
     ) -> io::Result<()> {
         self.export
-            .try_send((path, snapshot, index))
+            .try_send((path, snapshot, selection))
             .map_err(queue_error)
     }
 
@@ -231,19 +232,13 @@ fn load_snapshot(
     include_artifacts: bool,
 ) -> Result<Snapshot, BackendError> {
     let data = backend.get_history_data(days)?;
-    let start = data
-        .generated_at
-        .saturating_sub(i64::from(days) * SECONDS_PER_DAY);
-    let charts = data
-        .devices
-        .iter()
-        .map(|device| Chart::new(device, start, data.generated_at))
-        .collect();
+    let charts = data.devices.iter().map(Chart::new).collect();
     let artifacts =
         include_artifacts.then(|| backend.list_artifacts().map_err(|err| err.to_string()));
     Ok(Snapshot {
         data,
         charts,
+        thresholds: backend.alert_thresholds(),
         artifacts,
     })
 }
@@ -435,9 +430,45 @@ fn execute(backend: &DashboardBackend, operation: Operation) -> Result<String, B
     }
 }
 
-fn write_csv(mut writer: impl Write, points: &[DashboardPoint]) -> io::Result<()> {
+fn write_export(mut writer: impl Write, snapshot: &Snapshot, export: Export) -> io::Result<()> {
+    let rows = &export.rows[export.range];
+    let multi_device = rows
+        .first()
+        .is_some_and(|&(first, _)| rows.iter().any(|&(device, _)| device != first));
+    let indices = 0..rows.len();
+    let readings = indices.map(|index| {
+        let (device, point) = rows[if export.oldest_first {
+            index
+        } else {
+            rows.len() - 1 - index
+        }];
+        let device = &snapshot.data.devices[device];
+        (
+            multi_device.then_some((device.identity.as_str(), device.name.as_str())),
+            device.points[point],
+        )
+    });
+    write_csv(&mut writer, readings, multi_device)
+}
+
+fn write_csv<'a>(
+    mut writer: impl Write,
+    points: impl IntoIterator<Item = (Option<(&'a str, &'a str)>, DashboardPoint)>,
+    multi_device: bool,
+) -> io::Result<()> {
+    if multi_device {
+        write!(writer, "identity,device,")?;
+    }
     writeln!(writer, "time,percent,charging,millivolts\r")?;
-    for point in points {
+    for (device, point) in points {
+        if let Some((identity, name)) = device {
+            write!(
+                writer,
+                "\"{}\",\"{}\",",
+                identity.replace('"', "\"\""),
+                name.replace('"', "\"\"")
+            )?;
+        }
         let percent = point.p.map(|value| value.to_string()).unwrap_or_default();
         let voltage = point.v.map(|value| value.to_string()).unwrap_or_default();
         writeln!(
@@ -491,7 +522,15 @@ mod tests {
         worker.load(1, false).unwrap();
         let export = directory.join("history.csv");
         worker
-            .export(export.clone(), Arc::clone(&snapshot), 0)
+            .export(
+                export.clone(),
+                Arc::clone(&snapshot),
+                Export {
+                    rows: Arc::new((0..100_000).map(|point| (0, point)).collect()),
+                    range: 0..100_000,
+                    oldest_first: true,
+                },
+            )
             .unwrap();
         let deadline = Instant::now() + Duration::from_secs(5);
         let result = loop {
@@ -521,6 +560,54 @@ mod tests {
     }
 
     #[test]
+    fn export_matches_the_filtered_readings_and_escapes_device_names() {
+        use crate::history::HistorySample;
+
+        let samples = [
+            (0, "hid:a", "Excluded"),
+            (1, "hid:a", "Mouse, \"Pro\""),
+            (2, "xinput:b", "Controller"),
+        ]
+        .into_iter()
+        .map(|(at, identity, name)| HistorySample {
+            identity: identity.to_owned(),
+            name: name.to_owned(),
+            recorded_at: 1_800_000_000 + at * 600,
+            percent: Some(60),
+            charging: false,
+            voltage_mv: None,
+        })
+        .collect();
+        let data =
+            super::super::super::model::build_data(samples, 7, 1_800_002_000, 0, false, vec![])
+                .unwrap();
+        let snapshot = Snapshot {
+            data,
+            charts: vec![],
+            thresholds: vec![],
+            artifacts: None,
+        };
+        let mut buffer = Vec::new();
+        write_export(
+            &mut buffer,
+            &snapshot,
+            Export {
+                rows: Arc::new(vec![(0, 0), (0, 1), (1, 0)]),
+                range: 1..3,
+                oldest_first: false,
+            },
+        )
+        .unwrap();
+        let text = String::from_utf8(buffer).unwrap();
+        let rows: Vec<_> = text.lines().collect();
+        assert_eq!(rows.len(), 3);
+        assert_eq!(rows[0], "identity,device,time,percent,charging,millivolts");
+        assert!(rows[1].starts_with("\"xinput:b\",\"Controller\","));
+        // Dashboard names come from the latest sample for each identity.
+        assert!(rows[2].starts_with("\"hid:a\",\"Mouse, \"\"Pro\"\"\","));
+    }
+
+    #[test]
     fn csv_preserves_missing_readings_and_the_dashboard_column_order() {
         let points = [
             DashboardPoint {
@@ -537,7 +624,12 @@ mod tests {
             },
         ];
         let mut bytes = Vec::new();
-        write_csv(&mut bytes, &points).unwrap();
+        write_csv(
+            &mut bytes,
+            points.into_iter().map(|point| (None, point)),
+            false,
+        )
+        .unwrap();
         let time = super::super::platform::date(points[0].t);
         assert_eq!(
             String::from_utf8(bytes).unwrap(),

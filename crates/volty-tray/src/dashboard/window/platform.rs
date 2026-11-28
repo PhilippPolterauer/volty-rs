@@ -31,7 +31,7 @@ use super::super::{
     live::{self, LiveDevice},
 };
 use crate::{
-    config::{AppConfig, AppTheme, BatteryColorMap},
+    config::{AppConfig, AppTheme},
     win32::to_wide,
 };
 
@@ -144,7 +144,7 @@ fn signal_event(name: &str) {
 pub(super) enum Signal {
     Activate,
     Shutdown,
-    Appearance(AppTheme, BatteryColorMap),
+    Appearance(AppTheme),
 }
 
 pub(super) struct LiveUpdate(pub(super) Option<Vec<LiveDevice>>);
@@ -223,10 +223,7 @@ impl WindowSignals {
                 };
                 let update_appearance = || {
                     if let Ok(config) = AppConfig::load() {
-                        let _ = send.send(Signal::Appearance(
-                            config.app_theme,
-                            config.battery_color_map,
-                        ));
+                        let _ = send.send(Signal::Appearance(config.app_theme));
                         ctx.request_repaint();
                     }
                 };
@@ -355,29 +352,8 @@ pub(super) fn exact_date(timestamp: i64) -> String {
 }
 
 fn format_date(timestamp: i64, with_seconds: bool) -> String {
-    let ticks = timestamp
-        .checked_add(11_644_473_600)
-        .and_then(|seconds| u64::try_from(seconds).ok())
-        .and_then(|seconds| seconds.checked_mul(10_000_000));
-    let Some(ticks) = ticks else {
+    let Some(time) = local_time(timestamp) else {
         return "—".to_owned();
-    };
-    let file_time = FILETIME {
-        dwLowDateTime: ticks as u32,
-        dwHighDateTime: (ticks >> 32) as u32,
-    };
-    let mut utc = SYSTEMTIME::default();
-    let mut local = SYSTEMTIME::default();
-    // SAFETY: both calls take initialized input and write to valid, separate output structures.
-    let time = unsafe {
-        if FileTimeToSystemTime(&file_time, &mut utc) == 0 {
-            return "—".to_owned();
-        }
-        if SystemTimeToTzSpecificLocalTimeEx(ptr::null(), &utc, &mut local) != 0 {
-            local
-        } else {
-            utc
-        }
     };
     let mut date = format!(
         "{:04}-{:02}-{:02} {:02}:{:02}",
@@ -388,4 +364,57 @@ fn format_date(timestamp: i64, with_seconds: bool) -> String {
         let _ = write!(date, ":{:02}", time.wSecond);
     }
     date
+}
+
+const MONTHS: [&str; 12] = [
+    "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+];
+
+pub(super) fn summary_date(timestamp: i64) -> String {
+    let Some(time) = local_time(timestamp) else {
+        return "—".to_owned();
+    };
+    format!(
+        "{} {}, {:02}:{:02}",
+        time.wDay,
+        MONTHS[usize::from(time.wMonth - 1)],
+        time.wHour,
+        time.wMinute
+    )
+}
+
+pub(super) fn chart_date(timestamp: i64, short_range: bool) -> String {
+    let Some(time) = local_time(timestamp) else {
+        return "—".to_owned();
+    };
+    if short_range {
+        return format!("{:02}:{:02}", time.wHour, time.wMinute);
+    }
+    format!("{} {}", time.wDay, MONTHS[usize::from(time.wMonth - 1)])
+}
+
+fn local_time(timestamp: i64) -> Option<SYSTEMTIME> {
+    let ticks = timestamp
+        .checked_add(11_644_473_600)
+        .and_then(|seconds| u64::try_from(seconds).ok())
+        .and_then(|seconds| seconds.checked_mul(10_000_000));
+    let ticks = ticks?;
+    let file_time = FILETIME {
+        dwLowDateTime: ticks as u32,
+        dwHighDateTime: (ticks >> 32) as u32,
+    };
+    let mut utc = SYSTEMTIME::default();
+    let mut local = SYSTEMTIME::default();
+    // SAFETY: both calls take initialized input and write to valid, separate output structures.
+    let time = unsafe {
+        if FileTimeToSystemTime(&file_time, &mut utc) == 0 {
+            return None;
+        }
+        if SystemTimeToTzSpecificLocalTimeEx(ptr::null(), &utc, &mut local) != 0 {
+            local
+        } else {
+            utc
+        }
+    };
+    Some(time)
 }

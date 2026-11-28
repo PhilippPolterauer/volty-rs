@@ -1,3 +1,4 @@
+mod analytics;
 mod chart;
 mod platform;
 mod worker;
@@ -14,16 +15,13 @@ use eframe::egui::{
     ThemePreference, Ui,
 };
 
-use crate::{
-    app_icon,
-    config::{AppTheme, BatteryColorMap},
-};
+use crate::{app_icon, config::AppTheme};
 
 use super::{
     design::{animation_seconds, Palette, CONTROL_HEIGHT, GAP, SECTION_PADDING, SECTION_RADIUS},
     live::{LiveDevice, LiveLevel, LiveReading},
     management::{CleanupKind, DashboardBackend},
-    model::{DashboardData, DashboardDevice, DashboardInventoryDevice},
+    model::{DashboardData, DashboardInventoryDevice},
 };
 use platform::{LiveUpdate, Signal, SystemChanges, WindowSignals};
 use worker::{Action, Confirmation, Reply, Snapshot, Worker};
@@ -52,11 +50,12 @@ pub(super) fn open_dashboard_window(
     } else {
         "Volty Dashboard"
     };
+    let icon = app_icon::dashboard_icon()?;
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size(size)
             .with_min_inner_size([660.0, 460.0])
-            .with_icon(app_icon::dashboard_icon()?),
+            .with_icon(icon.clone()),
         ..Default::default()
     };
     Ok(eframe::run_native(
@@ -65,6 +64,7 @@ pub(super) fn open_dashboard_window(
         Box::new(move |cc| {
             let ctx = &cc.egui_ctx;
             let animation = animation_seconds();
+            install_heading_font(ctx);
             ctx.all_styles_mut(|style| {
                 style.animation_time = animation;
                 style.spacing.item_spacing = egui::vec2(GAP as f32, GAP as f32);
@@ -99,13 +99,22 @@ pub(super) fn open_dashboard_window(
                 .is_some_and(|preview| preview.cleanup);
             let backend_is_local = backend.is_local();
             let worker = Worker::start(ctx.clone(), backend)?;
+            let brand = ctx.load_texture(
+                "Volty",
+                egui::ColorImage::from_rgba_unmultiplied(
+                    [icon.width as usize, icon.height as usize],
+                    &icon.rgba,
+                ),
+                egui::TextureOptions::LINEAR,
+            );
             let mut dashboard = Dashboard {
+                analytics: analytics::HistoryView::default(),
+                brand,
                 worker,
                 signals,
                 system,
                 contrast,
                 title_theme: None,
-                colors: BatteryColorMap::default(),
                 live: launch.preview.map(|preview| preview.live),
                 preview_theme,
                 preview_cleanup: cleanup,
@@ -129,7 +138,6 @@ pub(super) fn open_dashboard_window(
                 page: if manage { Page::Manage } else { Page::History },
                 older_days: 7,
                 inactive_days: 7,
-                search: String::new(),
             };
             dashboard.refresh();
             Ok(Box::new(dashboard))
@@ -144,12 +152,13 @@ enum Page {
 }
 
 struct Dashboard {
+    analytics: analytics::HistoryView,
+    brand: egui::TextureHandle,
     worker: Worker,
     signals: Option<WindowSignals>,
     system: Option<Arc<SystemChanges>>,
     contrast: Option<Palette>,
     title_theme: Option<egui::Theme>,
-    colors: BatteryColorMap,
     live: Option<Vec<LiveDevice>>,
     preview_theme: Option<AppTheme>,
     preview_cleanup: bool,
@@ -173,7 +182,6 @@ struct Dashboard {
     page: Page,
     older_days: u32,
     inactive_days: u32,
-    search: String,
 }
 
 impl Dashboard {
@@ -214,27 +222,47 @@ impl Dashboard {
         }) {
             self.selected = self
                 .live
-                .as_deref()
-                .and_then(|items| items.first())
+                .iter()
+                .flatten()
+                .find(|device| {
+                    data.devices
+                        .iter()
+                        .any(|history| history.identity == device.identity)
+                })
                 .map(|device| device.identity.clone())
                 .or_else(|| data.devices.first().map(|device| device.identity.clone()))
+                .or_else(|| {
+                    self.live
+                        .as_deref()
+                        .and_then(|items| items.first())
+                        .map(|device| device.identity.clone())
+                })
                 .or_else(|| data.inventory.first().map(|device| device.identity.clone()));
         }
+        if self.snapshot.is_none() {
+            self.analytics
+                .initial_comparison(data, self.selected.as_deref());
+        }
+        self.analytics.invalidate_readings();
         self.snapshot = Some(Arc::new(snapshot));
     }
 
     fn header(&mut self, ui: &mut Ui) {
         ui.horizontal(|ui| {
-            ui.label(RichText::new("Volty").size(27.0).strong());
+            ui.image((self.brand.id(), egui::vec2(28.0, 28.0)));
+            ui.label(analytics::heading(ui, "Volty", 22.0));
             ui.add_space(12.0);
             if ui
-                .selectable_label(self.page == Page::History, "Battery history")
+                .add(analytics::tab(
+                    self.page == Page::History,
+                    "Battery history",
+                ))
                 .clicked()
             {
                 self.page = Page::History;
             }
             if ui
-                .selectable_label(self.page == Page::Manage, "Manage data")
+                .add(analytics::tab(self.page == Page::Manage, "Manage data"))
                 .clicked()
                 && self.page != Page::Manage
             {
@@ -261,26 +289,7 @@ impl Dashboard {
                 }
             });
         });
-        ui.separator();
-        if self.page == Page::History {
-            if let Some(snapshot) = &self.snapshot {
-                let devices = &snapshot.data.devices;
-                let presence = self.live.as_deref().map_or_else(
-                    || "Monitor status unavailable".to_owned(),
-                    |devices| {
-                        format!(
-                            "{} online",
-                            devices.iter().filter(|item| item.reading.is_some()).count()
-                        )
-                    },
-                );
-                let readings: u64 = devices.iter().map(|device| device.samples).sum();
-                ui.label(format!(
-                    "{} devices with history  ·  {presence}  ·  {readings} readings",
-                    devices.len()
-                ));
-            }
-        }
+
         if let Some(status) = &self.status {
             match status {
                 Ok(message) => {
@@ -299,212 +308,6 @@ impl Dashboard {
                 Err(error) => {
                     ui.colored_label(ui.visuals().error_fg_color, error);
                 }
-            }
-        }
-    }
-
-    fn history(&mut self, ui: &mut Ui, frame: &eframe::Frame) {
-        let mut requested_days = self.days;
-        let height = ui.available_height();
-        let export = ui
-            .horizontal_top(|ui| {
-                // Bound the sidebar independently of long device names.
-                ui.allocate_ui_with_layout(
-                    egui::vec2(200.0, height),
-                    Layout::top_down(Align::Min),
-                    |ui| {
-                        ui.set_width(200.0);
-                        ui.set_max_width(200.0);
-                        ui.label(RichText::new("Devices").size(18.0).strong());
-                        ui.add(
-                            egui::TextEdit::singleline(&mut self.search)
-                                .hint_text("Search devices")
-                                .desired_width(168.0),
-                        );
-                        day_picker(
-                            ui,
-                            "history-range",
-                            &mut requested_days,
-                            &[1, 3, 7, 14, 30],
-                            true,
-                        );
-                        let query = self.search.trim().to_lowercase();
-                        let matches = |name: &str, identity: &str| {
-                            query.is_empty()
-                                || name.to_lowercase().contains(&query)
-                                || identity.to_lowercase().contains(&query)
-                        };
-                        ScrollArea::vertical().id_salt("devices").show(ui, |ui| {
-                            let presence = self.live.as_deref();
-                            for device in presence
-                                .into_iter()
-                                .flatten()
-                                .filter(|device| matches(&device.name, &device.identity))
-                            {
-                                let (level, status) =
-                                    device.reading.map_or((None, "Detected"), |reading| {
-                                        (reading.level.value(), live_status(reading))
-                                    });
-                                device_button(
-                                    ui,
-                                    &mut self.selected,
-                                    &device.identity,
-                                    &device.name,
-                                    &format!("{}  ·  {status}", live_percent(device.reading)),
-                                    level,
-                                );
-                            }
-                            if let Some(snapshot) = &self.snapshot {
-                                let data = &snapshot.data;
-                                for device in data.devices.iter().filter(|device| {
-                                    matches(&device.name, &device.identity)
-                                        && live_device(presence, &device.identity).is_none()
-                                }) {
-                                    device_button(
-                                        ui,
-                                        &mut self.selected,
-                                        &device.identity,
-                                        &device.name,
-                                        &format!(
-                                            "{}  ·  {}",
-                                            percent(device.latest_percent),
-                                            device_status(device, presence.is_some())
-                                        ),
-                                        device.latest_percent,
-                                    );
-                                }
-                                for device in data.inventory.iter().filter(|item| {
-                                    matches(&item.name, &item.identity)
-                                        && live_device(presence, &item.identity).is_none()
-                                        && data.devices.iter().all(|d| d.identity != item.identity)
-                                }) {
-                                    device_button(
-                                        ui,
-                                        &mut self.selected,
-                                        &device.identity,
-                                        &device.name,
-                                        "No samples in this range",
-                                        None,
-                                    );
-                                }
-                            }
-                        });
-                    },
-                );
-                ui.add_space(6.0);
-                let live = self
-                    .selected
-                    .as_deref()
-                    .and_then(|id| live_device(self.live.as_deref(), id));
-                let Some(snapshot) = &self.snapshot else {
-                    if let Some(device) = live {
-                        ui.heading(&device.name);
-                        ui.label(format!(
-                            "{}  ·  {}",
-                            live_percent(device.reading),
-                            device.reading.map_or("Detected", live_status)
-                        ));
-                    }
-                    ui.label(if self.loading {
-                        "Loading battery history…"
-                    } else {
-                        "Battery history unavailable."
-                    });
-                    return false;
-                };
-                let data = &snapshot.data;
-                let device = data
-                    .devices
-                    .iter()
-                    .position(|item| Some(item.identity.as_str()) == self.selected.as_deref());
-                let inventory = selected_inventory(data, self.selected.as_deref());
-                ui.allocate_ui_with_layout(
-                    egui::vec2(ui.available_width(), height),
-                    Layout::top_down(Align::Min),
-                    |ui| {
-                        ScrollArea::vertical()
-                            .id_salt(("history", &self.selected))
-                            .auto_shrink([false, false])
-                            .show(ui, |ui| {
-                                if let Some(index) = device {
-                                    if snapshot.data.window_days != self.days {
-                                        ui.horizontal(|ui| {
-                                            if self.loading {
-                                                ui.spinner();
-                                            }
-                                            ui.label(format!(
-                                                "Showing the last {} days",
-                                                snapshot.data.window_days
-                                            ));
-                                        });
-                                    }
-                                    history_detail(
-                                        ui,
-                                        snapshot,
-                                        index,
-                                        !self.exporting,
-                                        live,
-                                        self.live.is_some(),
-                                        self.colors,
-                                    )
-                                } else {
-                                    ui.heading(
-                                        live.map(|item| item.name.as_str())
-                                            .or_else(|| inventory.map(|item| item.name.as_str()))
-                                            .unwrap_or("Battery history"),
-                                    );
-                                    if let Some(reading) = live.and_then(|device| device.reading) {
-                                        ui.label(format!(
-                                            "{}  ·  {}",
-                                            live_percent(Some(reading)),
-                                            live_status(reading)
-                                        ));
-                                    }
-                                    ui.label(
-                                        if inventory
-                                            .is_some_and(|item| !item.history_recording_enabled)
-                                        {
-                                            "History recording is paused for this device."
-                                        } else {
-                                            "No battery history recorded in this range."
-                                        },
-                                    );
-                                    false
-                                }
-                            })
-                            .inner
-                    },
-                )
-                .inner
-            })
-            .inner;
-        if requested_days != self.days {
-            self.days = requested_days;
-            self.discard_load = self.loading;
-            self.status = None;
-            self.refresh();
-        }
-        if export {
-            let Some((snapshot, index)) = self.snapshot.as_ref().and_then(|snapshot| {
-                snapshot
-                    .data
-                    .devices
-                    .iter()
-                    .position(|item| Some(item.identity.as_str()) == self.selected.as_deref())
-                    .map(|index| (Arc::clone(snapshot), index))
-            }) else {
-                return;
-            };
-            match platform::save_path(frame) {
-                Ok(Some(path)) => match self.worker.export(path, snapshot, index) {
-                    Ok(()) => {
-                        self.exporting = true;
-                        self.export_status = Some(Ok("Exporting readings…".to_owned()));
-                    }
-                    Err(error) => self.export_status = Some(Err(error.to_string())),
-                },
-                Ok(None) => {}
-                Err(error) => self.status = Some(Err(error.to_string())),
             }
         }
     }
@@ -746,6 +549,7 @@ impl eframe::App for Dashboard {
         if let Some(system) = &self.system {
             if system.appearance.swap(false, Ordering::AcqRel) {
                 let animation = animation_seconds();
+                install_heading_font(ctx);
                 ctx.all_styles_mut(|style| style.animation_time = animation);
                 let contrast = Palette::system_contrast();
                 if self.contrast != contrast {
@@ -778,9 +582,9 @@ impl eframe::App for Dashboard {
                     ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                     return;
                 }
-                Signal::Appearance(theme, colors) => {
-                    self.colors = colors;
+                Signal::Appearance(theme) => {
                     apply_theme(ctx, theme);
+                    self.refresh_pending = true;
                 }
             }
         }
@@ -850,17 +654,23 @@ impl eframe::App for Dashboard {
     }
 
     fn ui(&mut self, ui: &mut Ui, frame: &mut eframe::Frame) {
-        Frame::new()
-            .fill(canvas(ui))
-            .inner_margin(20)
-            .show(ui, |ui| {
-                ui.set_min_size(ui.available_size());
-                self.header(ui);
-                match self.page {
-                    Page::History => self.history(ui, frame),
-                    Page::Manage => self.manage(ui),
+        Frame::new().fill(canvas(ui)).show(ui, |ui| {
+            ui.set_min_size(ui.available_size());
+            ui.spacing_mut().item_spacing.y = 0.0;
+            Frame::new()
+                .inner_margin(egui::Margin::symmetric(22, 12))
+                .show(ui, |ui| self.header(ui));
+            ui.separator();
+            match self.page {
+                Page::History => self.history(ui, frame),
+                Page::Manage => {
+                    Frame::new().inner_margin(20).show(ui, |ui| {
+                        ui.spacing_mut().item_spacing.y = GAP as f32;
+                        self.manage(ui);
+                    });
                 }
-            });
+            }
+        });
         self.confirm(ui.ctx());
         if self.preview_theme.is_some()
             && !self.preview_ready
@@ -873,6 +683,34 @@ impl eframe::App for Dashboard {
             ));
         }
     }
+}
+
+fn install_heading_font(ctx: &egui::Context) {
+    let Some(windows) = std::env::var_os("WINDIR") else {
+        return;
+    };
+    let path = std::path::PathBuf::from(windows)
+        .join("Fonts")
+        .join("seguisb.ttf");
+    let Ok(data) = std::fs::read(path) else {
+        return;
+    };
+    let mut fonts = egui::FontDefinitions::default();
+    let family = egui::FontFamily::Name("Volty headings".into());
+    let name = "Segoe UI Semibold".to_owned();
+    fonts
+        .font_data
+        .insert(name.clone(), Arc::new(egui::FontData::from_owned(data)));
+    let mut fallback = fonts.families[&egui::FontFamily::Proportional].clone();
+    fallback.insert(0, name);
+    fonts.families.insert(family.clone(), fallback);
+    ctx.set_fonts(fonts);
+    ctx.all_styles_mut(|style| {
+        style.text_styles.insert(
+            egui::TextStyle::Heading,
+            egui::FontId::new(18.0, family.clone()),
+        );
+    });
 }
 
 fn apply_theme(ctx: &egui::Context, theme: AppTheme) {
@@ -900,111 +738,11 @@ fn live_device<'a>(devices: Option<&'a [LiveDevice]>, identity: &str) -> Option<
         .map(|index| &devices[index])
 }
 
-fn live_status(reading: LiveReading) -> &'static str {
-    if reading.charging {
-        "Charging"
-    } else {
-        "Online"
-    }
-}
-
 fn live_percent(reading: Option<LiveReading>) -> String {
     match reading.map(|reading| reading.level) {
         Some(LiveLevel::Estimated(value)) => format!("≈{value}%"),
         Some(LiveLevel::Exact(value)) => format!("{value}%"),
         _ => "—".to_owned(),
-    }
-}
-
-fn device_status(device: &DashboardDevice, monitor_active: bool) -> &'static str {
-    if monitor_active || !device.online {
-        "Last known"
-    } else {
-        "Recently recorded"
-    }
-}
-
-fn device_button(
-    ui: &mut Ui,
-    selected: &mut Option<String>,
-    identity: &str,
-    name: &str,
-    subtitle: &str,
-    level: Option<u8>,
-) {
-    let active = selected.as_deref() == Some(identity);
-    ui.push_id(identity, |ui| {
-        ui.spacing_mut().button_padding.x = 26.0;
-        let label = Button::new(format!("{name}\n{subtitle}"))
-            .selected(active)
-            .wrap()
-            .min_size(egui::vec2(ui.available_width(), 50.0));
-        let response = ui.add(label).on_hover_text(format!("{name}\n{identity}"));
-        if response.clicked() {
-            *selected = Some(identity.to_owned());
-        }
-        let rect = response.rect;
-        paint_device_icon(ui, rect, identity, active);
-        if let Some(level) = level {
-            let width = (rect.width() - 8.0).max(0.0);
-            let start = egui::pos2(rect.left() + 4.0, rect.bottom() - 3.0);
-            ui.painter().line_segment(
-                [start, start + egui::vec2(width, 0.0)],
-                ui.visuals().window_stroke,
-            );
-            ui.painter().line_segment(
-                [
-                    start,
-                    start + egui::vec2(width * f32::from(level) / 100.0, 0.0),
-                ],
-                Stroke::new(2.0, accent(ui)),
-            );
-        }
-    });
-}
-
-fn paint_device_icon(ui: &Ui, row: egui::Rect, identity: &str, active: bool) {
-    let center = egui::pos2(row.left() + 13.0, row.center().y);
-    let color = if active {
-        ui.visuals().selection.stroke.color
-    } else {
-        ui.visuals().widgets.inactive.fg_stroke.color
-    };
-    let stroke = Stroke::new(1.2, color);
-    let point = |x, y| center + egui::vec2(x, y);
-    let painter = ui.painter();
-    if identity.starts_with("bluetooth:") {
-        painter.add(egui::Shape::line(
-            [
-                (-4.0, -4.0),
-                (4.0, 4.0),
-                (0.0, 7.0),
-                (0.0, -7.0),
-                (4.0, -4.0),
-                (-4.0, 4.0),
-            ]
-            .map(|(x, y)| point(x, y))
-            .to_vec(),
-            stroke,
-        ));
-    } else if identity.starts_with("xinput:") {
-        painter.rect_stroke(
-            egui::Rect::from_center_size(center, egui::vec2(16.0, 10.0)),
-            4.0,
-            stroke,
-            egui::StrokeKind::Inside,
-        );
-        painter.line_segment([point(-5.0, 0.0), point(-1.0, 0.0)], stroke);
-        painter.line_segment([point(-3.0, -2.0), point(-3.0, 2.0)], stroke);
-        painter.circle_filled(point(3.5, 0.0), 1.0, color);
-    } else {
-        painter.rect_stroke(
-            egui::Rect::from_center_size(center, egui::vec2(13.0, 10.0)),
-            2.0,
-            stroke,
-            egui::StrokeKind::Inside,
-        );
-        painter.line_segment([point(-3.0, 0.0), point(3.0, 0.0)], stroke);
     }
 }
 
@@ -1052,17 +790,32 @@ fn apply_visuals(ctx: &egui::Context, contrast: Option<Palette>) {
     let color = |[r, g, b]: [u8; 3]| Color32::from_rgb(r, g, b);
     for theme in [egui::Theme::Light, egui::Theme::Dark] {
         let dark = theme == egui::Theme::Dark;
-        let palette = contrast.unwrap_or_else(|| Palette::standard(dark));
+        let palette = contrast.unwrap_or_else(|| {
+            let mut palette = Palette::standard(dark);
+            if dark {
+                palette.canvas = [20, 26, 35];
+                palette.surface = [29, 37, 48];
+                palette.raised = [37, 47, 60];
+                palette.hover = [51, 65, 81];
+                palette.border = [52, 65, 81];
+                palette.text = [242, 245, 248];
+                palette.secondary = [170, 183, 198];
+                palette.accent = [57, 201, 237];
+            }
+            palette
+        });
         let mut visual = if dark {
             egui::Visuals::dark()
         } else {
             egui::Visuals::light()
         };
+        visual.override_text_color = Some(color(palette.text));
         visual.panel_fill = color(palette.canvas);
         visual.window_fill = color(palette.surface);
         visual.extreme_bg_color = color(palette.canvas);
         visual.window_stroke = Stroke::new(1.0, color(palette.border));
         visual.error_fg_color = color(palette.destructive);
+        visual.weak_text_color = Some(color(palette.secondary));
         visual.hyperlink_color = color(palette.accent);
         visual.selection.bg_fill = if contrast.is_some() {
             color(palette.accent)
@@ -1075,6 +828,7 @@ fn apply_visuals(ctx: &egui::Context, contrast: Option<Palette>) {
             palette.text
         });
         visual.widgets.noninteractive.fg_stroke.color = color(palette.secondary);
+        visual.widgets.inactive.bg_fill = color(palette.raised);
         visual.widgets.noninteractive.bg_stroke.color = color(palette.border);
         visual.widgets.inactive.weak_bg_fill = color(palette.raised);
         for widget in [
@@ -1107,171 +861,11 @@ fn duration(seconds: i64) -> String {
         0 => "<1m".to_owned(),
         1..60 => format!("{minutes}m"),
         60..1440 => format!("{}h {}m", minutes / 60, minutes % 60),
-        _ => format!("{}d {}h", minutes / 1440, minutes % 1440 / 60),
+        _ => format!(
+            "{}d {}h {}m",
+            minutes / 1440,
+            minutes % 1440 / 60,
+            minutes % 60
+        ),
     }
-}
-
-fn history_detail(
-    ui: &mut Ui,
-    snapshot: &Snapshot,
-    index: usize,
-    enabled: bool,
-    live: Option<&LiveDevice>,
-    monitor_active: bool,
-    colors: BatteryColorMap,
-) -> bool {
-    let device = &snapshot.data.devices[index];
-    let chart = &snapshot.charts[index];
-    let live_reading = live.and_then(|device| device.reading);
-    ui.heading(live.map_or(device.name.as_str(), |device| device.name.as_str()));
-    ui.label(format!(
-        "{}  ·  Last reading {}",
-        live_reading.map_or_else(|| device_status(device, monitor_active), live_status),
-        platform::date(device.last_at)
-    ));
-    card(ui, |ui| {
-        ui.horizontal_wrapped(|ui| {
-            let level = live_reading.map_or(device.latest_percent, |reading| reading.level.value());
-            let level_color = level.map_or_else(
-                || accent(ui),
-                |value| {
-                    let [r, g, b] = colors.color_for(value);
-                    Color32::from_rgb(r, g, b)
-                },
-            );
-            metric(
-                ui,
-                "Battery",
-                RichText::new(if live_reading.is_some() {
-                    live_percent(live_reading)
-                } else {
-                    percent(level)
-                })
-                .color(level_color),
-            );
-            metric(
-                ui,
-                "Est. remaining",
-                RichText::new(
-                    live_reading
-                        .map_or(device.eta_seconds, |reading| {
-                            reading
-                                .remaining_seconds
-                                .and_then(|seconds| i64::try_from(seconds).ok())
-                        })
-                        .map_or_else(|| "—".to_owned(), duration),
-                ),
-            );
-            metric(
-                ui,
-                "Drain per day",
-                RichText::new(
-                    device
-                        .percent_per_day
-                        .map_or_else(|| "—".to_owned(), |rate| format!("{rate:.1}%")),
-                ),
-            );
-            metric(ui, "Readings", RichText::new(device.samples.to_string()));
-        });
-    });
-    card(ui, |ui| {
-        ui.horizontal(|ui| {
-            ui.heading("Battery trend");
-            if chart.has_charging() {
-                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    ui.colored_label(accent(ui), "Shaded areas show charging");
-                });
-            }
-        });
-        chart.trend(ui, device);
-    });
-    card(ui, |ui| {
-        ui.heading("Activity");
-        chart.timeline(ui, device);
-        ui.horizontal_wrapped(|ui| {
-            let observed = device.online_seconds + device.offline_seconds;
-            if observed > 0 {
-                ui.label(format!(
-                    "{:.0}% online",
-                    device.online_seconds as f64 / observed as f64 * 100.0
-                ))
-                .on_hover_text(
-                    "Estimated from recorded samples and gaps. Unknown time is excluded.",
-                );
-            }
-            ui.colored_label(
-                accent(ui),
-                format!("Online {}", duration(device.online_seconds)),
-            );
-            ui.label(format!("Offline {}", duration(device.offline_seconds)));
-            let unknown = chart.unknown_seconds(device);
-            if unknown > 0 {
-                ui.label(format!("Unknown {}", duration(unknown)));
-            }
-        });
-    });
-    card(ui, |ui| {
-        let export = ui
-            .horizontal(|ui| {
-                ui.heading("Readings");
-                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    ui.add_enabled(enabled, Button::new("Export CSV…"))
-                        .clicked()
-                })
-                .inner
-            })
-            .inner;
-        egui::CollapsingHeader::new("View readings").show(ui, |ui| {
-            let sort = ui.scope_id().with("readings-order");
-            let mut oldest_first = ui.data(|data| data.get_temp::<bool>(sort)).unwrap_or(false);
-            ui.horizontal_wrapped(|ui| {
-                if ui
-                    .button(if oldest_first {
-                        "Local time ↑"
-                    } else {
-                        "Local time ↓"
-                    })
-                    .clicked()
-                {
-                    oldest_first = !oldest_first;
-                    ui.data_mut(|data| data.insert_temp(sort, oldest_first));
-                }
-                ui.monospace("Battery · Voltage · Charging");
-            });
-            ScrollArea::vertical()
-                .id_salt("reading rows")
-                .max_height(240.0)
-                .show_rows(
-                    ui,
-                    ui.text_style_height(&egui::TextStyle::Monospace),
-                    device.points.len(),
-                    |ui, rows| {
-                        for row in rows {
-                            let index = if oldest_first {
-                                row
-                            } else {
-                                device.points.len() - 1 - row
-                            };
-                            let point = &device.points[index];
-                            ui.monospace(format!(
-                                "{:<19}  {:>7}  {:>9}  {:>9}",
-                                platform::exact_date(point.t),
-                                percent(point.p),
-                                chart::voltage(point.v),
-                                if point.c { "Yes" } else { "No" }
-                            ));
-                        }
-                    },
-                );
-        });
-        export
-    })
-}
-
-fn metric(ui: &mut Ui, label: &str, value: RichText) {
-    ui.vertical(|ui| {
-        ui.set_min_width(100.0);
-        ui.label(label);
-        ui.label(value.size(25.0).strong());
-    });
 }
