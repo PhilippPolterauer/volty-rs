@@ -53,7 +53,7 @@ jobs:
           persist-credentials: false
 
       - name: Install Linux build dependencies
-        run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev libudev-dev pkg-config
+        run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev libudev-dev pkg-config dbus xauth xvfb
 
       - name: Install stable Rust
         uses: dtolnay/rust-toolchain@stable
@@ -68,6 +68,11 @@ jobs:
 
       - name: Test workspace
         run: cargo test --workspace --all-features --locked
+
+      - name: Test tray registration on a headless desktop
+        run: |
+          xvfb-run -a -s "-screen 0 1280x800x24" dbus-run-session -- \
+            cargo test -p volty-tray --all-features --locked --test linux_status_notifier -- --ignored
 
       - name: Build CLI with default features
         run: cargo build -p volty-tray --locked
