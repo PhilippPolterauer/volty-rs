@@ -54,6 +54,8 @@ impl BatteryProvider for LinuxHid {
         let mut readings = BTreeMap::new();
         for (key, interface) in keys.into_iter().zip(&interfaces) {
             let wired = is_direct_only_hidpp(interface.vendor_id, interface.product_id);
+            let mut failures = Vec::new();
+            let mut answered = false;
             for &slot in LOGITECH_HIDPP_20.device_indices(interface) {
                 let candidate = (key.clone(), slot);
                 let known = self.known.get(&candidate);
@@ -108,6 +110,7 @@ impl BatteryProvider for LinuxHid {
                             }
                         })
                 };
+                answered |= result.is_ok();
                 match result {
                     Ok(reading) if wired || !readings.contains_key(&reading.id) => {
                         readings.insert(reading.id.clone(), reading);
@@ -124,10 +127,20 @@ impl BatteryProvider for LinuxHid {
                             );
                             sink(ProviderEvent::Warning(message.clone()))?;
                             outcome.errors.push(message);
+                            failures.clear();
                             break;
                         }
+                        failures.push(format!("slot {slot:#04x}: {error}"));
                     }
                 }
+            }
+            if !answered && !failures.is_empty() {
+                outcome.errors.push(format!(
+                    "HID++ {:04x}:{:04x} returned no battery reading ({})",
+                    interface.vendor_id,
+                    interface.product_id,
+                    failures.join(", ")
+                ));
             }
         }
         for reading in readings.into_values() {

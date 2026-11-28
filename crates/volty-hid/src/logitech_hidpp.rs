@@ -259,6 +259,7 @@ impl HidppFrame {
     #[cfg(any(feature = "hidapi", test))]
     fn is_error_response(&self) -> bool {
         self.feature_index == 0xff
+            || (self.format == FrameFormat::Short && self.feature_index == 0x8f)
     }
 }
 
@@ -685,6 +686,26 @@ mod transport_tests {
                 error_code: Some(4)
             })
         ));
+    }
+
+    #[test]
+    fn receiver_short_error_finishes_only_the_matching_probe() {
+        let request = HidppFrame::long(2, 0, 0, 1, [0; 16]);
+        let mut io = MockIo::default();
+        for reply_id in [2, 1] {
+            let error = HidppFrame::short(2, 0x8f, 0, 0, [reply_id, 8, 0]);
+            io.reads.push_back(error.encode().unwrap());
+        }
+        assert!(matches!(
+            transact_io(&mut io, &request, Duration::from_secs(1)),
+            Err(HidppError::RemoteError {
+                device_index: 2,
+                software_id: 1,
+                error_code: Some(8),
+                ..
+            })
+        ));
+        assert_eq!(io.timeouts.len(), 2);
     }
 
     #[test]

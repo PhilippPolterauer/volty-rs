@@ -5,6 +5,10 @@ use std::{
     os::unix::fs::PermissionsExt,
     path::Path,
     process::{Child, Command, Output, Stdio},
+    sync::{
+        atomic::{AtomicU8, Ordering},
+        Arc,
+    },
     thread,
     time::{Duration, Instant},
 };
@@ -18,7 +22,7 @@ impl Drop for ChildGuard {
     }
 }
 
-fn serve_bluez(address: &str, path: &str) {
+fn serve_bluez(address: &str, path: &str, percent: Arc<AtomicU8>) {
     let connection = dbus::blocking::Connection::new_address(address).unwrap();
     connection
         .request_name("org.bluez", false, false, true)
@@ -40,7 +44,7 @@ fn serve_bluez(address: &str, path: &str) {
     let battery = service.register("org.bluez.Battery1", |interface| {
         interface
             .property("Percentage")
-            .get(|_, _: &mut ()| Ok(63_u8));
+            .get(move |_, _: &mut ()| Ok(percent.load(Ordering::Relaxed)));
     });
     service.insert(path.to_owned(), &[headset, battery], ());
     thread::spawn(move || {
@@ -73,7 +77,8 @@ fn private_bus_reading_reaches_status_history_and_dashboard() {
         .unwrap();
     let address = address.trim();
     let path = "/org/bluez/hci0/dev_02_00_00_00_00_01";
-    serve_bluez(address, path);
+    let percent = Arc::new(AtomicU8::new(63));
+    serve_bluez(address, path, percent.clone());
     let volty = || {
         let mut command = Command::new(env!("CARGO_BIN_EXE_volty"));
         command
@@ -177,6 +182,30 @@ fn private_bus_reading_reaches_status_history_and_dashboard() {
         )
         .unwrap();
     assert!(format!("{layout:?}").contains("Integration headset: 63%"));
+    percent.store(9, Ordering::Relaxed);
+    menu.method_call::<(), _, _, _>(
+        "com.canonical.dbusmenu",
+        "Event",
+        (2_i32, "clicked", Variant(0_i32), 0_u32),
+    )
+    .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let (_, layout): (u32, Layout) = menu
+            .method_call(
+                "com.canonical.dbusmenu",
+                "GetLayout",
+                (0_i32, 1_i32, Vec::<String>::new()),
+            )
+            .unwrap();
+        if format!("{layout:?}").contains("Integration headset: 9%") {
+            break;
+        }
+        assert!(Instant::now() < deadline, "Refresh did not update the menu");
+        thread::sleep(Duration::from_millis(50));
+    }
+    let icon: String = item.get("org.kde.StatusNotifierItem", "IconName").unwrap();
+    assert_eq!(icon, "battery-caution");
     menu.method_call::<(), _, _, _>(
         "com.canonical.dbusmenu",
         "Event",
@@ -195,7 +224,7 @@ fn private_bus_reading_reaches_status_history_and_dashboard() {
     run(volty().arg("dashboard"));
     let dashboard = dir.path().join("cache/volty/dashboard.html");
     let html = std::fs::read_to_string(&dashboard).unwrap();
-    assert!(html.contains("Integration headset") && html.contains("\"latest_percent\":63"));
+    assert!(html.contains("Integration headset") && html.contains("\"latest_percent\":9"));
     assert_eq!(
         dashboard.metadata().unwrap().permissions().mode() & 0o777,
         0o600
