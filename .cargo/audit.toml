@@ -1,0 +1,9 @@
+[advisories]
+# eframe's accessibility feature resolves AccessKit's Unix backend in Cargo.lock.
+# These unmaintained crates are absent from Volty's Windows dependency graph.
+# Revisit when the upstream accessibility stack changes.
+ignore = [
+    "RUSTSEC-2026-0370", # zvariant
+    "RUSTSEC-2026-0371", # zbus_names
+    "RUSTSEC-2026-0372", # zvariant_derive
+]
