@@ -441,7 +441,12 @@ impl Settings {
         }
     }
 
-    pub(super) fn ui(&mut self, ui: &mut Ui, frame: &eframe::Frame) {
+    pub(super) fn ui(
+        &mut self,
+        ui: &mut Ui,
+        frame: &eframe::Frame,
+        inventory: Option<&[DashboardInventoryDevice]>,
+    ) {
         if self.draft.is_none() {
             Frame::new().inner_margin(24).show(ui, |ui| {
                 ui.heading("Settings");
@@ -494,7 +499,7 @@ impl Settings {
                     .show(ui, |ui| {
                         Frame::new()
                             .inner_margin(egui::Margin::symmetric(if wide { 36 } else { 20 }, 22))
-                            .show(ui, |ui| self.content(ui, owner));
+                            .show(ui, |ui| self.content(ui, owner, inventory));
                     });
                 if actions != 0.0 {
                     ui.separator();
@@ -567,7 +572,12 @@ impl Settings {
         }
     }
 
-    fn content(&mut self, ui: &mut Ui, owner: Option<HWND>) {
+    fn content(
+        &mut self,
+        ui: &mut Ui,
+        owner: Option<HWND>,
+        inventory: Option<&[DashboardInventoryDevice]>,
+    ) {
         let Some(mut draft) = self.draft.take() else {
             return;
         };
@@ -583,7 +593,11 @@ impl Settings {
                 self.heading(ui, 0, SECTIONS[0]);
                 self.alerts(ui, &mut draft);
                 self.heading(ui, 1, SECTIONS[1]);
-                appearance(ui, &mut draft.preferences, &self.inventory);
+                appearance(
+                    ui,
+                    &mut draft.preferences,
+                    inventory.unwrap_or(&self.inventory),
+                );
                 self.heading(ui, 2, "Battery color map");
                 self.color_editor(ui, &mut draft, owner);
                 self.heading(ui, 3, SECTIONS[3]);
@@ -1026,38 +1040,51 @@ fn row(ui: &mut Ui, name: &str, description: &str, control: impl FnOnce(&mut Ui)
     Frame::new()
         .inner_margin(egui::Margin::symmetric(16, 10))
         .show(ui, |ui| {
-            ui.set_min_width(ui.available_width());
-            let label = |ui: &mut Ui| {
-                ui.spacing_mut().item_spacing.y = 3.0;
-                ui.label(RichText::new(name).strong());
-                ui.label(RichText::new(description).size(13.0).weak());
-            };
-            if ui.available_width() < 660.0 {
-                label(ui);
-                ui.add_space(5.0);
-                control(ui);
-            } else {
-                let width = ui.available_width();
-                ui.allocate_ui_with_layout(
-                    vec2(width, 46.0),
-                    egui::Layout::left_to_right(egui::Align::Center),
-                    |ui| {
-                        ui.allocate_ui_with_layout(
-                            vec2(width - 254.0, 40.0),
-                            egui::Layout::top_down(egui::Align::Min)
-                                .with_main_align(egui::Align::Center),
-                            label,
-                        );
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            ui.horizontal(control);
-                        });
-                    },
-                );
-            }
+            responsive_row(ui, name, description, 244.0, |ui| {
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.horizontal(control);
+                });
+            })
         });
 }
 
-fn field(ui: &mut Ui, value: &mut String, name: &str, suffix: &str, width: f32) {
+pub(super) fn responsive_row(
+    ui: &mut Ui,
+    name: &str,
+    description: &str,
+    control_width: f32,
+    control: impl FnOnce(&mut Ui),
+) {
+    let label = |ui: &mut Ui| {
+        ui.spacing_mut().item_spacing.y = 3.0;
+        ui.label(RichText::new(name).strong());
+        ui.label(RichText::new(description).size(13.0).weak());
+    };
+    let label_width = ui.available_width() - control_width - ui.spacing().item_spacing.x;
+    if label_width < 170.0 {
+        ui.scope(label);
+        ui.add_space(5.0);
+        control(ui);
+    } else {
+        ui.horizontal_top(|ui| {
+            ui.allocate_ui_with_layout(
+                vec2(label_width, 0.0),
+                egui::Layout::top_down(egui::Align::Min),
+                |ui| {
+                    ui.set_width(label_width);
+                    label(ui);
+                },
+            );
+            ui.allocate_ui_with_layout(
+                vec2(control_width, 0.0),
+                egui::Layout::top_down(egui::Align::Min),
+                control,
+            );
+        });
+    }
+}
+
+pub(super) fn field(ui: &mut Ui, value: &mut String, name: &str, suffix: &str, width: f32) {
     ui.horizontal(|ui| {
         let rtl = ui.layout().prefer_right_to_left();
         if rtl && !suffix.is_empty() {
@@ -1076,7 +1103,7 @@ fn field(ui: &mut Ui, value: &mut String, name: &str, suffix: &str, width: f32) 
     });
 }
 
-fn toggle(ui: &mut Ui, enabled: &mut bool, name: &str) {
+pub(super) fn toggle(ui: &mut Ui, enabled: &mut bool, name: &str) {
     let (rect, response) = ui.allocate_exact_size(vec2(67.0, 32.0), egui::Sense::click());
     if response.clicked() {
         *enabled = !*enabled;

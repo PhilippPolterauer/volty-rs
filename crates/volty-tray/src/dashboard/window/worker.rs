@@ -9,6 +9,8 @@ use eframe::egui::Context;
 
 use crate::history::HistoryDeletion;
 
+use super::manage::grouped;
+
 use super::{
     super::{
         management::{CleanupKind, CleanupResult, DashboardBackend, ManagedArtifact},
@@ -48,7 +50,7 @@ pub(super) enum Action {
 }
 
 pub(super) enum Operation {
-    Cleanup(CleanupResult),
+    Cleanup(Box<CleanupResult>),
     Forget {
         identity: String,
         preferences: bool,
@@ -61,6 +63,7 @@ pub(super) struct Confirmation {
     pub(super) title: String,
     pub(super) action: &'static str,
     pub(super) description: String,
+    pub(super) impact: Vec<String>,
     pub(super) operation: Operation,
 }
 
@@ -250,11 +253,11 @@ fn handle(backend: &DashboardBackend, action: Action) -> Result<Reply, BackendEr
         } => {
             let preview =
                 backend.preview_cleanup(CleanupKind::DeviceHistory, None, Some(&identity))?;
-            let mut description = format!("{name}\n{}\n\n{}", identity, preview_text(&preview));
+            let mut description = format!("{name}\n{}", preview_text(&preview, preferences));
             if preferences {
-                description.push_str("\nVolty will also reset the monitoring, recording, and tray preferences stored for this device.");
+                description.push_str("\nVolty will reset the saved monitoring, recording, and tray preferences. The device can appear again if discovered.");
             } else {
-                description.push_str("\nNew readings can appear if history recording is enabled.");
+                description.push_str("\nDevice preferences stay in place. Volty can record new readings while monitoring and recording are enabled.");
             }
             Reply::Confirm(Confirmation {
                 action: if preferences {
@@ -269,6 +272,7 @@ fn handle(backend: &DashboardBackend, action: Action) -> Result<Reply, BackendEr
                 }
                 .to_owned(),
                 description,
+                impact: Vec::new(),
                 operation: Operation::Forget {
                     identity,
                     preferences,
@@ -282,7 +286,7 @@ fn handle(backend: &DashboardBackend, action: Action) -> Result<Reply, BackendEr
                 Reply::Done(Some("No history matches this cleanup.".to_owned()), false)
             } else {
                 let title = match kind {
-                    CleanupKind::OlderThan => format!("Delete samples older than {days} days?"),
+                    CleanupKind::OlderThan => format!("Delete readings older than {days} days?"),
                     CleanupKind::InactiveDevices => {
                         format!("Delete history for devices inactive for {days} days?")
                     }
@@ -292,9 +296,16 @@ fn handle(backend: &DashboardBackend, action: Action) -> Result<Reply, BackendEr
                 };
                 Reply::Confirm(Confirmation {
                     title,
-                    action: "Delete samples",
-                    description: preview_text(&preview),
-                    operation: Operation::Cleanup(preview),
+                    action: "Delete readings",
+                    description: preview_text(&preview, false),
+                    impact: preview
+                        .affected
+                        .iter()
+                        .map(|device| {
+                            format!("{} · {} readings", device.name, grouped(device.samples))
+                        })
+                        .collect(),
+                    operation: Operation::Cleanup(Box::new(preview)),
                 })
             }
         }
@@ -308,7 +319,7 @@ fn handle(backend: &DashboardBackend, action: Action) -> Result<Reply, BackendEr
             if files.len() > 5 {
                 description.push_str(&format!("\nAnd {} more", files.len() - 5));
             }
-            description.push_str("\n\nThis deletion is permanent.");
+
             Reply::Confirm(Confirmation {
                 action: if files.len() == 1 {
                     "Delete file"
@@ -321,6 +332,7 @@ fn handle(backend: &DashboardBackend, action: Action) -> Result<Reply, BackendEr
                     if files.len() == 1 { "" } else { "s" }
                 ),
                 description,
+                impact: Vec::new(),
                 operation: Operation::DeleteArtifacts(files),
             })
         }
@@ -328,7 +340,7 @@ fn handle(backend: &DashboardBackend, action: Action) -> Result<Reply, BackendEr
     })
 }
 
-fn preview_text(preview: &CleanupResult) -> String {
+fn preview_text(preview: &CleanupResult, includes_preferences: bool) -> String {
     let range = match (preview.first_at, preview.last_at) {
         (Some(first), Some(last)) => format!(
             "\n{} to {}",
@@ -338,15 +350,19 @@ fn preview_text(preview: &CleanupResult) -> String {
         _ => String::new(),
     };
     format!(
-        "{} {} across {} {}.{range}\nThis deletion is permanent.",
-        preview.samples,
+        "{} {} across {} {}.{range}",
+        grouped(preview.samples),
         if preview.samples == 1 {
-            "sample"
+            "reading"
         } else {
-            "samples"
+            "readings"
         },
-        preview.devices,
-        if preview.devices == 1 {
+        if includes_preferences {
+            1
+        } else {
+            preview.devices
+        },
+        if includes_preferences || preview.devices == 1 {
             "device"
         } else {
             "devices"
@@ -357,7 +373,7 @@ fn preview_text(preview: &CleanupResult) -> String {
 fn execute(backend: &DashboardBackend, operation: Operation) -> Result<String, BackendError> {
     match operation {
         Operation::Cleanup(preview) => {
-            let deleted = backend.execute_cleanup(preview)?;
+            let deleted = backend.execute_cleanup(*preview)?;
             Ok(format!(
                 "Deleted {} samples across {} device(s).",
                 deleted.samples, deleted.devices

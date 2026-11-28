@@ -79,6 +79,14 @@ above before handing off a set of changes.
 cargo test -p volty-tray --features ui-preview --locked dashboard::preview
 ```
 
+### Manage data
+
+Manage data uses the native dashboard shell, navigation, palette, typography, and DPI scaling. It shares Battery history’s device icons, series colors, battery indicator, table cell layout, and row highlighting. The device picker now uses the same inventory and selected identity as the other pages.
+
+Settings and Manage data share the responsive settings row, text field, and toggle. Manage data also reuses the dashboard’s background workers, refresh signals, and confirmation dialog. The dialog now shows the retention period, affected counts and device names, and the permanence warning. Cleanup rechecks the affected device identities, reading counts, and time bounds inside the deletion transaction.
+
+The new page-specific pieces are the searchable, sortable inventory table, device detail and cleanup layouts, and overview counters. The diagnostic list uses the supplied file icon and the existing file deletion operations. Inactive-device cleanup removes history. Forget device also clears stored monitoring, recording, and tray preferences.
+
 ## README visuals
 
 The renderer test generates temporary PNG previews for the README hero and tray

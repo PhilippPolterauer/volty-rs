@@ -9,13 +9,18 @@ use eframe::egui::{
 
 use super::{
     super::model::{DashboardDevice, DashboardPoint, OFFLINE_AFTER_SECONDS, SECONDS_PER_DAY},
+    assets::Icon,
     duration, percent, platform,
 };
 
 const COLUMNS: usize = 640;
 static NEXT_CHART_ID: AtomicU64 = AtomicU64::new(0);
 pub(super) const CHARGING: Color32 = Color32::from_rgb(250, 204, 21);
-pub(super) const FORECAST_NAMES: [&str; 2] = ["Since last charge", "Current discharge rate"];
+pub(super) const FORECAST_NAMES: [&str; 3] = [
+    "Since last charge",
+    "Current discharge rate",
+    "Current charging rate",
+];
 
 pub(super) struct Chart {
     revision: u64,
@@ -25,7 +30,7 @@ pub(super) struct Chart {
     charging: Vec<(i64, i64)>,
     drain_boundaries: Vec<i64>,
     online_prefix: Vec<i64>,
-    pub(super) forecasts: [Option<Forecast>; 2],
+    pub(super) forecasts: [Option<Forecast>; 3],
 }
 
 #[derive(Clone, Copy)]
@@ -37,21 +42,39 @@ pub(super) struct Forecast {
 
 impl Forecast {
     fn new(start: DashboardPoint, latest: DashboardPoint) -> Option<Self> {
-        let hours = latest.t.saturating_sub(start.t);
-        let drop = start.p?.checked_sub(latest.p?)?;
-        (hours >= 3_600 && drop > 0).then(|| Self {
+        let elapsed = latest.t.saturating_sub(start.t);
+        let change = f64::from(start.p?) - f64::from(latest.p?);
+        (elapsed >= if latest.c { 300 } else { 3_600 }
+            && if latest.c { change < 0.0 } else { change > 0.0 })
+        .then(|| Self {
             start,
             latest,
-            rate: f64::from(drop) * SECONDS_PER_DAY as f64 / hours as f64,
+            rate: change * SECONDS_PER_DAY as f64 / elapsed as f64,
         })
     }
 
-    pub(super) fn eta(self, target: u8) -> Option<i64> {
-        let drop = self.latest.p?.checked_sub(target)?;
+    pub(super) fn endpoint(self) -> u8 {
+        if self.latest.c {
+            100
+        } else {
+            0
+        }
+    }
+
+    pub(super) fn rate_label(self) -> String {
+        if self.latest.c {
+            format!("{:.1} pp/hour", self.rate.abs() / 24.0)
+        } else {
+            format!("{:.1} pp/day", self.rate)
+        }
+    }
+
+    pub(super) fn eta(self) -> Option<i64> {
+        let drop = f64::from(self.latest.p?) - f64::from(self.endpoint());
         Some(
-            self.latest.t.saturating_add(
-                (f64::from(drop) * SECONDS_PER_DAY as f64 / self.rate).round() as i64,
-            ),
+            self.latest
+                .t
+                .saturating_add((drop * SECONDS_PER_DAY as f64 / self.rate).round() as i64),
         )
     }
 }
@@ -117,7 +140,7 @@ impl Chart {
                 }
                 intervals
             });
-        let mut forecasts = [None; 2];
+        let mut forecasts = [None; 3];
         if let Some((index, &latest)) = device
             .points
             .iter()
@@ -151,7 +174,18 @@ impl Chart {
                 forecasts[1] = Forecast::new(*first, latest);
             }
             if charging_now {
-                forecasts = [None; 2];
+                forecasts = [None; 3];
+                if latest.c {
+                    let start = eligible
+                        .windows(2)
+                        .rposition(|pair| {
+                            !pair[0].c
+                                || pair[0].p.zip(pair[1].p).is_none_or(|(a, b)| a > b)
+                                || pair[1].t - pair[0].t > OFFLINE_AFTER_SECONDS
+                        })
+                        .map_or(0, |index| index + 1);
+                    forecasts[2] = Forecast::new(eligible[start], latest);
+                }
             }
         }
         let mut online_prefix = vec![0];
@@ -277,8 +311,8 @@ fn recorded_geometry(chart: &Chart, key: &TraceKey) -> Arc<[Shape]> {
             .collect();
         shapes.extend(
             path.iter()
-                .filter(|&&point| key.plot.contains(point))
-                .map(|&point| Shape::circle_filled(point, 1.7, key.color)),
+                .filter(|&&point| path.len() < 12 && key.plot.contains(point))
+                .map(|&point| Shape::circle_filled(point, 2.0, key.color)),
         );
         if path.len() > 1 {
             shapes.push(Shape::line(path, Stroke::new(width, key.color)));
@@ -355,25 +389,55 @@ pub(super) fn gutter(width: f32) -> f32 {
     }
 }
 
-pub(super) fn forecast_colors(ui: &Ui) -> [Color32; 2] {
-    if ui.visuals().dark_mode {
-        [
-            Color32::from_rgb(199, 164, 246),
-            Color32::from_rgb(255, 155, 132),
-        ]
-    } else {
-        [
-            Color32::from_rgb(101, 57, 164),
-            Color32::from_rgb(160, 61, 45),
-        ]
+#[derive(Clone, Copy)]
+pub(super) struct Projection<'a> {
+    pub(super) series: Series<'a>,
+    pub(super) fit: Forecast,
+    pub(super) model: usize,
+}
+
+impl Projection<'_> {
+    pub(super) fn color(self, ui: &Ui) -> Color32 {
+        let colors = if ui.visuals().dark_mode {
+            [[196, 160, 244], [245, 155, 134], [250, 204, 21]]
+        } else {
+            [[101, 57, 164], [160, 61, 45], [133, 91, 0]]
+        };
+        let [r, g, b] = colors[self.model];
+        Color32::from_rgb(r, g, b)
+    }
+
+    pub(super) fn name(self) -> &'static str {
+        FORECAST_NAMES[self.model]
+    }
+
+    pub(super) fn details(self, at: i64, show_fit: bool) -> Option<String> {
+        if at > self.fit.eta()? || at < self.fit.start.t || (!show_fit && at < self.fit.latest.t) {
+            return None;
+        }
+        let estimate = f64::from(self.fit.latest.p?)
+            - self.fit.rate * (at - self.fit.latest.t) as f64 / SECONDS_PER_DAY as f64;
+        let kind = if at < self.fit.latest.t {
+            "Historical fit"
+        } else {
+            "Forecast"
+        };
+        Some(format!(
+            "{} · {kind} · {} · {estimate:.0}% · {} · {} to {}",
+            self.series.device.name,
+            self.name(),
+            self.fit.rate_label(),
+            platform::summary_date(self.fit.start.t),
+            platform::summary_date(self.fit.latest.t),
+        ))
     }
 }
 
 pub(super) struct Plot<'a> {
     pub(super) series: &'a [Series<'a>],
     pub(super) focused: Series<'a>,
-    pub(super) forecasts: [Option<Forecast>; 2],
-    pub(super) target: u8,
+    pub(super) forecasts: &'a [Projection<'a>],
+    pub(super) show_fit: bool,
     pub(super) thresholds: &'a [u8],
     pub(super) show_charging: bool,
     pub(super) bridge_gaps: bool,
@@ -426,7 +490,7 @@ impl Plot<'_> {
             (ui.ctx().content_rect().height() - 130.0).max(360.0)
         } else {
             let available = ui.ctx().content_rect().height();
-            (available * 0.48).clamp(if available < 650.0 { 270.0 } else { 330.0 }, 440.0)
+            (available * 0.33).clamp(160.0, 310.0)
         };
         let (area, response) = ui.allocate_exact_size(
             vec2(ui.available_width(), height),
@@ -638,13 +702,15 @@ impl Plot<'_> {
             }
         }
         if self.show_charging {
-            paint_charging(
-                &clipped,
-                plot,
-                *range,
-                self.focused.chart,
-                CHARGING.gamma_multiply(0.18),
-            );
+            for series in self.series {
+                paint_charging(
+                    &clipped,
+                    plot,
+                    *range,
+                    series.chart,
+                    CHARGING.gamma_multiply(0.14),
+                );
+            }
         }
         for series in self.series {
             if self.bridge_gaps {
@@ -718,70 +784,42 @@ impl Plot<'_> {
                 }
             }
         }
-        for (index, (forecast, color)) in self
-            .forecasts
-            .into_iter()
-            .zip(forecast_colors(ui))
-            .enumerate()
-        {
-            let Some(fit) = forecast else { continue };
-            let start = pos2(x(fit.start.t), y(fit.start.p.unwrap_or(0)));
-            let latest = pos2(x(fit.latest.t), y(fit.latest.p.unwrap_or(0)));
-            let end = pos2(x(fit.eta(0).unwrap_or(fit.latest.t)), plot.bottom());
-            let length = if index == 0 { 7.0 } else { 2.0 };
-            dash(
-                &clipped,
-                start,
-                latest,
-                color.lerp_to_gamma(label, 0.45).gamma_multiply(0.62),
-                length,
-                4.0,
-            );
+        for (index, projection) in self.forecasts.iter().copied().enumerate() {
+            let fit = projection.fit;
+            let color = projection.color(ui);
+            let Some(at) = fit.eta() else { continue };
+            let endpoint = fit.endpoint();
+            let start = pos2(x(fit.start.t), y(fit.start.p.unwrap_or_default()));
+            let latest = pos2(x(fit.latest.t), y(fit.latest.p.unwrap_or_default()));
+            let end = pos2(x(at), y(endpoint));
+            let length = [8.0, 2.0, 6.0][projection.model];
+            if self.show_fit {
+                dash(
+                    &clipped,
+                    start,
+                    latest,
+                    color.lerp_to_gamma(label, 0.45).gamma_multiply(0.58),
+                    length,
+                    4.0,
+                );
+            }
             dash(&clipped, latest, end, color, length, 4.0);
-            clipped.circle_stroke(start, 4.0, Stroke::new(1.5, label));
-            let label_x = start.x + 6.0;
-            if start.x >= plot.left() && label_x < plot.right() - 65.0 {
+            if at > fit.latest.t && (range.start..=range.end).contains(&at) {
+                clipped.circle_filled(end, 3.0, color);
+                let offset = 7.0 + (index % 3) as f32 * 13.0;
+                let (offset, align) = if endpoint == 100 {
+                    (offset, Align2::RIGHT_TOP)
+                } else {
+                    (-offset, Align2::RIGHT_BOTTOM)
+                };
                 clipped.text(
-                    pos2(label_x, (start.y - 5.0).max(plot.top() + 13.0)),
-                    Align2::LEFT_BOTTOM,
-                    if index == 0 {
-                        "Last charge"
-                    } else {
-                        "Recent window"
-                    },
-                    FontId::proportional(10.0),
-                    label,
-                );
-            }
-            if start.x < plot.left() && latest.x > plot.left() + 20.0 {
-                clipped.text(
-                    pos2(plot.left() + 5.0, plot.top() + 5.0 + index as f32 * 14.0),
-                    Align2::LEFT_TOP,
-                    if index == 0 {
-                        "← Charge fit"
-                    } else {
-                        "← Recent fit"
-                    },
-                    FontId::proportional(11.0),
-                    color,
-                );
-            }
-            for &target in self.thresholds {
-                if let Some(at) = fit.eta(target) {
-                    clipped.circle_filled(pos2(x(at), y(target)), 2.8, color);
-                }
-            }
-            if let Some(at) = fit
-                .eta(self.target)
-                .filter(|at| *at > fit.latest.t && *at <= range.end && *at >= range.start)
-            {
-                let point = pos2(x(at), y(self.target));
-                clipped.circle_filled(point, 3.2, color);
-                let offset = if index == 0 { -7.0 } else { 15.0 };
-                clipped.text(
-                    point + vec2(-5.0, offset),
-                    Align2::RIGHT_BOTTOM,
-                    format!("{}% · {}", self.target, platform::chart_date(at, false)),
+                    end + vec2(-5.0, offset),
+                    align,
+                    format!(
+                        "{} · {endpoint}% · {}",
+                        projection.series.device.name,
+                        platform::chart_date(at, range.end - range.start <= SECONDS_PER_DAY)
+                    ),
                     FontId::proportional(10.0),
                     color,
                 );
@@ -843,21 +881,9 @@ impl Plot<'_> {
                         reading_at(*series, at)
                     ));
                 }
-                for (index, fit) in self.forecasts.into_iter().enumerate() {
-                    let Some(fit) = fit else { continue };
-                    if let Some(details) =
-                        forecast_details(fit, FORECAST_NAMES[index], at, self.target)
-                    {
+                for projection in self.forecasts {
+                    if let Some(details) = projection.details(at, self.show_fit) {
                         ui.label(details);
-                        for &threshold in self
-                            .thresholds
-                            .iter()
-                            .filter(|&&level| level != self.target)
-                        {
-                            if let Some(eta) = fit.eta(threshold) {
-                                ui.label(format!("{threshold}% at {}", platform::exact_date(eta)));
-                            }
-                        }
                     }
                 }
             });
@@ -880,7 +906,7 @@ impl Plot<'_> {
         let mut active_hit = None;
         for series in self.series {
             let (area, response) =
-                ui.allocate_exact_size(vec2(ui.available_width(), 22.0), Sense::click());
+                ui.allocate_exact_size(vec2(ui.available_width(), 16.0), Sense::click());
             if !ui.is_rect_visible(area) {
                 continue;
             }
@@ -991,8 +1017,7 @@ impl Plot<'_> {
                 }
             }
             if self.show_charging {
-                let overlay =
-                    Rect::from_min_max(pos2(track.left(), track.bottom() - 5.0), track.max);
+                let overlay = Rect::from_min_size(track.min, vec2(track.width(), 3.0));
                 paint_charging(&painter, overlay, range, series.chart, CHARGING);
                 let first = series
                     .chart
@@ -1005,15 +1030,8 @@ impl Plot<'_> {
                     let left = range.x(track, start).max(track.left());
                     let right = range.x(track, end).min(track.right());
                     if right - left >= 23.0 {
-                        let center = pos2((left + right) * 0.5, track.center().y - 2.0);
-                        let bolt = [
-                            center + vec2(1.0, -5.0),
-                            center + vec2(-2.0, 0.0),
-                            center + vec2(2.0, 0.0),
-                            center + vec2(-1.0, 5.0),
-                        ];
-                        painter.add(Shape::line(bolt.to_vec(), Stroke::new(2.0, Color32::BLACK)));
-                        painter.add(Shape::line(bolt.to_vec(), Stroke::new(1.0, CHARGING)));
+                        let center = pos2((left + right) * 0.5, track.center().y + 1.0);
+                        Icon::Bolt.paint(&painter, center, 12.0, CHARGING);
                     }
                 }
             }
@@ -1134,24 +1152,18 @@ fn paint_charging(painter: &Painter, rect: Rect, range: TimeRange, chart: &Chart
     let start = chart
         .charging
         .partition_point(|&(_, end)| end < range.start);
-    let mut painted_until = rect.left();
     for &(start, end) in &chart.charging[start..] {
         if start > range.end {
             break;
         }
-        let left = range
-            .x(rect, start)
-            .max(painted_until)
-            .floor()
-            .max(painted_until);
-        let right = range.x(rect, end).ceil().max(left + 1.0).min(rect.right());
+        let left = range.x(rect, start).max(rect.left());
+        let right = range.x(rect, end).min(rect.right());
         if right > left {
             painter.rect_filled(
                 Rect::from_min_max(pos2(left, rect.top()), pos2(right, rect.bottom())),
                 0,
                 color,
             );
-            painted_until = right;
         }
     }
 }
@@ -1245,28 +1257,6 @@ pub(super) fn reading_at(series: Series<'_>, at: i64) -> String {
     )
 }
 
-pub(super) fn forecast_details(fit: Forecast, model: &str, at: i64, target: u8) -> Option<String> {
-    let estimate =
-        f64::from(fit.latest.p?) - fit.rate * (at - fit.latest.t) as f64 / SECONDS_PER_DAY as f64;
-    if at < fit.start.t || !(0.0..=100.0).contains(&estimate) {
-        return None;
-    }
-    let kind = if at <= fit.latest.t {
-        "Historical fit"
-    } else {
-        "Forecast"
-    };
-    let eta = fit.eta(target).map_or_else(
-        || format!("{target}% already passed"),
-        |eta| format!("{target}% at {}", platform::summary_date(eta)),
-    );
-    Some(format!(
-        "{kind} · {model} · {estimate:.0}% · {:.1} pp/day elapsed · basis {} to {} · {eta}",
-        fit.rate,
-        platform::summary_date(fit.start.t),
-        platform::summary_date(fit.latest.t)
-    ))
-}
 pub(super) fn voltage(value: Option<u16>) -> String {
     value.map_or_else(
         || "—".to_owned(),
@@ -1370,16 +1360,48 @@ mod tests {
             .unwrap()
         };
         let data = build(false);
-        let [cycle, recent] = Chart::new(&data.devices[0]).forecasts.map(Option::unwrap);
+        let [cycle, recent, charge] = Chart::new(&data.devices[0]).forecasts;
+        assert!(charge.is_none());
+        let (cycle, recent) = (cycle.unwrap(), recent.unwrap());
         assert_eq!(cycle.start.t, 2 * hour);
         assert_eq!(cycle.rate, 12.0);
         assert_eq!(recent.start.t, 26 * hour);
         assert_eq!(recent.rate, 8.0);
-        assert_eq!(recent.eta(64), Some(74 * hour));
+        assert_eq!(recent.eta(), Some(266 * hour));
         assert!(Chart::new(&build(true).devices[0])
             .forecasts
             .iter()
             .all(Option::is_none));
+    }
+
+    #[test]
+    fn charging_forecast_uses_only_the_current_observed_session() {
+        use crate::history::HistorySample;
+        let samples = [
+            (0, 10, true),
+            (1800, 20, true), // The gap cuts off the earlier charging reading.
+            (2400, 40, true),
+            (3000, 60, true),
+        ]
+        .into_iter()
+        .map(|(recorded_at, percent, charging)| HistorySample {
+            identity: "hid:charging-fixture".to_owned(),
+            name: "Charging fixture".to_owned(),
+            recorded_at,
+            percent: Some(percent),
+            charging,
+            voltage_mv: None,
+        })
+        .collect();
+        let data =
+            super::super::super::model::build_data(samples, 7, 3000, 0, false, vec![]).unwrap();
+        let [cycle, recent, charge] = Chart::new(&data.devices[0]).forecasts;
+        assert!(cycle.is_none() && recent.is_none());
+        let charge = charge.unwrap();
+        assert_eq!(charge.start.t, 1800);
+        assert_eq!(charge.endpoint(), 100);
+        assert_eq!(charge.eta(), Some(4200));
+        assert_eq!(charge.rate_label(), "120.0 pp/hour");
     }
 
     #[test]

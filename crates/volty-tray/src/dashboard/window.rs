@@ -1,5 +1,7 @@
 mod analytics;
+mod assets;
 mod chart;
+mod manage;
 mod platform;
 mod settings;
 mod worker;
@@ -12,7 +14,7 @@ use std::{
 };
 
 use eframe::egui::{
-    self, Align, Button, Color32, ComboBox, Frame, Layout, Modal, RichText, ScrollArea, Stroke,
+    self, Align, Button, Color32, ComboBox, Frame, Layout, Modal, RichText, Stroke,
     ThemePreference, Ui,
 };
 
@@ -47,7 +49,7 @@ pub(super) fn open_dashboard_window(
     days: u32,
     launch: WindowOptions,
 ) -> Result<(), Box<dyn Error>> {
-    let size = launch.size.unwrap_or([1080, 760]).map(|value| value as f32);
+    let size = launch.size.unwrap_or([1080, 850]).map(|value| value as f32);
     let title = if backend.is_preview() {
         "Volty UI Preview — Dashboard (Loading)"
     } else {
@@ -106,17 +108,11 @@ pub(super) fn open_dashboard_window(
                 .preview
                 .as_ref()
                 .is_some_and(|preview| preview.invalid_settings);
-            let brand = ctx.load_texture(
-                "Volty",
-                egui::ColorImage::from_rgba_unmultiplied(
-                    [icon.width as usize, icon.height as usize],
-                    &icon.rgba,
-                ),
-                egui::TextureOptions::LINEAR,
-            );
             let mut dashboard = Dashboard {
                 analytics: analytics::HistoryView::default(),
-                brand,
+                manage_view: manage::ManageView::default(),
+                management_refresh: false,
+                pending_preference: None,
                 worker,
                 signals,
                 system,
@@ -143,6 +139,7 @@ pub(super) fn open_dashboard_window(
                 status: None,
                 confirmation: None,
                 confirmation_focus: None,
+                action_focus: None,
                 page: if launch.settings {
                     Page::Settings
                 } else if manage {
@@ -171,7 +168,9 @@ enum Page {
 
 struct Dashboard {
     analytics: analytics::HistoryView,
-    brand: egui::TextureHandle,
+    manage_view: manage::ManageView,
+    management_refresh: bool,
+    pending_preference: Option<(String, bool, bool)>,
     worker: Worker,
     signals: Option<WindowSignals>,
     system: Option<Arc<SystemChanges>>,
@@ -198,6 +197,7 @@ struct Dashboard {
     status: Option<Result<String, String>>,
     confirmation: Option<Confirmation>,
     confirmation_focus: Option<Option<egui::Id>>,
+    action_focus: Option<egui::Id>,
     page: Page,
     older_days: u32,
     inactive_days: u32,
@@ -205,8 +205,19 @@ struct Dashboard {
 
 impl Dashboard {
     fn request(&mut self, action: Action) {
+        if self.busy {
+            return;
+        }
         self.status = None;
+        let preference = match &action {
+            Action::Monitoring { identity, enabled } => Some((identity.clone(), true, *enabled)),
+            Action::Recording { identity, enabled } => Some((identity.clone(), false, *enabled)),
+            _ => None,
+        };
         self.send(action);
+        if self.busy {
+            self.pending_preference = preference;
+        }
     }
 
     fn send(&mut self, action: Action) {
@@ -239,16 +250,23 @@ impl Dashboard {
                 || data.inventory.iter().any(|device| device.identity == id)
                 || live_device(self.live.as_deref(), id).is_some()
         }) {
-            self.selected = self
-                .live
+            self.selected = data
+                .inventory
                 .iter()
-                .flatten()
-                .find(|device| {
-                    data.devices
+                .find(|item| item.pinned)
+                .map(|item| item.identity.clone())
+                .filter(|id| data.devices.iter().any(|device| device.identity == *id))
+                .or_else(|| {
+                    self.live
                         .iter()
-                        .any(|history| history.identity == device.identity)
+                        .flatten()
+                        .find(|device| {
+                            data.devices
+                                .iter()
+                                .any(|history| history.identity == device.identity)
+                        })
+                        .map(|device| device.identity.clone())
                 })
-                .map(|device| device.identity.clone())
                 .or_else(|| data.devices.first().map(|device| device.identity.clone()))
                 .or_else(|| {
                     self.live
@@ -262,6 +280,12 @@ impl Dashboard {
             self.analytics
                 .initial_comparison(data, self.selected.as_deref());
         }
+        if !self.busy {
+            self.pending_preference = None;
+            self.management_refresh = false;
+        }
+        self.analytics
+            .register_colors(&data.inventory, self.selected.as_deref());
         self.analytics.invalidate_readings();
         self.snapshot = Some(Arc::new(snapshot));
     }
@@ -295,8 +319,8 @@ impl Dashboard {
 
     fn header(&mut self, ui: &mut Ui) {
         ui.horizontal(|ui| {
-            ui.image((self.brand.id(), egui::vec2(28.0, 28.0)));
-            ui.label(analytics::heading(ui, "Volty", 22.0));
+            assets::Icon::Brand.show(ui, 25.0, Color32::WHITE);
+            ui.label(analytics::heading(ui, "Volty", 21.0));
             ui.add_space(12.0);
             for (page, label) in [
                 (Page::History, "Battery history"),
@@ -314,10 +338,24 @@ impl Dashboard {
                         self.artifacts_pending |= self.page == Page::Manage;
                         self.refresh();
                     }
+                    if self.page == Page::History && self.live.is_some() {
+                        ui.label(
+                            RichText::new(if self.preview_theme.is_some() {
+                                "Monitoring · Demo"
+                            } else {
+                                "Monitoring"
+                            })
+                            .weak()
+                            .size(11.0),
+                        );
+                    }
                 });
             }
         });
 
+        if self.page == Page::Manage && (self.busy || self.management_refresh) {
+            ui.label("Updating data…");
+        }
         if let Some(status) = &self.status {
             match status {
                 Ok(message) => {
@@ -340,210 +378,58 @@ impl Dashboard {
         }
     }
 
-    fn manage(&mut self, ui: &mut Ui) {
-        let Some(snapshot) = &self.snapshot else {
-            ui.label("Dashboard data unavailable.");
-            return;
-        };
-        let data = &snapshot.data;
-        if self.busy {
-            ui.horizontal(|ui| {
-                ui.spinner();
-                ui.label("Updating data…");
-            });
-        }
-        let enabled = !self.busy && data.management_allowed;
-        let mut action = None;
-        ScrollArea::vertical()
-            .id_salt("manage-data")
-            .show(ui, |ui| {
-                ui.heading("Manage data");
-                if !data.management_allowed {
-                    ui.label("Read-only mode for the selected database.");
-                }
-                card(ui, |ui| {
-                    ui.heading("Device history");
-                    let mut selected = self.selected.clone();
-                    let current = selected_inventory(data, selected.as_deref());
-                    ComboBox::from_id_salt("managed-device")
-                        .width(260.0)
-                        .selected_text(current.map_or("Select a device", |item| item.name.as_str()))
-                        .show_ui(ui, |ui| {
-                            for item in &data.inventory {
-                                ui.selectable_value(
-                                    &mut selected,
-                                    Some(item.identity.clone()),
-                                    &item.name,
-                                )
-                                .on_hover_text(&item.identity);
-                            }
-                        });
-                    self.selected = selected;
-                    if let Some(item) = selected_inventory(data, self.selected.as_deref()) {
-                        let monitoring = match item.monitored {
-                            Some(true) => "Monitored",
-                            Some(false) => "Monitoring disabled",
-                            None => "Monitoring default",
-                        };
-                        let pin = if item.pinned {
-                            "  ·  Pinned to tray"
-                        } else {
-                            ""
-                        };
-                        ui.label(format!("{}  ·  {} samples{pin}", monitoring, item.samples));
-                        ui.label(format!(
-                            "Last reading  {}",
-                            item.last_sample_at
-                                .map_or_else(|| "—".to_owned(), platform::date)
-                        ));
-                        ui.add_enabled_ui(enabled, |ui| {
-                            let mut monitored = item.monitored.unwrap_or(true);
-                            if ui.checkbox(&mut monitored, "Monitor device").changed() {
-                                action = Some(Action::Monitoring {
-                                    identity: item.identity.clone(),
-                                    enabled: monitored,
-                                });
-                            }
-                            let mut recording = item.history_recording_enabled;
-                            if ui
-                                .checkbox(&mut recording, "Record battery history")
-                                .changed()
-                            {
-                                action = Some(Action::Recording {
-                                    identity: item.identity.clone(),
-                                    enabled: recording,
-                                });
-                            }
-                            ui.horizontal_wrapped(|ui| {
-                                if ui.button("Delete history…").clicked() {
-                                    action = Some(Action::PreviewDevice {
-                                        identity: item.identity.clone(),
-                                        name: item.name.clone(),
-                                        preferences: false,
-                                    });
-                                }
-                                if ui.button("Forget device…").clicked() {
-                                    action = Some(Action::PreviewDevice {
-                                        identity: item.identity.clone(),
-                                        name: item.name.clone(),
-                                        preferences: true,
-                                    });
-                                }
-                            });
-                        });
-                    }
-                });
-                card(ui, |ui| {
-                    ui.heading("History cleanup");
-                    ui.add_enabled_ui(enabled, |ui| {
-                        for (label, days, kind, choices) in [
-                            (
-                                "Samples older than",
-                                &mut self.older_days,
-                                CleanupKind::OlderThan,
-                                &[1, 3, 7, 14, 21, 30][..],
-                            ),
-                            (
-                                "Devices inactive for",
-                                &mut self.inactive_days,
-                                CleanupKind::InactiveDevices,
-                                &[7, 14, 21][..],
-                            ),
-                        ] {
-                            ui.horizontal_wrapped(|ui| {
-                                ui.label(label);
-                                day_picker(ui, label, days, choices, true);
-                                if ui.button("Preview cleanup").clicked() {
-                                    action = Some(Action::PreviewCleanup(kind, *days));
-                                }
-                            });
-                        }
-                    });
-                });
-                card(ui, |ui| {
-                    ui.heading("Diagnostic files");
-                    match &self.artifacts {
-                        Some(Ok(files)) if files.is_empty() => {
-                            ui.label("No managed diagnostic files.");
-                        }
-                        Some(Ok(files)) => {
-                            if ui
-                                .add_enabled(enabled, Button::new("Delete all…"))
-                                .clicked()
-                            {
-                                action = Some(Action::ConfirmArtifacts(files.clone()));
-                            }
-                            ScrollArea::vertical()
-                                .id_salt("artifacts")
-                                .max_height(250.0)
-                                .show_rows(ui, 30.0, files.len(), |ui, rows| {
-                                    for file in &files[rows] {
-                                        ui.horizontal(|ui| {
-                                            if ui
-                                                .add_enabled(enabled, Button::new("Delete…"))
-                                                .clicked()
-                                            {
-                                                action = Some(Action::ConfirmArtifacts(vec![
-                                                    file.clone()
-                                                ]));
-                                            }
-                                            ui.label(format!(
-                                                "{}  ·  {}  ·  {} bytes",
-                                                file.name, file.kind, file.bytes
-                                            ))
-                                            .on_hover_text(
-                                                file.created_at
-                                                    .and_then(|at| i64::try_from(at).ok())
-                                                    .map_or_else(
-                                                        || file.name.clone(),
-                                                        platform::date,
-                                                    ),
-                                            );
-                                        });
-                                    }
-                                });
-                        }
-                        Some(Err(error)) => {
-                            ui.colored_label(ui.visuals().error_fg_color, error);
-                        }
-                        None => {
-                            ui.label("Loading diagnostic files…");
-                        }
-                    }
-                });
-            });
-        if let Some(action) = action {
-            self.request(action);
-        }
-    }
-
     fn confirm(&mut self, ctx: &egui::Context) {
         let Some(confirmation) = &self.confirmation else {
             return;
         };
-        let response = Modal::new(egui::Id::unique("confirm dashboard change")).show(ctx, |ui| {
-            ui.set_width(390.0);
-            ui.heading(&confirmation.title);
-            ui.label(&confirmation.description);
-            ui.horizontal(|ui| {
-                let cancel = ui.button("Cancel");
-                if self.confirmation_focus.is_none() {
-                    self.confirmation_focus = Some(ctx.memory(|memory| memory.focused()));
-                    cancel.request_focus();
+        let response = Modal::new(egui::Id::unique("confirm dashboard change"))
+            .frame(Frame::popup(&ctx.style_of(ctx.theme())).inner_margin(SECTION_PADDING as i8))
+            .show(ctx, |ui| {
+                ui.set_width(410.0);
+                ui.heading(&confirmation.title);
+                ui.label(&confirmation.description);
+                if !confirmation.impact.is_empty() {
+                    Frame::new()
+                        .fill(ui.visuals().faint_bg_color)
+                        .inner_margin(10)
+                        .show(ui, |ui| {
+                            ui.set_min_width(ui.available_width());
+                            egui::ScrollArea::vertical()
+                                .max_height(150.0)
+                                .show(ui, |ui| {
+                                    for device in &confirmation.impact {
+                                        ui.label(device);
+                                    }
+                                });
+                        });
                 }
-                let action = ui.add(Button::new(
-                    RichText::new(confirmation.action).color(ui.visuals().error_fg_color),
-                ));
-                if cancel.clicked() {
-                    Some(false)
-                } else if action.clicked() {
-                    Some(true)
-                } else {
-                    None
-                }
-            })
-            .inner
-        });
+                ui.colored_label(
+                    ui.visuals().error_fg_color,
+                    "This action is permanent and cannot be undone.",
+                );
+                ui.horizontal(|ui| {
+                    let cancel = ui.button("Cancel");
+                    if self.confirmation_focus.is_none() {
+                        self.confirmation_focus = Some(
+                            self.action_focus
+                                .take()
+                                .or_else(|| ctx.memory(|memory| memory.focused())),
+                        );
+                        cancel.request_focus();
+                    }
+                    let action = ui.add(Button::new(
+                        RichText::new(confirmation.action).color(ui.visuals().error_fg_color),
+                    ));
+                    if cancel.clicked() {
+                        Some(false)
+                    } else if action.clicked() {
+                        Some(true)
+                    } else {
+                        None
+                    }
+                })
+                .inner
+            });
         if response.inner.is_some() || response.should_close() {
             if let Some(Some(previous)) = self.confirmation_focus.take() {
                 ctx.memory_mut(|memory| memory.request_focus(previous));
@@ -578,7 +464,6 @@ impl eframe::App for Dashboard {
             if system.appearance.swap(false, Ordering::AcqRel) {
                 self.settings.refresh_taskbar_theme();
                 let animation = animation_seconds();
-                install_heading_font(ctx);
                 ctx.all_styles_mut(|style| style.animation_time = animation);
                 let contrast = Palette::system_contrast();
                 if self.contrast != contrast {
@@ -623,14 +508,30 @@ impl eframe::App for Dashboard {
         if let Some(reply) = self.worker.poll() {
             self.busy = false;
             match reply {
-                Ok(Reply::Confirm(confirmation)) => self.confirmation = Some(confirmation),
+                Ok(Reply::Confirm(confirmation)) => {
+                    let current_target = match &confirmation.operation {
+                        worker::Operation::Forget { identity, .. } => {
+                            self.selected.as_ref() == Some(identity)
+                        }
+                        _ => true,
+                    };
+                    if self.page == Page::Manage && current_target {
+                        self.confirmation = Some(confirmation);
+                    }
+                }
                 Ok(Reply::Done(status, refresh)) => {
                     self.status = status.map(Ok);
+                    self.management_refresh = refresh;
+                    if refresh && self.page == Page::Settings {
+                        self.settings.open();
+                    }
                     self.refresh_pending |= refresh;
                     self.discard_load |= refresh;
                     self.artifacts_pending |= refresh && self.artifacts.is_some();
                 }
                 Err(error) => {
+                    self.pending_preference = None;
+                    self.management_refresh = error.refresh;
                     self.refresh_pending |= error.refresh;
                     self.discard_load |= error.refresh;
                     self.artifacts_pending |= error.refresh && self.artifacts.is_some();
@@ -660,6 +561,8 @@ impl eframe::App for Dashboard {
                     }
                 }
                 Err(error) if days == self.days && !self.discard_load => {
+                    self.management_refresh = false;
+                    self.pending_preference = None;
                     self.status = Some(Err(error));
                 }
                 Err(_) => {}
@@ -668,6 +571,19 @@ impl eframe::App for Dashboard {
         if let Some(result) = self.worker.exported() {
             self.exporting = false;
             self.export_status = Some(result);
+        }
+        if !self.busy && !self.management_refresh && self.confirmation.is_none() {
+            if let Some(focus) = self
+                .action_focus
+                .take()
+                .filter(|_| self.page == Page::Manage)
+            {
+                ctx.memory_mut(|memory| {
+                    if memory.focused().is_none() {
+                        memory.request_focus(focus);
+                    }
+                });
+            }
         }
         let (saved, destination) = self.settings.poll();
         if saved {
@@ -708,18 +624,19 @@ impl eframe::App for Dashboard {
             ui.set_min_size(ui.available_size());
             ui.spacing_mut().item_spacing.y = 0.0;
             Frame::new()
-                .inner_margin(egui::Margin::symmetric(22, 12))
+                .inner_margin(egui::Margin::symmetric(16, 10))
                 .show(ui, |ui| self.header(ui));
             ui.separator();
             match self.page {
                 Page::History => self.history(ui, frame),
-                Page::Settings => self.settings.ui(ui, frame),
-                Page::Manage => {
-                    Frame::new().inner_margin(20).show(ui, |ui| {
-                        ui.spacing_mut().item_spacing.y = GAP as f32;
-                        self.manage(ui);
-                    });
-                }
+                Page::Settings => self.settings.ui(
+                    ui,
+                    frame,
+                    self.snapshot
+                        .as_ref()
+                        .map(|snapshot| snapshot.data.inventory.as_slice()),
+                ),
+                Page::Manage => self.manage(ui),
             }
         });
         self.confirm(ui.ctx());
@@ -806,7 +723,7 @@ fn live_percent(reading: Option<LiveReading>) -> String {
     }
 }
 
-fn day_picker(ui: &mut Ui, id: &str, days: &mut u32, choices: &[u32], enabled: bool) {
+fn day_picker(ui: &mut Ui, id: &str, days: &mut u32, choices: &[u32]) {
     let label = |days| {
         if days == 1 {
             "1 day".to_owned()
@@ -814,15 +731,13 @@ fn day_picker(ui: &mut Ui, id: &str, days: &mut u32, choices: &[u32], enabled: b
             format!("{days} days")
         }
     };
-    ui.add_enabled_ui(enabled, |ui| {
-        ComboBox::from_id_salt(id)
-            .selected_text(label(*days))
-            .show_ui(ui, |ui| {
-                for &choice in choices {
-                    ui.selectable_value(days, choice, label(choice));
-                }
-            });
-    });
+    ComboBox::from_id_salt(id)
+        .selected_text(label(*days))
+        .show_ui(ui, |ui| {
+            for &choice in choices {
+                ui.selectable_value(days, choice, label(choice));
+            }
+        });
 }
 
 fn canvas(ui: &Ui) -> Color32 {
@@ -856,10 +771,10 @@ fn apply_visuals(ctx: &egui::Context, contrast: Option<Palette>) {
                 palette.canvas = [20, 26, 35];
                 palette.surface = [29, 37, 48];
                 palette.raised = [37, 47, 60];
-                palette.hover = [51, 65, 81];
-                palette.border = [52, 65, 81];
+                palette.hover = [48, 61, 75];
+                palette.border = [56, 68, 82];
                 palette.text = [242, 245, 248];
-                palette.secondary = [170, 183, 198];
+                palette.secondary = [184, 195, 207];
                 palette.accent = [57, 201, 237];
             }
             palette

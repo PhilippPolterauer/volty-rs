@@ -10,7 +10,10 @@ use sha2::{Digest, Sha256};
 
 use crate::{
     config::AppConfig,
-    history::{check_cleanup_scope, unix_now, HistoryDeletion, HistoryRangePreview, HistoryStore},
+    history::{
+        check_cleanup_scope, unix_now, CleanupDevice, HistoryCleanup, HistoryDeletion,
+        HistoryRangePreview, HistoryStore,
+    },
     state::{DeviceState, ForgottenDevicePreferences, TrayIconStyle, TrayIconTheme},
 };
 
@@ -271,18 +274,13 @@ impl DashboardBackend {
         })?;
         validate_days(days, MAX_CLEANUP_DAYS)?;
         let cutoff = cutoff_for_days(days)?;
-        let store = open_history_for_read(&self.history_path)?;
-        let counts = match (kind, store) {
-            (_, None) => HistoryDeletion::default(),
-            (CleanupKind::OlderThan, Some(store)) => store.preview_older_than(cutoff, identity)?,
-            (CleanupKind::InactiveDevices, Some(store)) => {
-                store.preview_inactive(cutoff, identity)?
-            }
-            (CleanupKind::DeviceHistory, Some(_)) => {
-                unreachable!("identity preview returned above")
-            }
+        let affected = match open_history_for_read(&self.history_path)? {
+            Some(store) => store.preview_cleanup(kind.history_cleanup()?, cutoff, identity)?,
+            None => Vec::new(),
         };
-        Ok(CleanupResult::new(kind, days, cutoff, counts, false))
+        let mut preview = CleanupResult::new(kind, days, cutoff, affected);
+        preview.identity = identity.map(str::to_owned);
+        Ok(preview)
     }
 
     pub(super) fn execute_cleanup(
@@ -299,25 +297,19 @@ impl DashboardBackend {
         };
         let expected = preview.counts();
         let counts = if self.history_path.try_exists()? {
-            let mut store = HistoryStore::open_for_edit(&self.history_path)?;
-            match preview.kind {
-                CleanupKind::OlderThan => {
-                    store.delete_older_than(cutoff, preview.identity.as_deref(), expected)?
-                }
-                CleanupKind::InactiveDevices => {
-                    store.delete_inactive(cutoff, preview.identity.as_deref(), expected)?
-                }
-                CleanupKind::DeviceHistory => {
-                    return Err(io::Error::other(
-                        "Use device history deletion for an exact identity",
-                    )
-                    .into())
-                }
-            }
+            HistoryStore::open_for_edit(&self.history_path)?.delete_cleanup(
+                preview.kind.history_cleanup()?,
+                cutoff,
+                preview.identity.as_deref(),
+                &preview.affected,
+            )?
         } else {
             check_cleanup_scope(HistoryDeletion::default(), expected)?;
             HistoryDeletion::default()
         };
+        if self.is_local() {
+            super::notify_dashboard();
+        }
         Ok(CleanupResult {
             samples: counts.samples,
             devices: counts.devices,
@@ -340,6 +332,9 @@ impl DashboardBackend {
             check_cleanup_scope(HistoryDeletion::default(), expected)?;
             HistoryDeletion::default()
         };
+        if self.is_local() {
+            super::notify_dashboard();
+        }
         if !include_preferences {
             return Ok(ForgetResult {
                 identity: identity.to_owned(),
@@ -364,8 +359,9 @@ impl DashboardBackend {
                 .into());
             }
         };
-        if !self.is_preview() {
+        if self.is_local() {
             crate::app::notify_preferences();
+            super::notify_dashboard();
         }
         Ok(ForgetResult {
             identity: identity.to_owned(),
@@ -386,6 +382,9 @@ impl DashboardBackend {
         validate_identity(Some(identity))?;
         self.device_state()?
             .set_history_recording_enabled(identity, enabled)?;
+        if self.is_local() {
+            super::notify_dashboard();
+        }
         Ok(HistoryRecordingResult {
             identity: identity.to_owned(),
             enabled,
@@ -402,8 +401,9 @@ impl DashboardBackend {
         validate_identity(Some(identity))?;
         self.device_state()?
             .set_device_monitored(identity, enabled)?;
-        if !self.is_preview() {
+        if self.is_local() {
             crate::app::notify_preferences();
+            super::notify_dashboard();
         }
         Ok(())
     }
@@ -609,6 +609,18 @@ pub(super) enum CleanupKind {
     DeviceHistory,
 }
 
+impl CleanupKind {
+    fn history_cleanup(self) -> io::Result<HistoryCleanup> {
+        match self {
+            Self::OlderThan => Ok(HistoryCleanup::OlderThan),
+            Self::InactiveDevices => Ok(HistoryCleanup::InactiveDevices),
+            Self::DeviceHistory => Err(io::Error::other(
+                "Use device history deletion for an exact identity",
+            )),
+        }
+    }
+}
+
 #[derive(Clone, Debug, Serialize)]
 pub(super) struct CleanupResult {
     pub(super) kind: CleanupKind,
@@ -617,6 +629,8 @@ pub(super) struct CleanupResult {
     pub(super) cutoff: Option<i64>,
     pub(super) samples: u64,
     pub(super) devices: u64,
+    #[serde(skip)]
+    pub(super) affected: Vec<CleanupDevice>,
     pub(super) first_at: Option<i64>,
     pub(super) last_at: Option<i64>,
     pub(super) date_range: Option<String>,
@@ -631,24 +645,19 @@ impl CleanupResult {
             devices: self.devices,
         }
     }
-    fn new(
-        kind: CleanupKind,
-        days: u32,
-        cutoff: i64,
-        counts: HistoryDeletion,
-        deleted: bool,
-    ) -> Self {
+    fn new(kind: CleanupKind, days: u32, cutoff: i64, affected: Vec<CleanupDevice>) -> Self {
         Self {
             kind,
             identity: None,
             days: Some(days),
             cutoff: Some(cutoff),
-            samples: counts.samples,
-            devices: counts.devices,
+            samples: affected.iter().map(|device| device.samples).sum(),
+            devices: affected.len() as u64,
+            affected,
             first_at: None,
             last_at: None,
             date_range: None,
-            deleted,
+            deleted: false,
             note: "This operation changes existing history only; it does not disable history recording. An actively monitored device may produce new samples.",
         }
     }
@@ -661,6 +670,7 @@ impl CleanupResult {
             cutoff: None,
             samples: preview.samples,
             devices: preview.devices,
+            affected: Vec::new(),
             first_at: preview.first_at,
             last_at: preview.last_at,
             date_range: (preview.samples == 0)

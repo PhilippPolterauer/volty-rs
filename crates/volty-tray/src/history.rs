@@ -82,6 +82,35 @@ pub(crate) struct HistoryRangePreview {
     pub(crate) last_at: Option<i64>,
 }
 
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum HistoryCleanup {
+    OlderThan,
+    InactiveDevices,
+}
+
+impl HistoryCleanup {
+    fn predicate(self) -> &'static str {
+        match self {
+            Self::OlderThan => "recorded_at < ?1 AND (?2 IS NULL OR identity = ?2)",
+            Self::InactiveDevices => {
+                "identity IN (
+                SELECT identity FROM samples WHERE (?2 IS NULL OR identity = ?2)
+                GROUP BY identity HAVING MAX(recorded_at) < ?1
+            )"
+            }
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct CleanupDevice {
+    pub(crate) identity: String,
+    pub(crate) name: String,
+    pub(crate) samples: u64,
+    first_at: i64,
+    last_at: i64,
+}
+
 pub struct HistoryStore {
     connection: Connection,
 }
@@ -295,123 +324,67 @@ impl HistoryStore {
             .map_err(Into::into)
     }
 
-    /// Returns counts for samples older than a cutoff, optionally restricted
-    /// to one exact identity.
-    pub(crate) fn preview_older_than(
+    pub(crate) fn preview_cleanup(
         &self,
+        kind: HistoryCleanup,
         cutoff: i64,
         identity: Option<&str>,
-    ) -> Result<HistoryDeletion, Box<dyn Error>> {
-        self.count_matching(
-            "recorded_at < ?1 AND (?2 IS NULL OR identity = ?2)",
-            cutoff,
-            identity,
-        )
+    ) -> Result<Vec<CleanupDevice>, Box<dyn Error>> {
+        Self::cleanup_devices(&self.connection, kind, cutoff, identity)
     }
 
-    /// Returns counts for identities whose most recent sample predates a
-    /// cutoff, optionally restricted to one exact identity.
-    pub(crate) fn preview_inactive(
-        &self,
+    fn cleanup_devices(
+        connection: &Connection,
+        kind: HistoryCleanup,
         cutoff: i64,
         identity: Option<&str>,
+    ) -> Result<Vec<CleanupDevice>, Box<dyn Error>> {
+        let predicate = kind.predicate();
+        // SQLite takes the name from a row with the maximum recorded_at.
+        let mut statement = connection.prepare(&format!(
+            "SELECT identity, name, COUNT(*), MIN(recorded_at), MAX(recorded_at)
+             FROM samples WHERE {predicate} GROUP BY identity ORDER BY identity"
+        ))?;
+        let devices = statement.query_map(params![cutoff, identity], |row| {
+            Ok(CleanupDevice {
+                identity: row.get(0)?,
+                name: row.get(1)?,
+                samples: Self::read_count(row, 2)?,
+                first_at: row.get(3)?,
+                last_at: row.get(4)?,
+            })
+        })?;
+        Ok(devices.collect::<Result<Vec<_>, _>>()?)
+    }
+
+    pub(crate) fn delete_cleanup(
+        &mut self,
+        kind: HistoryCleanup,
+        cutoff: i64,
+        identity: Option<&str>,
+        expected: &[CleanupDevice],
     ) -> Result<HistoryDeletion, Box<dyn Error>> {
-        self.connection
-            .query_row(
-                "SELECT COUNT(*), COALESCE(SUM(sample_count), 0)
-                 FROM (
-                     SELECT identity, COUNT(*) AS sample_count
-                     FROM samples
-                     WHERE (?2 IS NULL OR identity = ?2)
-                     GROUP BY identity
-                     HAVING MAX(recorded_at) < ?1
-                 )",
-                params![cutoff, identity],
-                |row| {
-                    Ok(HistoryDeletion {
-                        devices: Self::read_count(row, 0)?,
-                        samples: Self::read_count(row, 1)?,
-                    })
-                },
+        let transaction = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let actual = Self::cleanup_devices(&transaction, kind, cutoff, identity)?;
+        if actual != expected {
+            return Err(io::Error::other(
+                "History changed after the preview. Review the updated scope before deleting.",
             )
-            .map_err(Into::into)
-    }
-
-    /// Deletes samples older than a cutoff, optionally for one exact identity.
-    pub(crate) fn delete_older_than(
-        &mut self,
-        cutoff: i64,
-        identity: Option<&str>,
-        expected: HistoryDeletion,
-    ) -> Result<HistoryDeletion, Box<dyn Error>> {
-        let transaction = self
-            .connection
-            .transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let counts = transaction.query_row(
-            "SELECT COUNT(*), COUNT(DISTINCT identity)
-             FROM samples
-             WHERE recorded_at < ?1 AND (?2 IS NULL OR identity = ?2)",
-            params![cutoff, identity],
-            |row| {
-                Ok(HistoryDeletion {
-                    samples: Self::read_count(row, 0)?,
-                    devices: Self::read_count(row, 1)?,
-                })
-            },
-        )?;
-        check_cleanup_scope(counts, expected)?;
+            .into());
+        }
+        let predicate = kind.predicate();
         transaction.execute(
-            "DELETE FROM samples
-             WHERE recorded_at < ?1 AND (?2 IS NULL OR identity = ?2)",
+            &format!("DELETE FROM samples WHERE {predicate}"),
             params![cutoff, identity],
         )?;
         transaction.commit()?;
-        Ok(counts)
+        Ok(HistoryDeletion {
+            samples: actual.iter().map(|device| device.samples).sum(),
+            devices: actual.len() as u64,
+        })
     }
-
-    /// Deletes all samples for devices whose latest sample predates a cutoff.
-    pub(crate) fn delete_inactive(
-        &mut self,
-        cutoff: i64,
-        identity: Option<&str>,
-        expected: HistoryDeletion,
-    ) -> Result<HistoryDeletion, Box<dyn Error>> {
-        let transaction = self
-            .connection
-            .transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let counts = transaction.query_row(
-            "SELECT COUNT(*), COALESCE(SUM(sample_count), 0)
-             FROM (
-                 SELECT identity, COUNT(*) AS sample_count
-                 FROM samples
-                 WHERE (?2 IS NULL OR identity = ?2)
-                 GROUP BY identity
-                 HAVING MAX(recorded_at) < ?1
-             )",
-            params![cutoff, identity],
-            |row| {
-                Ok(HistoryDeletion {
-                    devices: Self::read_count(row, 0)?,
-                    samples: Self::read_count(row, 1)?,
-                })
-            },
-        )?;
-        check_cleanup_scope(counts, expected)?;
-        transaction.execute(
-            "DELETE FROM samples
-             WHERE identity IN (
-                 SELECT identity
-                 FROM samples
-                 WHERE (?2 IS NULL OR identity = ?2)
-                 GROUP BY identity
-                 HAVING MAX(recorded_at) < ?1
-             )",
-            params![cutoff, identity],
-        )?;
-        transaction.commit()?;
-        Ok(counts)
-    }
-
     /// Deletes history for one exact stable identity.
     pub(crate) fn delete_identity(
         &mut self,
@@ -444,27 +417,6 @@ impl HistoryStore {
         transaction.execute("DELETE FROM samples WHERE identity = ?1", [identity])?;
         transaction.commit()?;
         Ok(counts)
-    }
-
-    fn count_matching(
-        &self,
-        condition: &str,
-        cutoff: i64,
-        identity: Option<&str>,
-    ) -> Result<HistoryDeletion, Box<dyn Error>> {
-        let sql = format!(
-            "SELECT COUNT(*), COUNT(DISTINCT identity)
-             FROM samples
-             WHERE {condition}"
-        );
-        self.connection
-            .query_row(&sql, params![cutoff, identity], |row| {
-                Ok(HistoryDeletion {
-                    samples: Self::read_count(row, 0)?,
-                    devices: Self::read_count(row, 1)?,
-                })
-            })
-            .map_err(Into::into)
     }
 
     fn read_count(row: &Row<'_>, column: usize) -> rusqlite::Result<u64> {
@@ -959,35 +911,45 @@ mod tests {
             HistoryRangePreview::default()
         );
 
+        let cutoff = now - 10 * 86_400;
+        let identity = Some("hid:keyboard#1");
         let older = store
-            .preview_older_than(now - 10 * 86_400, Some("hid:keyboard#1"))
+            .preview_cleanup(HistoryCleanup::OlderThan, cutoff, identity)
             .unwrap();
-        assert_eq!(older.samples, 1);
-        assert_eq!(older.devices, 1);
+        assert_eq!(older.len(), 1);
+        assert_eq!(older[0].samples, 1);
         assert!(store
-            .delete_older_than(
-                now - 10 * 86_400,
-                Some("hid:keyboard#1"),
-                HistoryDeletion::default()
-            )
+            .delete_cleanup(HistoryCleanup::OlderThan, cutoff, identity, &[])
+            .is_err());
+
+        let inactive = store
+            .preview_cleanup(HistoryCleanup::InactiveDevices, cutoff, None)
+            .unwrap();
+        assert_eq!(inactive.len(), 1);
+        assert_eq!(inactive[0].samples, 1);
+        assert_ne!(older[0].identity, inactive[0].identity);
+        // The totals match, but the confirmed scope covers a different device.
+        assert!(store
+            .delete_cleanup(HistoryCleanup::InactiveDevices, cutoff, None, &older)
             .is_err());
         assert_eq!(
             store
-                .delete_older_than(now - 10 * 86_400, Some("hid:keyboard#1"), older)
+                .delete_cleanup(HistoryCleanup::OlderThan, cutoff, identity, &older)
                 .unwrap(),
-            older
+            HistoryDeletion {
+                samples: 1,
+                devices: 1
+            }
         );
-
-        let inactive = store.preview_inactive(now - 10 * 86_400, None).unwrap();
-        assert_eq!(inactive.samples, 1);
-        assert_eq!(inactive.devices, 1);
         assert_eq!(
             store
-                .delete_inactive(now - 10 * 86_400, None, inactive)
+                .delete_cleanup(HistoryCleanup::InactiveDevices, cutoff, None, &inactive)
                 .unwrap(),
-            inactive
+            HistoryDeletion {
+                samples: 1,
+                devices: 1
+            }
         );
-
         let exact = store
             .delete_identity(
                 "hid:keyboard#10",

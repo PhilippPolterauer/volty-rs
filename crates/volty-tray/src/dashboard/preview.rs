@@ -167,9 +167,9 @@ fn seed(directory: &Path, theme: AppTheme, empty: bool) -> Result<Vec<LiveDevice
     let transaction = history.transaction()?;
     let mut state = DeviceState::open(&directory.join("device-state.sqlite3"))?;
     let devices = [
-        ("bluetooth:fixture-headset", "Studio Headphones"),
-        ("hid:fixture-mouse", "Wireless Precision Mouse"),
-        ("xinput:fixture-controller", "Xbox Wireless Controller"),
+        ("hid:fixture-mouse", "G502 X PLUS"),
+        ("bluetooth:fixture-headset", "Studio headset"),
+        ("xinput:fixture-controller", "Game controller"),
     ];
     {
         let mut insert = transaction.prepare(
@@ -180,40 +180,59 @@ fn seed(directory: &Path, theme: AppTheme, empty: bool) -> Result<Vec<LiveDevice
         for (index, (identity, name)) in devices.into_iter().enumerate() {
             for step in 0..=STEPS {
                 let minutes_ago = (STEPS - step) * 10;
-                if (index == 1 && minutes_ago < 54 * 60)
-                    || (80 * 60..=92 * 60).contains(&minutes_ago)
-                {
-                    continue;
-                }
+                let hours_ago = minutes_ago / 60;
                 let cycle = (step + 19 + index as i64 * 26) % 288;
-                let (charging, level) = if index == 0 && minutes_ago < 7 * 24 * 60 {
-                    let minutes_since_charge = 6 * 24 * 60 - minutes_ago;
-                    match minutes_since_charge {
-                        ..=-241 => (false, 24),
-                        -240..=-1 => (true, 24 + (minutes_since_charge + 240) * 76 / 240),
-                        0..=7_199 => (false, 100 - minutes_since_charge * 24 / 7_200),
-                        _ => (false, 76 - (minutes_since_charge - 7_200) * 8 / 1_440),
+                let (charging, level) = if hours_ago < 168 {
+                    match index {
+                        0 => {
+                            if matches!(hours_ago, 7..=15 | 30..=45 | 55..=69 | 80..=101 | 112..=130 | 141..=147)
+                            {
+                                continue;
+                            }
+                            match minutes_ago {
+                                9_661.. => (false, 16 + (minutes_ago - 9_661) / 100),
+                                9_541..=9_660 => (true, 16 + (9_660 - minutes_ago) * 84 / 120),
+                                _ => (false, 52 + minutes_ago * 48 / 9_540),
+                            }
+                        }
+                        1 => {
+                            if matches!(hours_ago, 8..=18 | 31..=49 | 57..=68 | 78..=99 | 111..=123 | 134..=145 | 153..=157)
+                            {
+                                continue;
+                            }
+                            if minutes_ago <= 120 {
+                                (true, 68 - minutes_ago * 48 / 120)
+                            } else {
+                                (false, 19 + minutes_ago * 75 / 10_080)
+                            }
+                        }
+                        _ => {
+                            if !matches!(hours_ago, 0..=12 | 36..=48 | 98..=103 | 144..=156) {
+                                continue;
+                            }
+                            (false, 37)
+                        }
                     }
                 } else if cycle < 24 {
                     (true, 36 + cycle * 2)
                 } else {
                     (false, 84 - (cycle - 24) * 48 / 264)
                 };
-                let percent = (index != 2 || step % 17 != 0).then_some(level);
+                let percent = Some(level);
                 insert.execute(rusqlite::params![
                     identity,
                     name,
                     now - minutes_ago * 60,
                     percent,
                     charging,
-                    (index == 1).then_some(3780),
+                    (index == 0).then_some(3780),
                 ])?;
             }
         }
     }
     transaction.commit()?;
     state.set_pinned_device(devices[0].0)?;
-    state.set_history_recording_enabled(devices[1].0, false)?;
+    state.set_history_recording_enabled(devices[2].0, false)?;
     let reports = directory.join("reports");
     fs::create_dir(&reports)?;
     fs::write(
@@ -221,22 +240,22 @@ fn seed(directory: &Path, theme: AppTheme, empty: bool) -> Result<Vec<LiveDevice
         "Volty UI preview diagnostic fixture.\n",
     )?;
 
-    Ok(vec![
+    let mut live = vec![
         LiveDevice {
             identity: devices[0].0.to_owned(),
             name: devices[0].1.to_owned(),
             reading: Some(LiveReading {
-                level: LiveLevel::Exact(68),
+                level: LiveLevel::Exact(52),
                 charging: false,
                 remaining_seconds: None,
             }),
         },
         LiveDevice {
-            identity: "hid:fixture-keyboard".to_owned(),
-            name: "Compact Wireless Keyboard".to_owned(),
+            identity: devices[1].0.to_owned(),
+            name: devices[1].1.to_owned(),
             reading: Some(LiveReading {
-                level: LiveLevel::Unavailable,
-                charging: false,
+                level: LiveLevel::Exact(68),
+                charging: true,
                 remaining_seconds: None,
             }),
         },
@@ -244,12 +263,14 @@ fn seed(directory: &Path, theme: AppTheme, empty: bool) -> Result<Vec<LiveDevice
             identity: devices[2].0.to_owned(),
             name: devices[2].1.to_owned(),
             reading: Some(LiveReading {
-                level: LiveLevel::Estimated(50),
+                level: LiveLevel::Exact(37),
                 charging: false,
                 remaining_seconds: None,
             }),
         },
-    ])
+    ];
+    live.sort_by(|left, right| left.identity.cmp(&right.identity));
+    Ok(live)
 }
 
 #[cfg(test)]
