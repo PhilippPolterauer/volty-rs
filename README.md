@@ -20,9 +20,9 @@
 
 ![Volty preview showing three tray icon styles, a low battery alert, and the battery history dashboard](docs/hero.png)
 
-Volty monitors supported mice, headsets, gamepads, and other peripherals on
-Windows 10 and 11 (x64). It shows the lowest monitored battery level by default,
-or you can pin the device you care about most.
+Volty monitors supported mice, headsets, gamepads, and other peripherals. It
+shows the lowest monitored battery level by default, or you can pin the device
+you care about most.
 
 - **Hover** over the tray icon for each device’s charge and estimated time remaining, when available.
 - **Left-click** to open the battery history dashboard and see how quickly your devices drain.
@@ -33,8 +33,15 @@ Battery readings and history stay on your PC.
 
 ## Install
 
+Volty supports **Windows 10 version 2004 (build 19041) or later and Windows 11**
+on x64 PCs.
+
 - **Microsoft Store** handles installation and updates. [Get Volty](https://apps.microsoft.com/detail/9np6xlpqmd7b)
 - **Standalone** runs without an installer. Download the `Volty-v*-x86_64-pc-windows-msvc.exe` release asset and open it. [Latest release](https://github.com/PhilippPolterauer/volty-rs/releases/latest)
+
+The standalone EXE requires the x64 Microsoft Visual C++ Redistributable.
+Other apps and games often install it, so it may already be on your PC.
+On a fresh Windows install, you may need to install it yourself. [Microsoft Visual C++ Redistributable downloads](https://learn.microsoft.com/en-us/cpp/windows/latest-supported-vc-redist)
 
 If the tray icon is hidden, open **Show hidden icons** on the Windows taskbar.
 The WinGet community package is [pending approval](https://github.com/microsoft/winget-pkgs/pull/484253).
