@@ -85,10 +85,10 @@ pub(super) fn open_dashboard_window(
             apply_visuals(ctx, contrast);
             let system = platform::hwnd(cc)
                 .and_then(|window| platform::listen_to_system(window, ctx.clone()).ok());
-            let signals = if backend.is_preview() {
-                None
-            } else {
+            let signals = if backend.is_local() {
                 Some(WindowSignals::start(ctx.clone())?)
+            } else {
+                None
             };
             let preview_theme = launch.preview.as_ref().map(|preview| preview.theme);
             if let Some(theme) = preview_theme {
@@ -129,6 +129,7 @@ pub(super) fn open_dashboard_window(
                 busy: false,
                 loading: false,
                 exporting: false,
+                close_after_export: false,
                 settings: settings::Settings::new(ctx, settings_worker, invalid_settings),
                 committed_theme: preview_theme.unwrap_or(AppTheme::System),
                 discard_load: false,
@@ -187,6 +188,7 @@ struct Dashboard {
     busy: bool,
     loading: bool,
     exporting: bool,
+    close_after_export: bool,
     settings: settings::Settings,
     committed_theme: AppTheme,
     discard_load: bool,
@@ -568,10 +570,14 @@ impl eframe::App for Dashboard {
                 Err(_) => {}
             }
         }
-        if let Some(result) = self.worker.exported() {
+        let close_after_export = if let Some(result) = self.worker.exported() {
             self.exporting = false;
+            let close = std::mem::take(&mut self.close_after_export) && result.is_ok();
             self.export_status = Some(result);
-        }
+            close
+        } else {
+            false
+        };
         if !self.busy && !self.management_refresh && self.confirmation.is_none() {
             if let Some(focus) = self
                 .action_focus
@@ -596,10 +602,18 @@ impl eframe::App for Dashboard {
         if let Some(destination) = destination {
             self.finish_settings_navigation(ctx, destination);
         }
-        if ctx.input(|input| input.viewport().close_requested())
-            && self.settings.intercept(settings::Destination::Close)
-        {
-            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+        let close_requested = ctx.input(|input| input.viewport().close_requested());
+        if close_requested || close_after_export {
+            if self.exporting {
+                self.close_after_export = true;
+                ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            } else if self.settings.intercept(settings::Destination::Close) {
+                if close_requested {
+                    ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+                }
+            } else if close_after_export && !close_requested {
+                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            }
         }
         let theme = if self.page == Page::Settings {
             self.settings

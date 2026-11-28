@@ -1,7 +1,11 @@
 use std::{
     io::{self, BufWriter, Write},
-    path::PathBuf,
-    sync::{mpsc, Arc},
+    path::{Path, PathBuf},
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+        mpsc,
+    },
     thread,
 };
 
@@ -118,8 +122,7 @@ impl Worker {
             .name("volty-dashboard-export".to_owned())
             .spawn(move || {
                 while let Ok((path, snapshot, selection)) = export_requests.recv() {
-                    let result = std::fs::File::create(&path)
-                        .and_then(|file| write_export(BufWriter::new(file), &snapshot, selection))
+                    let result = export_to_file(&path, &snapshot, selection)
                         .map(|()| format!("Exported {}", path.display()))
                         .map_err(|error| error.to_string());
                     if exported.send(result).is_err() {
@@ -416,6 +419,40 @@ fn execute(backend: &DashboardBackend, operation: Operation) -> Result<String, B
     }
 }
 
+fn export_to_file(path: &Path, snapshot: &Snapshot, export: Export) -> io::Result<()> {
+    static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
+    let destination_name = path
+        .file_name()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "Missing CSV filename"))?
+        .to_string_lossy();
+    let (temporary, mut file) = loop {
+        let id = NEXT_TEMP.fetch_add(1, Ordering::Relaxed);
+        let name = format!(".volty-export-{}-{id}.tmp", std::process::id());
+        if destination_name
+            .trim_end_matches([' ', '.'])
+            .eq_ignore_ascii_case(&name)
+        {
+            continue;
+        }
+        let candidate = path.with_file_name(name);
+        match std::fs::File::create_new(&candidate) {
+            Ok(file) => break (candidate, file),
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(error),
+        }
+    };
+
+    let written =
+        write_export(BufWriter::new(&mut file), snapshot, export).and_then(|()| file.sync_all());
+    drop(file);
+    // A same-directory rename replaces the destination on Windows without copying data.
+    let result = written.and_then(|()| std::fs::rename(&temporary, path));
+    if result.is_err() {
+        let _ = std::fs::remove_file(&temporary);
+    }
+    result
+}
+
 fn write_export(mut writer: impl Write, snapshot: &Snapshot, export: Export) -> io::Result<()> {
     let rows = &export.rows[export.range];
     let multi_device = rows
@@ -448,12 +485,7 @@ fn write_csv<'a>(
     writeln!(writer, "time,percent,charging,millivolts\r")?;
     for (device, point) in points {
         if let Some((identity, name)) = device {
-            write!(
-                writer,
-                "\"{}\",\"{}\",",
-                identity.replace('"', "\"\""),
-                name.replace('"', "\"\"")
-            )?;
+            write!(writer, "\"{}\",\"{}\",", csv_text(identity), csv_text(name))?;
         }
         let percent = point.p.map(|value| value.to_string()).unwrap_or_default();
         let voltage = point.v.map(|value| value.to_string()).unwrap_or_default();
@@ -467,6 +499,20 @@ fn write_csv<'a>(
         )?;
     }
     writer.flush()
+}
+
+fn csv_text(value: &str) -> String {
+    let mut escaped = value.replace('"', "\"\"");
+    if value.starts_with(['\t', '\r', '\n'])
+        || value
+            .trim_start_matches(|ch: char| {
+                ch.is_whitespace() || ch.is_control() || ch == '\u{feff}'
+            })
+            .starts_with(['=', '+', '-', '@', '＝', '＋', '－', '＠'])
+    {
+        escaped.insert(0, '\'');
+    }
+    escaped
 }
 
 #[cfg(test)]
@@ -507,6 +553,7 @@ mod tests {
         let (worker, _settings) = Worker::start(Context::default(), backend).unwrap();
         worker.load(1, false).unwrap();
         let export = directory.join("history.csv");
+        std::fs::write(&export, "previous export").unwrap();
         worker
             .export(
                 export.clone(),
@@ -527,6 +574,11 @@ mod tests {
             thread::sleep(Duration::from_millis(5));
         };
         assert!(result.is_ok(), "{result:?}");
+        assert!(
+            std::fs::read_to_string(&export)
+                .unwrap()
+                .starts_with("time,percent,charging,millivolts\r\n")
+        );
         writer.execute_batch("ROLLBACK").unwrap();
         let loaded = loop {
             if let Some((days, result)) = worker.snapshot() {
@@ -543,6 +595,14 @@ mod tests {
         std::fs::remove_file(export).unwrap();
         std::fs::remove_file(directory.join("history.sqlite3")).unwrap();
         std::fs::remove_dir(directory).unwrap();
+    }
+
+    #[test]
+    fn csv_text_neutralizes_formulas_and_preserves_quotes() {
+        assert_eq!(csv_text(" =\"formula\""), "' =\"\"formula\"\"");
+        assert_eq!(csv_text("@device"), "'@device");
+        assert_eq!(csv_text("\tdevice"), "'\tdevice");
+        assert_eq!(csv_text("Mouse, \"Pro\""), "Mouse, \"\"Pro\"\"");
     }
 
     #[test]

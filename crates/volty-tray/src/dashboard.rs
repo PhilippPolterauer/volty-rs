@@ -73,26 +73,34 @@ pub fn run_cli(args: &[String]) -> Result<(), Box<dyn Error>> {
         println!("{DASHBOARD_USAGE}");
         return Ok(());
     }
-    let database = match &options.database {
-        Some(path) => path.clone(),
-        None => HistoryStore::local_path()?,
+    let local = options.database.is_none();
+    let resolve_database = || match options.database {
+        Some(path) => Ok(path),
+        None => HistoryStore::local_path(),
     };
+
+    if options.window || options.settings {
+        let open_window = || {
+            window::open_dashboard_window(
+                DashboardBackend::new(resolve_database()?, local),
+                options.days,
+                window::WindowOptions {
+                    settings: options.settings,
+                    ..Default::default()
+                },
+            )
+        };
+        return if local {
+            crate::run_local_dashboard(options.settings, open_window)
+        } else {
+            open_window()
+        };
+    }
+
+    let database = resolve_database()?;
     let output = options
         .output
         .unwrap_or_else(|| std::env::temp_dir().join("volty-dashboard.html"));
-
-    if options.window || options.settings {
-        let backend = DashboardBackend::new(database, options.database.is_none());
-        return window::open_dashboard_window(
-            backend,
-            options.days,
-            window::WindowOptions {
-                settings: options.settings,
-                ..Default::default()
-            },
-        );
-    }
-
     let generated_at = unix_now()?;
     let samples = if database.exists() {
         let store = HistoryStore::open_read_only(&database)?;
