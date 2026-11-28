@@ -65,7 +65,7 @@ serde.workspace = true
 serde_json.workspace = true
 semver = { version = "1", optional = true }
 sha2 = "0.11"
-wry = { version = "0.57.1", default-features = false }
+wry = { version = "0.58.0", default-features = false }
 tao = { version = "0.38", default-features = false, features = ["rwh_06"] }
 ureq = { version = "2.12", default-features = false, features = ["tls"], optional = true }
 
