@@ -33,24 +33,19 @@ impl DashboardBackend {
         }
     }
 
-    pub(super) fn get_dashboard_data(
-        &self,
-        days: u32,
-    ) -> Result<DashboardData, Box<dyn std::error::Error>> {
-        self.load_data(days, self.mutations_allowed)
+    pub(super) fn get_settings_data(&self) -> Result<SettingsData, Box<dyn std::error::Error>> {
+        if !self.mutations_allowed {
+            return Ok(SettingsData { settings: None, inventory: Vec::new() });
+        }
+        let history = open_history_for_read(&self.history_path)?;
+        let state = DeviceState::open_local()?;
+        let (inventory, tray_display) = self.inventory(history.as_ref(), &state)?;
+        Ok(SettingsData { settings: Some(self.load_settings(tray_display)), inventory })
     }
 
     pub(super) fn get_history_data(
         &self,
         days: u32,
-    ) -> Result<DashboardData, Box<dyn std::error::Error>> {
-        self.load_data(days, false)
-    }
-
-    fn load_data(
-        &self,
-        days: u32,
-        include_settings: bool,
     ) -> Result<DashboardData, Box<dyn std::error::Error>> {
         validate_days(days, MAX_DASHBOARD_DAYS)?;
         let generated_at = unix_now()?;
@@ -62,10 +57,18 @@ impl DashboardBackend {
             None => Vec::new(),
         };
         let state = DeviceState::open_local()?;
+        let (inventory, _) = self.inventory(history.as_ref(), &state)?;
+        self.build_dashboard_data(samples, days, generated_at, window_start, inventory)
+    }
+
+    fn inventory(
+        &self,
+        history: Option<&HistoryStore>,
+        state: &DeviceState,
+    ) -> Result<(Vec<DashboardInventoryDevice>, crate::state::TrayDisplaySettings), Box<dyn std::error::Error>> {
         let tray_display = state.tray_display()?;
         let inventory = build_inventory(
             history
-                .as_ref()
                 .map(HistoryStore::inventory)
                 .transpose()?
                 .unwrap_or_default(),
@@ -73,18 +76,13 @@ impl DashboardBackend {
             state.history_recording_preferences()?,
             tray_display.pinned_device.clone(),
         );
-        let mut data =
-            self.build_dashboard_data(samples, days, generated_at, window_start, inventory)?;
-        if include_settings {
-            data.settings = Some(self.load_settings(tray_display)?);
-        }
-        Ok(data)
+        Ok((inventory, tray_display))
     }
 
     fn load_settings(
         &self,
         tray_display: crate::state::TrayDisplaySettings,
-    ) -> Result<DashboardSettings, Box<dyn std::error::Error>> {
+    ) -> DashboardSettings {
         let (config, config_error) = match AppConfig::load() {
             Ok(config) => (config, None),
             Err(error) => (AppConfig::default(), Some(error.to_string())),
@@ -93,7 +91,7 @@ impl DashboardBackend {
             Ok(enabled) => (Some(enabled), None),
             Err(error) => (None, Some(error.to_string())),
         };
-        Ok(DashboardSettings {
+        DashboardSettings {
             app_theme: config.app_theme.as_str().to_owned(),
             battery_color_red_max_percent: config.battery_color_map.red_max_percent,
             battery_color_yellow_max_percent: config.battery_color_map.yellow_max_percent,
@@ -133,7 +131,7 @@ impl DashboardBackend {
             start_on_boot,
             config_error,
             startup_error,
-        })
+        }
     }
 
     fn build_dashboard_data(
@@ -410,6 +408,11 @@ impl DashboardBackend {
             ))
         }
     }
+}
+
+pub(super) struct SettingsData {
+    pub(super) settings: Option<DashboardSettings>,
+    pub(super) inventory: Vec<DashboardInventoryDevice>,
 }
 
 fn open_history_for_read(path: &Path) -> Result<Option<HistoryStore>, Box<dyn std::error::Error>> {

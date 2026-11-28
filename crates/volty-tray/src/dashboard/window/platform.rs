@@ -1,17 +1,17 @@
 use std::{
     io,
-    sync::{mpsc, Arc},
-    thread::{self, JoinHandle},
+    sync::{atomic::{AtomicBool, Ordering}, mpsc, Arc},
+    thread,
 };
 
-use eframe::egui::Context;
+use eframe::egui::{self, Context};
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use windows_sys::Win32::{
     Foundation::{CloseHandle, FILETIME, HANDLE, HWND, SYSTEMTIME, WAIT_FAILED, WAIT_OBJECT_0},
     System::{
         Threading::{
             CreateEventW, OpenEventW, SetEvent, WaitForMultipleObjects, INFINITE,
-            SYNCHRONIZATION_SYNCHRONIZE,
+            EVENT_MODIFY_STATE, SYNCHRONIZATION_SYNCHRONIZE,
         },
         Time::{FileTimeToSystemTime, SystemTimeToTzSpecificLocalTimeEx},
     },
@@ -24,6 +24,86 @@ use windows_sys::Win32::{
 use std::{ffi::OsString, os::windows::ffi::OsStringExt, path::PathBuf, ptr};
 
 use crate::win32::to_wide;
+use super::super::design::{apply_title_bar, Palette};
+
+pub(super) fn hwnd(window: &impl HasWindowHandle) -> Option<HWND> {
+    match window.window_handle().ok()?.as_raw() {
+        RawWindowHandle::Win32(handle) => Some(handle.hwnd.get() as HWND),
+        _ => None,
+    }
+}
+
+#[derive(Default)]
+pub(super) struct SystemChanges {
+    pub(super) appearance: AtomicBool,
+    pub(super) resume: AtomicBool,
+}
+
+pub(super) fn listen_to_system(window: HWND, ctx: Context) -> io::Result<Arc<SystemChanges>> {
+    use windows_sys::Win32::UI::Shell::SetWindowSubclass;
+    let changes = Arc::new(SystemChanges::default());
+    let state = Box::into_raw(Box::new((ctx, Arc::clone(&changes))));
+    // SAFETY: installation runs on the window's owning thread. WM_NCDESTROY reclaims state.
+    if unsafe { SetWindowSubclass(window, Some(system_message), 1, state.expose_provenance()) } == 0 {
+        // SAFETY: failed installation leaves ownership with this function.
+        drop(unsafe { Box::from_raw(state) });
+        return Err(io::Error::other("Could not subscribe to dashboard system messages"));
+    }
+    Ok(changes)
+}
+
+unsafe extern "system" fn system_message(
+    window: HWND, message: u32, wparam: usize, lparam: isize, id: usize, data: usize,
+) -> isize {
+    use windows_sys::Win32::UI::{
+        Shell::{DefSubclassProc, RemoveWindowSubclass},
+        WindowsAndMessaging::{
+            PBT_APMRESUMEAUTOMATIC, WM_NCDESTROY, WM_POWERBROADCAST, WM_SETTINGCHANGE,
+            WM_SYSCOLORCHANGE, WM_THEMECHANGED,
+        },
+    };
+    let state = ptr::with_exposed_provenance_mut::<(Context, Arc<SystemChanges>)>(data);
+    match message {
+        WM_SETTINGCHANGE | WM_SYSCOLORCHANGE | WM_THEMECHANGED | WM_POWERBROADCAST => {
+            // SAFETY: the subclass owns this state until WM_NCDESTROY on this thread.
+            let (ctx, changes) = unsafe { &*state };
+            if message != WM_POWERBROADCAST {
+                changes.appearance.store(true, Ordering::Release);
+                ctx.request_repaint();
+            } else if wparam == PBT_APMRESUMEAUTOMATIC as usize {
+                changes.resume.store(true, Ordering::Release);
+                ctx.request_repaint();
+            }
+        }
+        WM_NCDESTROY => {
+            // SAFETY: remove the installed callback before releasing its uniquely owned state.
+            unsafe {
+                RemoveWindowSubclass(window, Some(system_message), id);
+                drop(Box::from_raw(state));
+            }
+        }
+        _ => {}
+    }
+    // SAFETY: this forwards the unmodified message through the native subclass chain.
+    unsafe { DefSubclassProc(window, message, wparam, lparam) }
+}
+
+pub(super) fn update_title_bar(window: &impl HasWindowHandle, theme: egui::Theme, contrast: Option<Palette>) {
+    if let Some(window) = hwnd(window) {
+        apply_title_bar(window, contrast.is_none() && theme == egui::Theme::Dark);
+    }
+}
+
+const DATA_CHANGED: &str = "Local\\VoltyDashboardDataChanged";
+
+pub(crate) fn notify_dashboard() {
+    let name = to_wide(DATA_CHANGED);
+    // SAFETY: the name is NUL-terminated and only signaling access is requested.
+    if let Ok(event) = Event::from_handle(unsafe { OpenEventW(EVENT_MODIFY_STATE, 0, name.as_ptr()) }) {
+        // SAFETY: the event is live and opened with modify access.
+        unsafe { SetEvent(event.handle()) };
+    }
+}
 
 pub(super) enum Signal {
     Activate,
@@ -68,25 +148,32 @@ impl Drop for Event {
 pub(super) struct WindowSignals {
     pub(super) receive: mpsc::Receiver<Signal>,
     stop: Arc<Event>,
-    listener: Option<JoinHandle<()>>,
+    changed: Arc<AtomicBool>,
 }
 
 impl WindowSignals {
     pub(super) fn start(ctx: Context) -> io::Result<Self> {
         let activation = Event::open(crate::DASHBOARD_ACTIVATION_EVENT)?;
         let shutdown = Event::open(crate::DASHBOARD_SHUTDOWN_EVENT)?;
+        let name = to_wide(DATA_CHANGED);
+        // SAFETY: the name is NUL-terminated and the remaining arguments select an auto-reset event.
+        let changed_event = Event::from_handle(unsafe {
+            CreateEventW(ptr::null(), 0, 0, name.as_ptr())
+        })?;
         // SAFETY: null pointers request default security attributes and an unnamed event.
         let stop = Arc::new(Event::from_handle(unsafe {
             CreateEventW(ptr::null(), 1, 0, ptr::null())
         })?);
         let thread_stop = Arc::clone(&stop);
+        let changed = Arc::new(AtomicBool::new(false));
+        let thread_changed = Arc::clone(&changed);
         let (send, receive) = mpsc::channel();
-        let listener = thread::Builder::new()
+        thread::Builder::new()
             .name("volty-dashboard-events".to_owned())
             .spawn(move || {
-                let handles = [thread_stop.handle(), shutdown.handle(), activation.handle()];
+                let handles = [thread_stop.handle(), shutdown.handle(), activation.handle(), changed_event.handle()];
                 loop {
-                    // SAFETY: the three event handles stay valid for the lifetime of this thread.
+                    // SAFETY: all event handles stay valid for the lifetime of this thread.
                     match unsafe {
                         WaitForMultipleObjects(handles.len() as u32, handles.as_ptr(), 0, INFINITE)
                     } {
@@ -101,6 +188,11 @@ impl WindowSignals {
                                 break;
                             }
                             ctx.request_repaint();
+                        }
+                        result if result == WAIT_OBJECT_0 + 3 => {
+                            if !thread_changed.swap(true, Ordering::AcqRel) {
+                                ctx.request_repaint();
+                            }
                         }
                         WAIT_FAILED => {
                             eprintln!(
@@ -119,33 +211,30 @@ impl WindowSignals {
         Ok(Self {
             receive,
             stop,
-            listener: Some(listener),
+            changed,
         })
+    }
+
+    pub(super) fn take_change(&self) -> bool {
+        self.changed.swap(false, Ordering::AcqRel)
     }
 }
 
 impl Drop for WindowSignals {
     fn drop(&mut self) {
         // SAFETY: stop remains valid until both the window and the listener release it.
-        if unsafe { SetEvent(self.stop.0) } != 0 {
-            if let Some(listener) = self.listener.take() {
-                let _ = listener.join();
-            }
-        }
+        unsafe { SetEvent(self.stop.0) };
     }
 }
 
 pub(super) fn save_path(frame: &eframe::Frame) -> io::Result<Option<PathBuf>> {
-    let handle = frame.window_handle().map_err(io::Error::other)?;
-    let RawWindowHandle::Win32(handle) = handle.as_raw() else {
-        return Err(io::Error::other("expected a Win32 dashboard window"));
-    };
+    let window = hwnd(frame).ok_or_else(|| io::Error::other("expected a Win32 dashboard window"))?;
     let mut filename = [0_u16; 32768];
     let default = to_wide("volty-battery-history.csv");
     filename[..default.len()].copy_from_slice(&default);
     let mut dialog = OPENFILENAMEW {
         lStructSize: std::mem::size_of::<OPENFILENAMEW>() as u32,
-        hwndOwner: handle.hwnd.get() as HWND,
+        hwndOwner: window,
         lpstrFile: filename.as_mut_ptr(),
         nMaxFile: filename.len() as u32,
         Flags: OFN_EXPLORER | OFN_NOCHANGEDIR | OFN_OVERWRITEPROMPT | OFN_PATHMUSTEXIST,

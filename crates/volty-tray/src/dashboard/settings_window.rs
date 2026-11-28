@@ -3,7 +3,7 @@ use std::{
     io, ptr,
     sync::{
         atomic::{AtomicBool, Ordering},
-        Arc,
+        mpsc, Arc,
     },
     thread::{self, JoinHandle},
 };
@@ -16,7 +16,7 @@ use windows_sys::Win32::{
     UI::{
         Controls::Dialogs::{ChooseColorW, CC_FULLOPEN, CC_RGBINIT, CHOOSECOLORW},
         Controls::{
-            InitCommonControlsEx, BST_CHECKED, BST_UNCHECKED, EM_LIMITTEXT, ICC_BAR_CLASSES,
+            InitCommonControlsEx, BST_CHECKED, EM_LIMITTEXT, ICC_BAR_CLASSES,
             INITCOMMONCONTROLSEX, TBM_SETPOS, TBM_SETRANGEMAX, TBM_SETRANGEMIN,
         },
         Input::KeyboardAndMouse::EnableWindow,
@@ -26,7 +26,7 @@ use windows_sys::Win32::{
             BM_SETCHECK, BS_AUTOCHECKBOX, BS_DEFPUSHBUTTON, BS_PUSHBUTTON, CBS_DROPDOWNLIST,
             CBS_HASSTRINGS, CB_ADDSTRING, CB_GETCURSEL, CB_SETCURSEL, ES_AUTOHSCROLL, ES_NUMBER,
             IDCANCEL, IDYES, MB_DEFBUTTON2, MB_ICONWARNING, MB_YESNO, MINMAXINFO, SWP_NOACTIVATE,
-            SWP_NOREDRAW, SWP_NOZORDER, SW_SHOWNA, SW_SHOWNORMAL, WM_APP, WM_CLOSE, WM_COMMAND,
+            SWP_NOREDRAW, SWP_NOZORDER, SW_SHOWNORMAL, WM_APP, WM_CLOSE, WM_COMMAND,
             WM_CTLCOLORSTATIC, WM_DESTROY, WM_GETMINMAXINFO, WM_HSCROLL, WM_NCCREATE, WM_SIZE,
             WS_CHILD, WS_EX_CLIENTEDGE, WS_OVERLAPPEDWINDOW, WS_TABSTOP, WS_VISIBLE, WS_VSCROLL,
         },
@@ -40,7 +40,7 @@ use crate::{
 };
 
 use super::{
-    management::DashboardBackend,
+    management::{DashboardBackend, SettingsData},
     model::{DashboardInventoryDevice, DashboardSettings},
 };
 
@@ -77,6 +77,7 @@ const PICK_GREEN_ID: usize = 1020;
 const PREVIEW_LEVEL_ID: usize = 1021;
 const SETTINGS_ACTIVATE_MESSAGE: u32 = WM_APP + 1;
 const SETTINGS_SHUTDOWN_MESSAGE: u32 = WM_APP + 2;
+const SETTINGS_DATA_MESSAGE: u32 = WM_APP + 3;
 const SETTINGS_INSTANCE_MUTEX: &str = "Local\\VoltySettings";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -175,8 +176,9 @@ struct LayoutControl {
 }
 
 struct SettingsWindow {
-    backend: DashboardBackend,
-    days: u32,
+    worker: Option<SettingsWorker>,
+    saving: Option<FormValues>,
+    testing: bool,
     settings: Option<DashboardSettings>,
     pin_values: Vec<Option<String>>,
     controls: Vec<LayoutControl>,
@@ -199,12 +201,10 @@ impl Drop for SettingsWindow {
 
 pub(super) fn open_settings_window(
     backend: DashboardBackend,
-    days: u32,
 ) -> Result<(), Box<dyn Error>> {
     win32::enable_system_dark_menus();
-    let data = backend.get_dashboard_data(days)?;
     let class_name = win32::to_wide(WINDOW_CLASS);
-    let title = win32::to_wide(WINDOW_TITLE);
+    let title = win32::to_wide("Volty Settings — Loading…");
     // SAFETY: a null module name requests the current process executable's module handle.
     let instance = unsafe { GetModuleHandleW(ptr::null()) };
     if instance.is_null() {
@@ -221,16 +221,12 @@ pub(super) fn open_settings_window(
     win32::register_window_class(&class_name, window_proc, instance)?;
 
     let fonts = FontSet::new()?;
-    let preference = data
-        .settings
-        .as_ref()
-        .and_then(|s| AppTheme::parse(&s.app_theme))
-        .unwrap_or_default();
-    let appearance = Appearance::new(preference)?;
+    let appearance = Appearance::new(AppTheme::System)?;
     let mut state = Box::new(SettingsWindow {
-        backend,
-        days,
-        settings: data.settings,
+        worker: None,
+        saving: None,
+        testing: false,
+        settings: None,
         pin_values: Vec::new(),
         controls: Vec::new(),
         fonts,
@@ -265,27 +261,73 @@ pub(super) fn open_settings_window(
         return Err(io::Error::last_os_error().into());
     }
 
-    if let Err(error) = create_controls(window, instance, &data.inventory, &mut state) {
+    let services = SettingsWorker::start(window, backend).and_then(|worker| {
+        state.worker = Some(worker);
+        state.activation_listener = Some(SettingsEventListener::start(window)?);
+        Ok(())
+    });
+    if let Err(error) = services {
         if let Err(destroy_error) = win32::destroy_window(window) {
             if let Err(clear_error) = win32::clear_window_state(window) {
                 eprintln!("Volty could not detach Settings-window state: {clear_error}");
             }
             eprintln!("Volty could not destroy the incomplete Settings window: {destroy_error}");
         }
-        return Err(error);
+        return Err(error.into());
     }
     win32::allow_dark_mode_for_current_thread_windows();
     state.appearance.apply_native_theme(window, &state);
     state.create_complete = true;
-    for control in &state.controls {
-        // SAFETY: each created child is live and the parent remains hidden until all are shown.
-        unsafe { ShowWindow(control.handle, SW_SHOWNA) };
-    }
-    state.activation_listener = Some(SettingsEventListener::start(window)?);
     win32::run_dialog_message_loop(window, SW_SHOWNORMAL, state, |state, value| {
         state.create_complete = value;
     })?;
     Ok(())
+}
+
+enum SettingsAction {
+    Save(DashboardSettingsUpdate),
+    Test,
+}
+
+enum SettingsReply {
+    Loaded(Result<SettingsData, String>),
+    Saved(Result<(), String>),
+    Tested(Result<(), String>),
+}
+
+struct SettingsWorker {
+    actions: mpsc::SyncSender<SettingsAction>,
+    replies: mpsc::Receiver<SettingsReply>,
+}
+
+impl SettingsWorker {
+    fn start(window: HWND, backend: DashboardBackend) -> io::Result<Self> {
+        let (actions, requests) = mpsc::sync_channel(2);
+        let (responses, replies) = mpsc::channel();
+        let window = SendableWindow(window);
+        thread::Builder::new().name("volty-settings-data".to_owned()).spawn(move || {
+            let reply = SettingsReply::Loaded(backend.get_settings_data().map_err(|e| e.to_string()));
+            if responses.send(reply).is_err() || !window.post_message(SETTINGS_DATA_MESSAGE) {
+                return;
+            }
+            while let Ok(action) = requests.recv() {
+                let reply = match action {
+                    SettingsAction::Save(update) => {
+                        let result = backend.update_settings(&update).map_err(|e| e.to_string());
+                        super::notify_dashboard();
+                        SettingsReply::Saved(result)
+                    }
+                    SettingsAction::Test => SettingsReply::Tested(
+                        backend.test_notification().map_err(|e| e.to_string())
+                    ),
+                };
+                if responses.send(reply).is_err() || !window.post_message(SETTINGS_DATA_MESSAGE) {
+                    break;
+                }
+            }
+        })?;
+        Ok(Self { actions, replies })
+    }
 }
 
 fn initial_window_size() -> (i32, i32) {
@@ -1715,7 +1757,9 @@ fn update_validation(window: HWND, state: &SettingsWindow) -> bool {
     let dirty = current_form(state).is_some_and(|form| state.original.as_ref() != Some(&form));
     set_control_text(
         control(state, ControlRole::Status),
-        if dirty {
+        if state.saving.is_some() {
+            "Saving changes…"
+        } else if dirty {
             "Unsaved changes"
         } else {
             "Your preferences are up to date."
@@ -1727,10 +1771,11 @@ fn update_validation(window: HWND, state: &SettingsWindow) -> bool {
             .as_ref()
             .is_some_and(|settings| settings.config_error.is_some())
         && dirty
-        && valid;
+        && valid
+        && state.saving.is_none();
     // SAFETY: SAVE_ID resolves to the live Save button owned by the settings window.
     unsafe { EnableWindow(control_by_id(window, SAVE_ID), i32::from(can_save)) };
-    valid
+    can_save
 }
 
 fn refresh_controls(window: HWND, state: &SettingsWindow) {
@@ -1959,12 +2004,17 @@ fn handle_command(window: HWND, state: &mut SettingsWindow, wparam: WPARAM) -> L
             open_color_picker(window, state, ControlRole::PickGreen);
             0
         }
-        TEST_NOTIFICATION_ID => {
-            let status = match state.backend.test_notification() {
-                Ok(()) => "Test notification sent.".to_owned(),
-                Err(error) => format!("Could not send test notification: {error}"),
-            };
-            set_control_text(control(state, ControlRole::Status), &status);
+        TEST_NOTIFICATION_ID if !state.testing => {
+            if let Some(worker) = &state.worker {
+                if let Err(error) = worker.actions.try_send(SettingsAction::Test) {
+                    set_control_text(control(state, ControlRole::Status), &error.to_string());
+                } else {
+                    state.testing = true;
+                    // SAFETY: the Test button is a live child of the settings window.
+                    unsafe { EnableWindow(control_by_id(window, TEST_NOTIFICATION_ID), 0) };
+                    set_control_text(control(state, ControlRole::Status), "Sending test notification…");
+                }
+            }
             0
         }
         SAVE_ID => {
@@ -2105,169 +2155,78 @@ fn save_settings(window: HWND, state: &mut SettingsWindow) {
             .start_on_boot
             .map(|_| form.start_on_boot.unwrap_or(false)),
     };
-    if let Err(error) = state.backend.update_settings(&update) {
-        set_control_text(
-            control(state, ControlRole::Status),
-            &format!("Could not save settings: {error}"),
-        );
-        return;
-    }
-
-    match state.backend.get_dashboard_data(state.days) {
-        Ok(data) => {
-            state.settings = data.settings;
-            if let Err(error) = refresh_pinned_values(state, &data.inventory) {
-                set_control_text(
-                    control(state, ControlRole::Status),
-                    &format!("Settings saved, but the tray device list could not refresh: {error}"),
-                );
-                return;
-            }
-            apply_saved_settings(state);
-            layout_controls(window, state);
-            state.original = current_form(state);
-            refresh_controls(window, state);
-            set_control_text(
-                control(state, ControlRole::Status),
-                "Settings saved. Changes are ready to use.",
-            );
-        }
-        Err(error) => set_control_text(
-            control(state, ControlRole::Status),
-            &format!("Settings were saved, but could not be reloaded: {error}"),
-        ),
-    }
-}
-
-fn refresh_pinned_values(
-    state: &mut SettingsWindow,
-    inventory: &[DashboardInventoryDevice],
-) -> io::Result<()> {
-    let combo = control(state, ControlRole::PinnedDevice);
-    send_message(
-        combo,
-        windows_sys::Win32::UI::WindowsAndMessaging::CB_RESETCONTENT,
-        0,
-        0,
-    );
-    state.pin_values.clear();
-    state.pin_values.push(None);
-    add_combo_string(combo, "Lowest monitored battery")?;
-    let pinned = state
-        .settings
-        .as_ref()
-        .and_then(|settings| settings.pinned_device.clone());
-    let mut selected = 0;
-    for device in inventory {
-        if device.identity.is_empty() {
-            continue;
-        }
-        add_combo_string(combo, &format!("{} — {}", device.name, device.identity))?;
-        state.pin_values.push(Some(device.identity.clone()));
-        if pinned.as_deref() == Some(&device.identity) {
-            selected = state.pin_values.len() - 1;
-        }
-    }
-    if let Some(pinned) = pinned.filter(|pinned| {
-        !state
-            .pin_values
-            .iter()
-            .any(|value| value.as_deref() == Some(pinned))
-    }) {
-        add_combo_string(combo, &format!("Unavailable device — {pinned}"))?;
-        state.pin_values.push(Some(pinned));
-        selected = state.pin_values.len() - 1;
-    }
-    set_combo_selection(combo, selected);
-    Ok(())
-}
-
-fn apply_saved_settings(state: &mut SettingsWindow) {
-    let Some(settings) = &state.settings else {
+    let Some(worker) = &state.worker else {
         return;
     };
-    set_combo_selection(
-        control(state, ControlRole::AppTheme),
-        match settings.app_theme.as_str() {
-            "light" => 1,
-            "dark" => 2,
-            _ => 0,
-        },
-    );
-    set_control_text(
-        control(state, ControlRole::RedCutoff),
-        &settings.battery_color_red_max_percent.to_string(),
-    );
-    set_control_text(
-        control(state, ControlRole::YellowCutoff),
-        &settings.battery_color_yellow_max_percent.to_string(),
-    );
-    set_control_text(
-        control(state, ControlRole::RedColor),
-        &settings.battery_color_red,
-    );
-    set_control_text(
-        control(state, ControlRole::YellowColor),
-        &settings.battery_color_yellow,
-    );
-    set_control_text(
-        control(state, ControlRole::GreenColor),
-        &settings.battery_color_green,
-    );
-    set_control_text(
-        control(state, ControlRole::ThresholdEdit),
-        &settings
-            .low_battery_thresholds
-            .iter()
-            .map(u8::to_string)
-            .collect::<Vec<_>>()
-            .join(", "),
-    );
-    set_control_text(
-        control(state, ControlRole::CooldownEdit),
-        &settings.low_battery_cooldown_minutes.to_string(),
-    );
-    set_checkbox(
-        control(state, ControlRole::Notifications),
-        settings.notifications_enabled,
-    );
-    set_combo_selection(
-        control(state, ControlRole::IconStyle),
-        usize::from(settings.tray_icon_style == "percentage"),
-    );
-    set_combo_selection(
-        control(state, ControlRole::IconTheme),
-        match settings.tray_icon_theme.as_str() {
-            "light" => 1,
-            "dark" => 2,
-            _ => 0,
-        },
-    );
-    set_checkbox(
-        control(state, ControlRole::PercentageOverlay),
-        settings.show_percentage_in_battery_icon,
-    );
-    set_checkbox(
-        control(state, ControlRole::Startup),
-        settings.start_on_boot == Some(true),
-    );
-    refresh_preview_icon(state);
+    match worker.actions.try_send(SettingsAction::Save(update)) {
+        Ok(()) => {
+            state.saving = Some(form);
+            update_validation(window, state);
+        }
+        Err(error) => set_control_text(control(state, ControlRole::Status), &error.to_string()),
+    }
 }
 
-fn set_checkbox(window: HWND, checked: bool) {
-    send_message(
-        window,
-        BM_SETCHECK,
-        if checked {
-            BST_CHECKED as usize
-        } else {
-            BST_UNCHECKED as usize
-        },
-        0,
-    );
+fn apply_worker_reply(window: HWND, state: &mut SettingsWindow, reply: SettingsReply) {
+    match reply {
+        SettingsReply::Loaded(data) => {
+            let result = data.and_then(|data| {
+                state.settings = data.settings;
+                // SAFETY: a null name retrieves the current process module.
+                let instance = unsafe { GetModuleHandleW(ptr::null()) };
+                create_controls(window, instance, &data.inventory, state)
+                    .map_err(|error| error.to_string())
+            });
+            set_control_text(window, WINDOW_TITLE);
+            match result {
+                Ok(()) => {
+                    refresh_appearance(window, state);
+                    state.appearance.apply_native_theme(window, state);
+                }
+                Err(error) => {
+                    let message = win32::to_wide(&format!("Could not load Settings. {error}"));
+                    let title = win32::to_wide(WINDOW_TITLE);
+                    // SAFETY: both strings are terminated and the owner HWND is live.
+                    unsafe { MessageBoxW(window, message.as_ptr(), title.as_ptr(), MB_ICONWARNING) };
+                    destroy_window(window);
+                }
+            }
+        }
+        SettingsReply::Saved(result) => {
+            let saved_form = state.saving.take();
+            let status = match result {
+                Ok(()) => {
+                    let edited = current_form(state) != saved_form;
+                    state.original = saved_form;
+                    if edited {
+                        "Settings saved. You have newer unsaved changes.".to_owned()
+                    } else {
+                        "Settings saved.".to_owned()
+                    }
+                }
+                Err(error) => format!("Could not save settings. {error}"),
+            };
+            update_validation(window, state);
+            set_control_text(control(state, ControlRole::Status), &status);
+        }
+        SettingsReply::Tested(result) => {
+            state.testing = false;
+            // SAFETY: the live Settings window owns this Test button.
+            unsafe { EnableWindow(control_by_id(window, TEST_NOTIFICATION_ID), 1) };
+            let status = match result {
+                Ok(()) => "Test notification sent.".to_owned(),
+                Err(error) => format!("Could not send test notification. {error}"),
+            };
+            set_control_text(control(state, ControlRole::Status), &status);
+        }
+    }
 }
 
 fn close_window(window: HWND, state: &SettingsWindow) {
+    if state.saving.is_some() {
+        set_control_text(control(state, ControlRole::Status), "Saving changes…");
+        return;
+    }
     if current_form(state).is_some_and(|form| state.original.as_ref() != Some(&form)) {
         let message = win32::to_wide("Discard unsaved Settings changes and close this window?");
         let title = win32::to_wide(WINDOW_TITLE);
@@ -2424,6 +2383,17 @@ unsafe extern "system" fn window_proc(
                     windows_sys::Win32::UI::WindowsAndMessaging::SW_RESTORE,
                 );
                 windows_sys::Win32::UI::WindowsAndMessaging::SetForegroundWindow(window);
+            }
+            0
+        }
+        SETTINGS_DATA_MESSAGE => {
+            let state = win32::window_state::<SettingsWindow>(window);
+            if !state.is_null() {
+                // SAFETY: the attached Box remains alive until the message loop exits.
+                let state = unsafe { &mut *state };
+                if let Some(reply) = state.worker.as_ref().and_then(|worker| worker.replies.try_recv().ok()) {
+                    apply_worker_reply(window, state, reply);
+                }
             }
             0
         }

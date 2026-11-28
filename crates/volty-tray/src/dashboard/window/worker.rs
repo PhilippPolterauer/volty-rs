@@ -1,7 +1,7 @@
 use std::{
     io::{self, BufWriter, Write},
     path::PathBuf,
-    sync::mpsc,
+    sync::{mpsc, Arc},
     thread,
 };
 
@@ -12,7 +12,7 @@ use crate::config::{AppConfig, AppTheme, BatteryColorMap};
 use super::{
     super::{
         management::{CleanupKind, CleanupResult, DashboardBackend, ManagedArtifact},
-        model::{DashboardData, DashboardDevice, DashboardPoint},
+        model::{DashboardData, DashboardPoint},
     },
     chart::Chart,
 };
@@ -28,7 +28,6 @@ pub(super) struct Snapshot {
 }
 
 pub(super) enum Action {
-    Refresh(u32, bool),
     OpenSettings,
     Recording {
         identity: String,
@@ -42,7 +41,6 @@ pub(super) enum Action {
     PreviewCleanup(CleanupKind, u32),
     ConfirmArtifacts(Vec<ManagedArtifact>),
     Execute(Operation),
-    Export(PathBuf, DashboardDevice),
 }
 
 pub(super) enum Operation {
@@ -58,7 +56,6 @@ pub(super) struct Confirmation {
 }
 
 pub(super) enum Reply {
-    Snapshot(Box<Snapshot>),
     Confirm(Confirmation),
     Done(Option<String>, bool),
 }
@@ -69,14 +66,54 @@ pub(super) struct Failure {
 }
 
 pub(super) struct Worker {
-    send: mpsc::Sender<Action>,
+    send: mpsc::SyncSender<Action>,
     receive: mpsc::Receiver<Result<Reply, Failure>>,
+    load: mpsc::SyncSender<(u32, bool)>,
+    snapshots: mpsc::Receiver<(u32, Result<Snapshot, String>)>,
+    export: mpsc::SyncSender<(PathBuf, Arc<Snapshot>, usize)>,
+    exports: mpsc::Receiver<Result<String, String>>,
 }
 
 impl Worker {
     pub(super) fn start(ctx: Context, backend: DashboardBackend) -> io::Result<Self> {
-        let (send, requests) = mpsc::channel();
+        let (send, requests) = mpsc::sync_channel(1);
         let (responses, receive) = mpsc::channel();
+        let (load, loads) = mpsc::sync_channel(1);
+        let (loaded, snapshots) = mpsc::channel();
+        let (export, export_requests) = mpsc::sync_channel::<(PathBuf, Arc<Snapshot>, usize)>(1);
+        let (exported, exports) = mpsc::channel();
+        let backend = Arc::new(backend);
+        let read_backend = Arc::clone(&backend);
+        let repaint = ctx.clone();
+        thread::Builder::new()
+            .name("volty-dashboard-history".to_owned())
+            .spawn(move || {
+                while let Ok((days, artifacts)) = loads.recv() {
+                    let result = load_snapshot(&read_backend, days, artifacts)
+                        .map_err(|error| error.to_string());
+                    if loaded.send((days, result)).is_err() {
+                        break;
+                    }
+                    repaint.request_repaint();
+                }
+            })?;
+        let repaint = ctx.clone();
+        thread::Builder::new()
+            .name("volty-dashboard-export".to_owned())
+            .spawn(move || {
+                while let Ok((path, snapshot, index)) = export_requests.recv() {
+                    let result = std::fs::File::create(&path)
+                        .and_then(|file| {
+                            write_csv(BufWriter::new(file), &snapshot.data.devices[index].points)
+                        })
+                        .map(|()| format!("Exported {}", path.display()))
+                        .map_err(|error| error.to_string());
+                    if exported.send(result).is_err() {
+                        break;
+                    }
+                    repaint.request_repaint();
+                }
+            })?;
         thread::Builder::new()
             .name("volty-dashboard-data".to_owned())
             .spawn(move || {
@@ -92,36 +129,59 @@ impl Worker {
                     ctx.request_repaint();
                 }
             })?;
-        Ok(Self { send, receive })
+        Ok(Self { send, receive, load, snapshots, export, exports })
     }
 
     pub(super) fn send(&self, action: Action) -> io::Result<()> {
         self.send
-            .send(action)
-            .map_err(|_| io::Error::other("Dashboard worker stopped"))
+            .try_send(action)
+            .map_err(queue_error)
     }
 
     pub(super) fn poll(&self) -> Option<Result<Reply, Failure>> {
         self.receive.try_recv().ok()
     }
+
+    pub(super) fn load(&self, days: u32, artifacts: bool) -> io::Result<()> {
+        self.load.try_send((days, artifacts)).map_err(queue_error)
+    }
+
+    pub(super) fn snapshot(&self) -> Option<(u32, Result<Snapshot, String>)> {
+        self.snapshots.try_recv().ok()
+    }
+
+    pub(super) fn export(&self, path: PathBuf, snapshot: Arc<Snapshot>, index: usize) -> io::Result<()> {
+        self.export.try_send((path, snapshot, index)).map_err(queue_error)
+    }
+
+    pub(super) fn exported(&self) -> Option<Result<String, String>> {
+        self.exports.try_recv().ok()
+    }
+}
+
+fn queue_error<T>(error: mpsc::TrySendError<T>) -> io::Error {
+    match error {
+        mpsc::TrySendError::Full(_) => io::Error::other("Dashboard worker is busy"),
+        mpsc::TrySendError::Disconnected(_) => io::Error::other("Dashboard worker stopped"),
+    }
+}
+
+fn load_snapshot(backend: &DashboardBackend, days: u32, include_artifacts: bool) -> Result<Snapshot, BackendError> {
+    let data = backend.get_history_data(days)?;
+    let config = AppConfig::load().unwrap_or_default();
+    let charts = data.devices.iter().map(Chart::new).collect();
+    let artifacts = include_artifacts.then(|| backend.list_artifacts().map_err(|err| err.to_string()));
+    Ok(Snapshot {
+        data,
+        charts,
+        theme: config.app_theme,
+        colors: config.battery_color_map,
+        artifacts,
+    })
 }
 
 fn handle(backend: &DashboardBackend, action: Action) -> Result<Reply, BackendError> {
     Ok(match action {
-        Action::Refresh(days, include_artifacts) => {
-            let data = backend.get_history_data(days)?;
-            let config = AppConfig::load().unwrap_or_default();
-            let charts = data.devices.iter().map(Chart::new).collect();
-            let artifacts =
-                include_artifacts.then(|| backend.list_artifacts().map_err(|err| err.to_string()));
-            Reply::Snapshot(Box::new(Snapshot {
-                data,
-                charts,
-                theme: config.app_theme,
-                colors: config.battery_color_map,
-                artifacts,
-            }))
-        }
         Action::OpenSettings => {
             backend.open_settings()?;
             Reply::Done(None, false)
@@ -210,11 +270,6 @@ fn handle(backend: &DashboardBackend, action: Action) -> Result<Reply, BackendEr
             })
         }
         Action::Execute(operation) => Reply::Done(Some(execute(backend, operation)?), true),
-        Action::Export(path, device) => {
-            let writer = BufWriter::new(std::fs::File::create(&path)?);
-            write_csv(writer, &device.points)?;
-            Reply::Done(Some(format!("Exported {}", path.display())), false)
-        }
     })
 }
 

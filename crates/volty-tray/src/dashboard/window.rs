@@ -2,7 +2,9 @@ mod chart;
 mod platform;
 mod worker;
 
-use std::error::Error;
+pub(crate) use platform::notify_dashboard;
+
+use std::{error::Error, sync::{atomic::Ordering, Arc}};
 
 use eframe::egui::{
     self, Align, Button, Color32, ComboBox, Frame, Layout, Modal, RichText, ScrollArea, Stroke,
@@ -12,10 +14,11 @@ use eframe::egui::{
 use crate::{app_icon, config::AppTheme};
 
 use super::{
+    design::{Palette, CONTROL_HEIGHT, GAP, SECTION_PADDING, SECTION_RADIUS},
     management::{CleanupKind, DashboardBackend},
     model::{DashboardData, DashboardDevice, DashboardInventoryDevice},
 };
-use platform::{Signal, WindowSignals};
+use platform::{Signal, SystemChanges, WindowSignals};
 use worker::{Action, Confirmation, Reply, Snapshot, Worker};
 
 pub(super) fn open_dashboard_window(
@@ -35,29 +38,37 @@ pub(super) fn open_dashboard_window(
         Box::new(move |cc| {
             let ctx = &cc.egui_ctx;
             ctx.all_styles_mut(|style| {
-                style.spacing.item_spacing = egui::vec2(10.0, 8.0);
-                style.spacing.interact_size.y = 30.0;
+                style.spacing.item_spacing = egui::vec2(GAP as f32, GAP as f32);
+                style.spacing.interact_size.y = CONTROL_HEIGHT as f32;
                 style.spacing.button_padding = egui::vec2(12.0, 4.0);
-                style.visuals.widgets.noninteractive.fg_stroke.color = if style.visuals.dark_mode {
-                    Color32::from_rgb(212, 223, 236)
-                } else {
-                    Color32::from_rgb(45, 58, 73)
-                };
                 for text_style in [egui::TextStyle::Body, egui::TextStyle::Button] {
                     style
                         .text_styles
                         .insert(text_style, egui::FontId::proportional(14.0));
                 }
             });
+            let contrast = Palette::system_contrast();
+            apply_visuals(ctx, contrast);
+            let system = platform::hwnd(cc)
+                .and_then(|window| platform::listen_to_system(window, ctx.clone()).ok());
             let signals = WindowSignals::start(ctx.clone())?;
             let worker = Worker::start(ctx.clone(), backend)?;
             let mut dashboard = Dashboard {
                 worker,
                 signals,
+                system,
+                contrast,
+                title_theme: None,
                 days,
                 snapshot: None,
                 selected: None,
                 busy: false,
+                loading: false,
+                exporting: false,
+                discard_load: false,
+                artifacts_pending: false,
+                artifacts: None,
+                export_status: None,
                 refresh_pending: false,
                 status: None,
                 confirmation: None,
@@ -81,10 +92,19 @@ enum Page {
 struct Dashboard {
     worker: Worker,
     signals: WindowSignals,
+    system: Option<Arc<SystemChanges>>,
+    contrast: Option<Palette>,
+    title_theme: Option<egui::Theme>,
     days: u32,
-    snapshot: Option<Snapshot>,
+    snapshot: Option<Arc<Snapshot>>,
     selected: Option<String>,
     busy: bool,
+    loading: bool,
+    exporting: bool,
+    discard_load: bool,
+    artifacts_pending: bool,
+    artifacts: Option<Result<Vec<super::management::ManagedArtifact>, String>>,
+    export_status: Option<Result<String, String>>,
     refresh_pending: bool,
     status: Option<Result<String, String>>,
     confirmation: Option<Confirmation>,
@@ -108,15 +128,22 @@ impl Dashboard {
     }
 
     fn refresh(&mut self) {
-        if self.busy || self.confirmation.is_some() {
-            self.refresh_pending = true;
-        } else {
-            self.refresh_pending = false;
-            self.send(Action::Refresh(self.days, self.page == Page::Manage));
+        self.refresh_pending = true;
+        if self.loading {
+            return;
+        }
+        self.refresh_pending = false;
+        self.discard_load = false;
+        match self.worker.load(self.days, self.artifacts_pending) {
+            Ok(()) => {
+                self.loading = true;
+                self.artifacts_pending = false;
+            }
+            Err(error) => self.status = Some(Err(error.to_string())),
         }
     }
 
-    fn set_snapshot(&mut self, ctx: &egui::Context, mut snapshot: Snapshot) {
+    fn set_snapshot(&mut self, ctx: &egui::Context, snapshot: Snapshot) {
         ctx.set_theme(match snapshot.theme {
             AppTheme::System => ThemePreference::System,
             AppTheme::Light => ThemePreference::Light,
@@ -133,10 +160,7 @@ impl Dashboard {
                 .map(|device| device.identity.clone())
                 .or_else(|| data.inventory.first().map(|device| device.identity.clone()));
         }
-        if snapshot.artifacts.is_none() {
-            snapshot.artifacts = self.snapshot.as_mut().and_then(|old| old.artifacts.take());
-        }
-        self.snapshot = Some(snapshot);
+        self.snapshot = Some(Arc::new(snapshot));
     }
 
     fn header(&mut self, ui: &mut Ui) {
@@ -155,7 +179,10 @@ impl Dashboard {
                 && self.page != Page::Manage
             {
                 self.page = Page::Manage;
-                self.refresh();
+                if self.artifacts.is_none() {
+                    self.artifacts_pending = true;
+                    self.refresh();
+                }
             }
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 if ui
@@ -164,12 +191,10 @@ impl Dashboard {
                 {
                     self.request(Action::OpenSettings);
                 }
-                if ui.add_enabled(!self.busy, Button::new("Refresh")).clicked() {
+                if ui.button("Refresh").clicked() {
                     self.status = None;
+                    self.artifacts_pending |= self.page == Page::Manage;
                     self.refresh();
-                }
-                if self.busy {
-                    ui.spinner();
                 }
             });
         });
@@ -193,6 +218,12 @@ impl Dashboard {
                 Err(error) => {
                     ui.colored_label(ui.visuals().error_fg_color, error);
                 }
+            }
+        }
+        if let Some(status) = &self.export_status {
+            match status {
+                Ok(message) => { ui.label(message); }
+                Err(error) => { ui.colored_label(ui.visuals().error_fg_color, error); }
             }
         }
     }
@@ -220,7 +251,7 @@ impl Dashboard {
                             "history-range",
                             &mut requested_days,
                             &[1, 3, 7, 14, 30],
-                            !self.busy,
+                            true,
                         );
                         if let Some(snapshot) = &self.snapshot {
                             let query = self.search.trim().to_lowercase();
@@ -266,7 +297,7 @@ impl Dashboard {
                 );
                 ui.add_space(6.0);
                 let Some(snapshot) = &self.snapshot else {
-                    ui.label(if self.busy {
+                    ui.label(if self.loading {
                         "Loading battery history…"
                     } else {
                         "Battery history unavailable."
@@ -288,7 +319,13 @@ impl Dashboard {
                             .auto_shrink([false, false])
                             .show(ui, |ui| {
                                 if let Some(index) = device {
-                                    history_detail(ui, snapshot, index, !self.busy)
+                                    if snapshot.data.window_days != self.days {
+                                        ui.horizontal(|ui| {
+                                            if self.loading { ui.spinner(); }
+                                            ui.label(format!("Showing the last {} days", snapshot.data.window_days));
+                                        });
+                                    }
+                                    history_detail(ui, snapshot, index, !self.exporting)
                                 } else {
                                     ui.heading(
                                         inventory
@@ -314,18 +351,26 @@ impl Dashboard {
             .inner;
         if requested_days != self.days {
             self.days = requested_days;
+            self.discard_load = self.loading;
             self.status = None;
             self.refresh();
         }
         if export {
+            let Some((snapshot, index)) = self.snapshot.as_ref().and_then(|snapshot| {
+                snapshot.data.devices.iter()
+                    .position(|item| Some(item.identity.as_str()) == self.selected.as_deref())
+                    .map(|index| (Arc::clone(snapshot), index))
+            }) else {
+                return;
+            };
             match platform::save_path(frame) {
                 Ok(Some(path)) => {
-                    if let Some(device) = self
-                        .snapshot
-                        .as_ref()
-                        .and_then(|s| selected_device(&s.data, self.selected.as_deref()))
-                    {
-                        self.request(Action::Export(path, device.clone()));
+                    match self.worker.export(path, snapshot, index) {
+                        Ok(()) => {
+                            self.exporting = true;
+                            self.export_status = Some(Ok("Exporting readings…".to_owned()));
+                        }
+                        Err(error) => self.export_status = Some(Err(error.to_string())),
                     }
                 }
                 Ok(None) => {}
@@ -340,6 +385,12 @@ impl Dashboard {
             return;
         };
         let data = &snapshot.data;
+        if self.busy {
+            ui.horizontal(|ui| {
+                ui.spinner();
+                ui.label("Updating data…");
+            });
+        }
         let enabled = !self.busy && data.management_allowed;
         let mut action = None;
         ScrollArea::vertical()
@@ -443,7 +494,7 @@ impl Dashboard {
                 });
                 card(ui, |ui| {
                     ui.heading("Diagnostic files");
-                    match &snapshot.artifacts {
+                    match &self.artifacts {
                         Some(Ok(files)) if files.is_empty() => {
                             ui.label("No managed diagnostic files.");
                         }
@@ -526,7 +577,21 @@ impl Dashboard {
 }
 
 impl eframe::App for Dashboard {
-    fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+    fn logic(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
+        if let Some(system) = &self.system {
+            if system.appearance.swap(false, Ordering::AcqRel) {
+                let contrast = Palette::system_contrast();
+                if self.contrast != contrast {
+                    self.contrast = contrast;
+                    self.title_theme = None;
+                    apply_visuals(ctx, contrast);
+                }
+            }
+            self.refresh_pending |= system.resume.swap(false, Ordering::AcqRel);
+        }
+        if self.signals.take_change() {
+            self.refresh_pending = true;
+        }
         while let Ok(signal) = self.signals.receive.try_recv() {
             match signal {
                 Signal::Activate => {
@@ -543,20 +608,53 @@ impl eframe::App for Dashboard {
         if let Some(reply) = self.worker.poll() {
             self.busy = false;
             match reply {
-                Ok(Reply::Snapshot(snapshot)) => self.set_snapshot(ctx, *snapshot),
                 Ok(Reply::Confirm(confirmation)) => self.confirmation = Some(confirmation),
                 Ok(Reply::Done(status, refresh)) => {
                     self.status = status.map(Ok);
                     self.refresh_pending |= refresh;
+                    self.discard_load |= refresh;
+                    self.artifacts_pending |= refresh && self.artifacts.is_some();
                 }
                 Err(error) => {
                     self.refresh_pending |= error.refresh;
+                    self.discard_load |= error.refresh;
+                    self.artifacts_pending |= error.refresh && self.artifacts.is_some();
                     self.status = Some(Err(error.message));
                 }
             }
         }
-        if self.refresh_pending && !self.busy && self.confirmation.is_none() {
+        if let Some((days, result)) = self.worker.snapshot() {
+            self.loading = false;
+            match result {
+                Ok(mut snapshot) => {
+                    if let Some(artifacts) = snapshot.artifacts.take() {
+                        if self.discard_load {
+                            self.artifacts_pending = true;
+                        } else {
+                            self.artifacts = Some(artifacts);
+                        }
+                    }
+                    if days == self.days && !self.discard_load {
+                        self.set_snapshot(ctx, snapshot);
+                    }
+                }
+                Err(error) if days == self.days && !self.discard_load => {
+                    self.status = Some(Err(error));
+                }
+                Err(_) => {}
+            }
+        }
+        if let Some(result) = self.worker.exported() {
+            self.exporting = false;
+            self.export_status = Some(result);
+        }
+        if self.refresh_pending && !self.loading {
             self.refresh();
+        }
+        let theme = ctx.theme();
+        if self.title_theme != Some(theme) {
+            self.title_theme = Some(theme);
+            platform::update_title_bar(frame, theme, self.contrast);
         }
     }
 
@@ -574,15 +672,6 @@ impl eframe::App for Dashboard {
             });
         self.confirm(ui.ctx());
     }
-}
-
-fn selected_device<'a>(
-    data: &'a DashboardData,
-    selected: Option<&str>,
-) -> Option<&'a DashboardDevice> {
-    data.devices
-        .iter()
-        .find(|item| Some(item.identity.as_str()) == selected)
 }
 
 fn selected_inventory<'a>(
@@ -641,37 +730,53 @@ fn day_picker(ui: &mut Ui, id: &str, days: &mut u32, choices: &[u32], enabled: b
 }
 
 fn canvas(ui: &Ui) -> Color32 {
-    if ui.visuals().dark_mode {
-        Color32::from_rgb(17, 22, 31)
-    } else {
-        Color32::from_rgb(241, 245, 249)
-    }
+    ui.visuals().panel_fill
 }
 
 fn accent(ui: &Ui) -> Color32 {
-    if ui.visuals().dark_mode {
-        Color32::from_rgb(112, 211, 237)
-    } else {
-        Color32::from_rgb(8, 112, 146)
-    }
+    ui.visuals().selection.bg_fill
 }
 
 fn card<R>(ui: &mut Ui, content: impl FnOnce(&mut Ui) -> R) -> R {
-    let (fill, border) = if ui.visuals().dark_mode {
-        (Color32::from_rgb(24, 32, 45), Color32::from_rgb(49, 63, 82))
-    } else {
-        (Color32::WHITE, Color32::from_rgb(217, 226, 235))
-    };
     Frame::new()
-        .fill(fill)
-        .stroke(Stroke::new(1.0, border))
-        .corner_radius(10)
-        .inner_margin(16)
+        .fill(ui.visuals().window_fill)
+        .stroke(ui.visuals().window_stroke)
+        .corner_radius(SECTION_RADIUS as u8)
+        .inner_margin(SECTION_PADDING as i8)
         .show(ui, |ui| {
             ui.set_min_width(ui.available_width());
             content(ui)
         })
         .inner
+}
+
+fn apply_visuals(ctx: &egui::Context, contrast: Option<Palette>) {
+    let color = |[r, g, b]: [u8; 3]| Color32::from_rgb(r, g, b);
+    for theme in [egui::Theme::Light, egui::Theme::Dark] {
+        let dark = theme == egui::Theme::Dark;
+        let palette = contrast.unwrap_or_else(|| Palette::standard(dark));
+        let mut visual = if dark { egui::Visuals::dark() } else { egui::Visuals::light() };
+        visual.panel_fill = color(palette.canvas);
+        visual.window_fill = color(palette.surface);
+        visual.extreme_bg_color = color(palette.canvas);
+        visual.window_stroke = Stroke::new(1.0, color(palette.border));
+        visual.error_fg_color = color(palette.destructive);
+        visual.selection.bg_fill = color(palette.accent);
+        visual.selection.stroke.color = color(palette.on_accent);
+        visual.widgets.noninteractive.fg_stroke.color = color(palette.secondary);
+        visual.widgets.noninteractive.bg_stroke.color = color(palette.border);
+        visual.widgets.inactive.weak_bg_fill = color(palette.raised);
+        for widget in [&mut visual.widgets.inactive, &mut visual.widgets.hovered, &mut visual.widgets.active] {
+            widget.fg_stroke.color = color(palette.text);
+            widget.bg_stroke = Stroke::new(1.0, color(palette.border));
+            widget.corner_radius = egui::CornerRadius::same(5);
+        }
+        visual.widgets.hovered.bg_fill = color(palette.hover);
+        visual.widgets.hovered.weak_bg_fill = color(palette.hover);
+        visual.widgets.active.bg_stroke.color = color(palette.accent);
+        visual.collapsing_header_frame = true;
+        ctx.set_visuals_of(theme, visual);
+    }
 }
 
 fn percent(value: Option<u8>) -> String {

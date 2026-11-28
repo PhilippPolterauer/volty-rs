@@ -1,10 +1,13 @@
 //! CLI orchestration for the native dashboard and standalone HTML export.
 
+mod design;
 mod management;
 mod model;
 mod render;
 mod settings_window;
 mod window;
+
+pub(crate) use window::notify_dashboard;
 
 use std::{
     error::Error,
@@ -80,7 +83,7 @@ pub fn run_cli(args: &[String]) -> Result<(), Box<dyn Error>> {
 
     if options.settings {
         let backend = DashboardBackend::new(database, options.database.is_none());
-        return settings_window::open_settings_window(backend, options.days);
+        return settings_window::open_settings_window(backend);
     }
 
     if options.window {

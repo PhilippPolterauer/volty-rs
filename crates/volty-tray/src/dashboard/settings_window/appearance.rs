@@ -4,13 +4,15 @@ use std::{io, ptr};
 use windows_sys::Win32::{
     Foundation::{COLORREF, HWND, LPARAM, LRESULT, RECT, WPARAM},
     Graphics::Gdi::{
-        BeginPaint, CreateSolidBrush, DeleteObject, EndPaint, FillRect, GetStockObject,
-        GetSysColor, RoundRect, SelectObject, SetBkColor, SetBkMode, SetDCPenColor, SetTextColor,
-        StretchDIBits, BITMAPINFO, BI_RGB, COLOR_WINDOW, COLOR_WINDOWTEXT, DC_PEN, DIB_RGB_COLORS,
+        BeginPaint, CreateSolidBrush, DeleteObject, EndPaint, FillRect, GetStockObject, GetSysColor,
+        RoundRect, SelectObject, SetBkColor, SetBkMode, SetDCPenColor, SetTextColor,
+        StretchDIBits, BITMAPINFO, BI_RGB, DC_PEN, DIB_RGB_COLORS,
         HBRUSH, HDC, PAINTSTRUCT, SRCCOPY, TRANSPARENT,
     },
     UI::WindowsAndMessaging::GetClientRect,
 };
+
+use super::super::design::{apply_title_bar, Palette};
 
 use super::{
     control, get_control_text, parse_hex_color, top_card_layout, ControlRole, SettingsWindow,
@@ -31,24 +33,8 @@ pub(super) struct Appearance {
 
 impl Appearance {
     pub(super) fn new(preference: AppTheme) -> io::Result<Self> {
-        use windows_sys::Win32::UI::{
-            Accessibility::{HCF_HIGHCONTRASTON, HIGHCONTRASTW},
-            WindowsAndMessaging::{SystemParametersInfoW, SPI_GETHIGHCONTRAST},
-        };
-        let mut contrast = HIGHCONTRASTW {
-            cbSize: std::mem::size_of::<HIGHCONTRASTW>() as u32,
-            ..Default::default()
-        };
-        // SAFETY: contrast has the documented structure size and writable storage.
-        unsafe {
-            SystemParametersInfoW(
-                SPI_GETHIGHCONTRAST,
-                contrast.cbSize,
-                ptr::from_mut(&mut contrast).cast(),
-                0,
-            );
-        }
-        let high_contrast = contrast.dwFlags & HCF_HIGHCONTRASTON != 0;
+        let contrast = Palette::system_contrast();
+        let high_contrast = contrast.is_some();
         let dark = !high_contrast
             && match preference {
                 AppTheme::Dark => true,
@@ -68,22 +54,14 @@ impl Appearance {
                     }
                 }
             };
-        let (canvas_color, surface_color, text, secondary, border, error) = if high_contrast {
-            // SAFETY: these are documented system color indices.
-            unsafe {
-                let bg = GetSysColor(COLOR_WINDOW);
-                let fg = GetSysColor(COLOR_WINDOWTEXT);
-                (bg, bg, fg, fg, fg, fg)
-            }
-        } else if dark {
-            (
-                0x00202020, 0x002b2b2b, 0x00f5f5f5, 0x00c2c2c2, 0x00404040, 0x009999ff,
-            )
-        } else {
-            (
-                0x00f3f3f3, 0x00ffffff, 0x001a1a1a, 0x005f5f5f, 0x00e2e2e2, 0x002b2bc4,
-            )
-        };
+        let palette = contrast.unwrap_or_else(|| Palette::standard(dark));
+        let color = |[r, g, b]: [u8; 3]| u32::from_le_bytes([r, g, b, 0]);
+        let canvas_color = color(palette.canvas);
+        let surface_color = color(palette.surface);
+        let text = color(palette.text);
+        let secondary = color(palette.secondary);
+        let border = color(palette.border);
+        let error = color(palette.destructive);
         // SAFETY: CreateSolidBrush accepts any COLORREF and returns an owned brush.
         let canvas = unsafe { CreateSolidBrush(canvas_color) };
         if canvas.is_null() {
@@ -130,22 +108,10 @@ impl Appearance {
         use windows_sys::Win32::Graphics::Gdi::{
             RedrawWindow, RDW_ALLCHILDREN, RDW_FRAME, RDW_INVALIDATE, RDW_NOERASE,
         };
-        use windows_sys::Win32::{
-            Graphics::Dwm::{DwmSetWindowAttribute, DWMWA_USE_IMMERSIVE_DARK_MODE},
-            UI::Controls::SetWindowTheme,
-        };
+        use windows_sys::Win32::UI::Controls::SetWindowTheme;
         win32::configure_app_dark_mode(self.dark);
         win32::set_window_dark_mode(window, self.dark);
-        let dark = i32::from(self.dark);
-        // SAFETY: window is live and the attribute expects a BOOL-sized buffer.
-        unsafe {
-            DwmSetWindowAttribute(
-                window,
-                DWMWA_USE_IMMERSIVE_DARK_MODE as u32,
-                ptr::from_ref(&dark).cast(),
-                std::mem::size_of_val(&dark) as u32,
-            );
-        }
+        apply_title_bar(window, self.dark);
         for child in &state.controls {
             win32::set_window_dark_mode(child.handle, self.dark);
             let theme = win32::to_wide(if self.high_contrast {

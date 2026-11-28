@@ -956,6 +956,7 @@ impl App {
             Ok(()) => {
                 self.monitored_devices
                     .insert(identity.to_owned(), monitored);
+                crate::dashboard::notify_dashboard();
                 let refresh_failed = self.session.discover_if_monitored(monitored).is_err();
                 self.notifications
                     .retain_monitored_devices(&self.monitored_devices);
@@ -1196,6 +1197,7 @@ impl App {
         self.active_config = config;
         let recovered = self.notification_config_error.take().is_some();
         if recovered || config_changed {
+            crate::dashboard::notify_dashboard();
             self.record_event(LogLevel::Info, "Configuration reloaded successfully")?;
         }
         Ok(recovered || config_changed)
@@ -1479,7 +1481,10 @@ impl App {
             None => return Ok(()),
         };
         match result {
-            Ok(_) => {
+            Ok(inserted) => {
+                if inserted {
+                    crate::dashboard::notify_dashboard();
+                }
                 self.history_error = None;
                 Ok(())
             }
