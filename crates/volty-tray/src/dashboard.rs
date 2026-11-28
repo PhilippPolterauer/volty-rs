@@ -7,7 +7,6 @@ mod model;
 #[cfg(feature = "ui-preview")]
 mod preview;
 mod render;
-mod settings_window;
 mod window;
 
 #[cfg(feature = "ui-preview")]
@@ -30,10 +29,6 @@ const SECONDS_PER_DAY: i64 = 86_400;
 const EMPTY_MESSAGE: &str = "No battery history recorded yet.";
 
 #[cfg(windows)]
-pub(crate) fn settings_instance_mutex_name() -> &'static str {
-    settings_window::instance_mutex_name()
-}
-
 const DASHBOARD_USAGE: &str =
     "Usage: volty dashboard [--window | --settings] [--days N] [--database PATH] [--output PATH] [--no-open]
 
@@ -86,14 +81,16 @@ pub fn run_cli(args: &[String]) -> Result<(), Box<dyn Error>> {
         .output
         .unwrap_or_else(|| std::env::temp_dir().join("volty-dashboard.html"));
 
-    if options.settings {
+    if options.window || options.settings {
         let backend = DashboardBackend::new(database, options.database.is_none());
-        return settings_window::open_settings_window(backend, Default::default());
-    }
-
-    if options.window {
-        let backend = DashboardBackend::new(database, options.database.is_none());
-        return window::open_dashboard_window(backend, options.days, Default::default());
+        return window::open_dashboard_window(
+            backend,
+            options.days,
+            window::WindowOptions {
+                settings: options.settings,
+                ..Default::default()
+            },
+        );
     }
 
     let generated_at = unix_now()?;
@@ -217,7 +214,7 @@ mod tests {
     }
 
     #[test]
-    fn settings_option_selects_the_native_settings_window() {
+    fn settings_option_selects_the_settings_page() {
         let options = parse_args(&["--settings".to_owned()]).unwrap();
 
         assert!(options.settings);

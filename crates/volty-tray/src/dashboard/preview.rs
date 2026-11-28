@@ -16,7 +16,7 @@ use crate::{
 use super::{
     live::{LiveDevice, LiveLevel, LiveReading},
     management::DashboardBackend,
-    settings_window, window,
+    window,
 };
 
 const USAGE: &str = "Usage: volty ui-preview [history|manage|cleanup|settings|invalid-settings]
@@ -104,28 +104,21 @@ pub(crate) fn run(args: &[String]) -> Result<(), Box<dyn Error>> {
     let profile = Profile::create()?;
     let live = seed(&profile.0, options.theme, options.empty)?;
     let backend = DashboardBackend::preview(profile.0.clone());
-    match options.view {
-        View::Settings | View::InvalidSettings => settings_window::open_settings_window(
-            backend,
-            settings_window::WindowOptions {
-                size: options.size,
-                invalid_preview: options.view == View::InvalidSettings,
-            },
-        ),
-        _ => window::open_dashboard_window(
-            backend,
-            super::DEFAULT_DAYS,
-            window::WindowOptions {
-                size: options.size,
-                preview: Some(window::PreviewOptions {
-                    theme: options.theme,
-                    live,
-                    manage: matches!(options.view, View::Manage | View::Cleanup),
-                    cleanup: options.view == View::Cleanup,
-                }),
-            },
-        ),
-    }
+    window::open_dashboard_window(
+        backend,
+        super::DEFAULT_DAYS,
+        window::WindowOptions {
+            size: options.size,
+            settings: matches!(options.view, View::Settings | View::InvalidSettings),
+            preview: Some(window::PreviewOptions {
+                theme: options.theme,
+                live,
+                manage: matches!(options.view, View::Manage | View::Cleanup),
+                cleanup: options.view == View::Cleanup,
+                invalid_settings: options.view == View::InvalidSettings,
+            }),
+        },
+    )
 }
 
 struct Profile(PathBuf);

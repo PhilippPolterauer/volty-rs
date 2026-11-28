@@ -8,29 +8,50 @@ use eframe::egui::{
 use super::{
     super::model::SECONDS_PER_DAY,
     accent, canvas, card,
-    chart::{self, Forecast, Plot, Series, TimeRange},
+    chart::{self, ActivityHit, ActivityState, Forecast, Plot, Series, TimeRange, FORECAST_NAMES},
     duration, live_device, live_percent, percent, platform, selected_inventory, Dashboard,
     Snapshot,
 };
 
 const ALL: u32 = u32::MAX;
-const FORECAST_NAMES: [&str; 2] = ["Since last charge", "Current discharge rate"];
 
 pub(super) type Reading = (usize, usize);
+
+struct SelectedReading {
+    identity: String,
+    at: i64,
+}
+
+impl SelectedReading {
+    fn matches(&self, identity: &str, at: i64) -> bool {
+        self.identity == identity && self.at == at
+    }
+}
 
 pub(super) struct HistoryView {
     search: String,
     compared: BTreeSet<String>,
-    comparing: bool,
     forecast: [bool; 2],
     charging: bool,
     thresholds: bool,
+    bridge_gaps: bool,
+    expanded: bool,
+    selecting_interval: bool,
+    drag_start: Option<i64>,
+    interval: Option<TimeRange>,
+    readings_interval: Option<TimeRange>,
+    jump_to_readings: bool,
     target: Option<u8>,
     zoom: Option<TimeRange>,
     pinned: Option<i64>,
     table_hover: Option<i64>,
-    activity_hover: Option<i64>,
+    activity_hover: Option<ActivityHit>,
+    pinned_activity: Option<ActivityHit>,
     oldest_first: bool,
+    sort_column: usize,
+    column_edges: [f32; 7],
+    sorted_readings: Option<(Range<usize>, usize, Arc<Vec<Reading>>)>,
+    selected_reading: Option<SelectedReading>,
     collapsed: bool,
     filter: ReadingsFilter,
     readings: Option<Arc<Vec<Reading>>>,
@@ -41,16 +62,27 @@ impl Default for HistoryView {
         Self {
             search: String::new(),
             compared: BTreeSet::new(),
-            comparing: false,
-            forecast: [true; 2],
+            forecast: [false; 2],
             charging: true,
             thresholds: true,
+            bridge_gaps: false,
+            expanded: false,
+            selecting_interval: false,
+            drag_start: None,
+            interval: None,
+            readings_interval: None,
+            jump_to_readings: false,
             target: None,
             zoom: None,
             pinned: None,
             table_hover: None,
             activity_hover: None,
+            pinned_activity: None,
             oldest_first: false,
+            sort_column: 0,
+            column_edges: [0.0, 0.25, 0.52, 0.63, 0.74, 0.86, 1.0],
+            sorted_readings: None,
+            selected_reading: None,
             collapsed: false,
             filter: ReadingsFilter::Visible,
             readings: None,
@@ -264,9 +296,12 @@ impl HistoryView {
             });
             return None;
         };
-        let Some((focused_row, focused_index)) =
-            focused.and_then(|row| Some((row, rows[row].index?)))
-        else {
+        let focus_index = focused.and_then(|row| rows[row].index);
+        let Some((reference_row, reference_index)) = focused.zip(focus_index).or_else(|| {
+            rows.iter().enumerate().find_map(|(index, row)| {
+                Some((index, row.index?)).filter(|_| self.visible(row.identity))
+            })
+        }) else {
             ui.horizontal_wrapped(|ui| {
                 ui.heading(focused.map_or("Battery history", |index| rows[index].name));
                 range_picker(ui, days);
@@ -288,42 +323,25 @@ impl HistoryView {
             index,
             device: &snapshot.data.devices[index],
             chart: &snapshot.charts[index],
-            color: series_color(ui, row),
+            color: series_color(ui, rows[row].identity),
         };
-        let focused = series(focused_index, focused_row, ui);
+        let reference = series(reference_index, reference_row, ui);
+        let focused_row = focused.unwrap_or(reference_row);
         ui.horizontal(|ui| {
             ui.vertical(|ui| {
                 ui.spacing_mut().item_spacing.y = 2.0;
                 ui.add(egui::Label::new(heading(ui, rows[focused_row].name, 25.0)).truncate());
-                ui.label(caption(format!(
-                    "Focused device · Last reading {} · {} visible",
-                    platform::summary_date(focused.device.last_at),
-                    rows.iter()
-                        .filter(|row| row.index.is_some() && self.visible(row.identity, focus))
-                        .count()
-                )));
-            });
-            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                if ui
-                    .add(Button::new("Compare devices").selected(self.comparing))
-                    .clicked()
-                {
-                    self.comparing = !self.comparing;
-                    if self.comparing
-                        && !rows.iter().any(|row| {
-                            row.index.is_some()
-                                && Some(row.identity) != focus.as_deref()
-                                && self.compared.contains(row.identity)
-                        })
-                    {
-                        if let Some(other) = rows.iter().find(|row| {
-                            row.index.is_some() && Some(row.identity) != focus.as_deref()
-                        }) {
-                            self.compared.insert(other.identity.to_owned());
-                        }
-                    }
-                    self.invalidate_readings();
-                    self.reset_view();
+                if focus_index.is_some() {
+                    ui.label(caption(format!(
+                        "{} · Last reading {} · {} visible",
+                        rows[focused_row].level_label,
+                        platform::summary_date(reference.device.last_at),
+                        rows.iter()
+                            .filter(|row| row.index.is_some() && self.visible(row.identity))
+                            .count()
+                    )));
+                } else {
+                    ui.label(caption("No readings for the focused device in this range"));
                 }
             });
         });
@@ -338,14 +356,21 @@ impl HistoryView {
                 )));
             });
         }
-        self.metrics(ui, focused, &rows[focused_row]);
-        let mut visible = self.series(ui, snapshot, rows, focus);
-        let (range, hovered) = self.trend(ui, snapshot, rows, focus, focused, &mut visible, days);
+        let mut visible = self.series(ui, snapshot, rows);
+        let (range, hovered) = self.trend(
+            ui,
+            snapshot,
+            rows,
+            reference,
+            focus_index.is_some(),
+            &mut visible,
+            days,
+        );
         self.readings(
             ui,
             snapshot,
             &visible,
-            focused_index,
+            focus_index,
             range,
             hovered,
             can_export,
@@ -353,18 +378,18 @@ impl HistoryView {
     }
 
     pub(super) fn initial_comparison(&mut self, data: &super::DashboardData, focus: Option<&str>) {
+        self.compared.extend(focus.map(str::to_owned));
         if let Some(other) = data
             .devices
             .iter()
             .find(|device| Some(device.identity.as_str()) != focus)
         {
-            self.comparing = true;
             self.compared.insert(other.identity.clone());
         }
     }
-
     pub(super) fn invalidate_readings(&mut self) {
         self.readings = None;
+        self.sorted_readings = None;
     }
 
     fn reset_view(&mut self) {
@@ -372,6 +397,11 @@ impl HistoryView {
         self.pinned = None;
         self.table_hover = None;
         self.activity_hover = None;
+        self.pinned_activity = None;
+        self.interval = None;
+        self.readings_interval = None;
+        self.drag_start = None;
+        self.selected_reading = None;
     }
 
     fn series<'a>(
@@ -379,49 +409,33 @@ impl HistoryView {
         ui: &Ui,
         snapshot: &'a Snapshot,
         rows: &[DeviceRow<'_>],
-        focus: &Option<String>,
     ) -> Vec<Series<'a>> {
         rows.iter()
-            .enumerate()
-            .filter(|(_, row)| self.visible(row.identity, focus))
-            .filter_map(|(row, item)| {
+            .filter(|row| self.visible(row.identity))
+            .filter_map(|item| {
                 let index = item.index?;
                 Some(Series {
                     index,
                     device: &snapshot.data.devices[index],
                     chart: &snapshot.charts[index],
-                    color: series_color(ui, row),
+                    color: series_color(ui, item.identity),
                 })
             })
             .collect()
     }
 
-    fn visible(&self, id: &str, focus: &Option<String>) -> bool {
-        focus.as_deref() == Some(id) || (self.comparing && self.compared.contains(id))
+    fn visible(&self, id: &str) -> bool {
+        self.compared.contains(id)
     }
 
-    fn set_visible(
-        &mut self,
-        id: &str,
-        show: bool,
-        rows: &[DeviceRow<'_>],
-        focus: &mut Option<String>,
-    ) {
+    fn set_visible(&mut self, id: &str, show: bool) {
         if show {
-            self.comparing = true;
             self.compared.insert(id.to_owned());
-        } else if focus.as_deref() != Some(id) {
+        } else {
             self.compared.remove(id);
-        } else if let Some(next) = rows.iter().find(|row| {
-            row.index.is_some() && row.identity != id && self.visible(row.identity, focus)
-        }) {
-            self.compared.remove(id);
-            *focus = Some(next.identity.to_owned());
-            self.reset_view();
         }
         self.invalidate_readings();
     }
-
     fn sidebar(&mut self, ui: &mut Ui, rows: &[DeviceRow<'_>], focus: &mut Option<String>) {
         ui.spacing_mut().item_spacing = vec2(8.0, 7.0);
         ui.horizontal(|ui| {
@@ -432,7 +446,7 @@ impl HistoryView {
                     format!(
                         "{} shown",
                         rows.iter()
-                            .filter(|row| row.index.is_some() && self.visible(row.identity, focus))
+                            .filter(|row| row.index.is_some() && self.visible(row.identity))
                             .count()
                     ),
                 );
@@ -448,21 +462,20 @@ impl HistoryView {
         );
         let query = self.search.trim().to_lowercase();
         ScrollArea::vertical().id_salt("analytics-devices").auto_shrink([false, true]).show(ui, |ui| {
-            for (i, row) in rows.iter().enumerate().filter(|(_, row)| {
+            for row in rows.iter().filter(|row| {
                 query.is_empty() || row.name.to_lowercase().contains(&query) || row.identity.to_lowercase().contains(&query)
             }) {
                 let active = focus.as_deref() == Some(row.identity);
-                let mut visible = self.visible(row.identity, focus);
-                let color = series_color(ui, i);
+                let mut visible = self.visible(row.identity);
+                let color = series_color(ui, row.identity);
                 let fill = if active { sidebar_fill(ui).lerp_to_gamma(accent(ui), 0.14) } else { Color32::TRANSPARENT };
                 let card = Frame::new().fill(fill).corner_radius(6).inner_margin(egui::Margin::symmetric(8, 9)).show(ui, |ui| {
                     ui.set_min_width(ui.available_width());
                     ui.horizontal(|ui| {
                         ui.spacing_mut().item_spacing.x = 6.0;
-                        let can_hide = !active || rows.iter().any(|other| other.index.is_some() && other.identity != row.identity && self.visible(other.identity, focus));
-                        let check = layer_toggle(ui, &mut visible, &format!("Show {} on the chart", row.name), None, None, row.index.is_some() && can_hide);
+                        let check = layer_toggle(ui, &mut visible, &format!("Show {} on the chart", row.name), None, None, row.index.is_some());
                         if check.on_hover_text(format!("Show {} on the chart", row.name)).changed() {
-                            self.set_visible(row.identity, visible, rows, focus);
+                            self.set_visible(row.identity, visible);
                         }
                         let label = ui.allocate_ui_with_layout(vec2(ui.available_width(), 46.0), Layout::top_down(Align::Min), |ui| {
                             let width = ui.available_width();
@@ -481,11 +494,6 @@ impl HistoryView {
                         if label.inner.on_hover_text(row.name).clicked()
                             || label.response.interact(Sense::click()).clicked()
                         {
-                            if self.comparing {
-                                if let Some(previous) = focus.as_ref() {
-                                    self.compared.insert(previous.clone());
-                                }
-                            }
                             *focus = Some(row.identity.to_owned());
                             self.invalidate_readings();
                             self.reset_view();
@@ -503,89 +511,39 @@ impl HistoryView {
         });
     }
 
-    fn metrics(&self, ui: &mut Ui, series: Series<'_>, row: &DeviceRow<'_>) {
-        let cycle = series.chart.forecasts[0];
-        let values = [
-            ("Current battery", row.level_label.clone(), ""),
-            (
-                "Est. remaining · cycle",
-                cycle
-                    .and_then(|fit| fit.eta(0).map(|at| duration(at - fit.latest.t)))
-                    .unwrap_or_else(|| "—".into()),
-                if cycle.is_some() {
-                    "Until estimated 0%"
-                } else {
-                    "Cycle estimate unavailable"
-                },
-            ),
-            (
-                "Drain per day · cycle",
-                cycle.map_or_else(|| "—".into(), |fit| format!("{:.1}%", fit.rate)),
-                "Percentage points / day",
-            ),
-            (
-                "Recorded readings",
-                series.device.samples.to_string(),
-                "Selected history range",
-            ),
-        ];
-        card(ui, |ui| {
-            let columns = if ui.available_width() < 620.0 { 2 } else { 4 };
-            for group in values.chunks(columns) {
-                ui.columns(columns, |uis| {
-                    for (column, (ui, (label, value, note))) in
-                        uis.iter_mut().zip(group).enumerate()
-                    {
-                        ui.spacing_mut().item_spacing.y = 4.0;
-                        let current = *label == "Current battery";
-                        if column > 0 {
-                            let x = ui.min_rect().left() - 4.0;
-                            let y = ui.cursor().top();
-                            ui.painter()
-                                .vline(x, y..=y + 77.0, ui.visuals().window_stroke);
-                        }
-                        ui.label(caption(*label));
-                        let value = heading(ui, value, if current { 34.0 } else { 27.0 });
-                        ui.label(if current {
-                            value.color(series.color)
-                        } else {
-                            value
-                        });
-                        if current {
-                            battery_bar(
-                                ui,
-                                ui.available_width().min(150.0),
-                                row.level,
-                                series.color,
-                            );
-                        } else {
-                            ui.label(caption(*note));
-                        }
-                    }
-                });
-            }
-        });
-    }
-
     #[allow(clippy::too_many_arguments)]
     fn trend<'a>(
         &mut self,
         ui: &mut Ui,
         snapshot: &'a Snapshot,
         rows: &[DeviceRow<'_>],
-        focus: &mut Option<String>,
         focused: Series<'a>,
+        focus_has_readings: bool,
         visible: &mut Vec<Series<'a>>,
         days: &mut u32,
     ) -> (TimeRange, Option<i64>) {
         card(ui, |ui| {
             ui.spacing_mut().item_spacing.y = 8.0;
             let mut reset = false;
+            let target = self
+                .target
+                .filter(|value| snapshot.thresholds.contains(value))
+                .or_else(|| {
+                    snapshot
+                        .thresholds
+                        .iter()
+                        .min_by_key(|level| level.abs_diff(10))
+                        .copied()
+                })
+                .unwrap_or(0);
+            let colors = chart::forecast_colors(ui);
+            let fits = if focus_has_readings {
+                focused.chart.forecasts
+            } else {
+                [None; 2]
+            };
             ui.horizontal_wrapped(|ui| {
                 ui.label(heading(ui, "Battery trend", 18.0));
-                if ui.available_size_before_wrap().x > 440.0 {
-                    ui.add_space(ui.available_size_before_wrap().x - 440.0);
-                }
                 range_picker(ui, days);
                 let active = self.forecast.iter().filter(|enabled| **enabled).count();
                 ComboBox::from_id_salt("analytics-forecast")
@@ -596,8 +554,36 @@ impl HistoryView {
                         format!("Forecast · {active} on")
                     })
                     .show_ui(ui, |ui| {
-                        for (enabled, name) in self.forecast.iter_mut().zip(FORECAST_NAMES) {
-                            reset |= ui.checkbox(enabled, name).changed();
+                        ui.set_min_width(260.0);
+                        for (index, (enabled, name)) in
+                            self.forecast.iter_mut().zip(FORECAST_NAMES).enumerate()
+                        {
+                            ui.checkbox(enabled, name);
+                            if *enabled {
+                                forecast_card(
+                                    ui,
+                                    name,
+                                    fits[index],
+                                    target,
+                                    colors[index],
+                                    snapshot.data.generated_at + 14 * SECONDS_PER_DAY,
+                                );
+                            }
+                        }
+                        ui.horizontal(|ui| {
+                            if ui.button("Show both").clicked() {
+                                self.forecast = [true; 2];
+                            }
+                            if ui.button("Hide all").clicked() {
+                                self.forecast = [false; 2];
+                            }
+                        });
+                        if focus_has_readings
+                            && focused.device.last_at
+                                < snapshot.data.generated_at
+                                    - super::super::model::OFFLINE_AFTER_SECONDS
+                        {
+                            ui.label(caption("Based on a stale reading"));
                         }
                         ui.separator();
                         ui.label(caption("Forecast target"));
@@ -609,35 +595,46 @@ impl HistoryView {
                             );
                         }
                     });
-                reset |= ui.button("Reset view").clicked();
+                reset |= ui
+                    .add_enabled(self.zoom.is_some(), Button::new("Reset view"))
+                    .clicked();
+                if ui
+                    .button(if self.expanded {
+                        "Compact chart"
+                    } else {
+                        "Expand chart"
+                    })
+                    .clicked()
+                {
+                    self.expanded = !self.expanded;
+                }
+                ui.toggle_value(&mut self.selecting_interval, "Select interval");
             });
             if reset {
                 self.reset_view();
             }
             let mut visibility_changed = false;
-            let fit_colors = chart::forecast_colors(ui);
             ui.scope(|ui| {
                 ui.spacing_mut().interact_size.y = 20.0;
                 ui.spacing_mut().item_spacing = vec2(7.0, 4.0);
                 ui.horizontal_wrapped(|ui| {
-                    for (row_index, row) in rows
+                    for row in rows
                         .iter()
-                        .enumerate()
-                        .filter(|(_, row)| row.index.is_some())
+                        .filter(|row| row.index.is_some())
                     {
-                        let mut shown = self.visible(row.identity, focus);
-                        let mark = LegendMark::Line(series_color(ui, row_index));
+                        let mut shown = self.visible(row.identity);
+                        let mark = LegendMark::Line(series_color(ui, row.identity));
                         if layer_toggle(
                             ui,
                             &mut shown,
                             row.name,
                             Some(row.name),
                             Some(mark),
-                            Some(row.identity) != focus.as_deref(),
+                            true,
                         )
                         .changed()
                         {
-                            self.set_visible(row.identity, shown, rows, focus);
+                            self.set_visible(row.identity, shown);
                             visibility_changed = true;
                         }
                     }
@@ -663,64 +660,21 @@ impl HistoryView {
                         Some(LegendMark::Dashed(muted)),
                         true,
                     );
-                    let mut any_fit = false;
-                    for (index, color) in fit_colors.into_iter().enumerate() {
-                        if self.forecast[index] && focused.chart.forecasts[index].is_some() {
-                            let label = if index == 0 {
-                                "Since last charge"
-                            } else {
-                                "Current rate"
-                            };
-                            legend_key(ui, label, LegendMark::Dashed(color));
-                            any_fit = true;
-                        }
-                    }
-                    if any_fit {
-                        legend_key(
-                            ui,
-                            "Historical fit",
-                            LegendMark::Dashed(muted.gamma_multiply(0.7)),
-                        );
-                    }
+                    layer_toggle(ui, &mut self.bridge_gaps, "Bridge gaps", Some("Bridge gaps"), Some(LegendMark::Dashed(muted)), true)
+                        .on_hover_text("Dashed links mark unobserved intervals. They contain no recorded readings.");
                 });
             });
             if visibility_changed {
-                *visible = self.series(ui, snapshot, rows, focus);
-                self.zoom = None;
+                *visible = self.series(ui, snapshot, rows);
             }
+            let focused_visible = visible.iter().any(|series| series.index == focused.index);
             let forecasts = std::array::from_fn(|i| {
-                if self.forecast[i] {
-                    focused.chart.forecasts[i]
+                if self.forecast[i] && focused_visible {
+                    fits[i]
                 } else {
                     None
                 }
             });
-            let target = self
-                .target
-                .filter(|value| snapshot.thresholds.contains(value))
-                .unwrap_or_else(|| {
-                    snapshot
-                        .thresholds
-                        .iter()
-                        .min_by_key(|threshold| threshold.abs_diff(10))
-                        .copied()
-                        .unwrap_or(10)
-                });
-            let colors = fit_colors;
-            if self.forecast.iter().any(|enabled| *enabled) {
-                let cards = self
-                    .forecast
-                    .iter()
-                    .enumerate()
-                    .filter(|(_, enabled)| **enabled)
-                    .map(|(i, _)| i)
-                    .collect::<Vec<_>>();
-                ui.columns(cards.len(), |columns| {
-                    for (column, i) in columns.iter_mut().zip(cards) {
-                        forecast_card(column, FORECAST_NAMES[i], forecasts[i], target, colors[i]);
-                    }
-                });
-            }
             let latest = visible
                 .iter()
                 .map(|series| series.device.last_at)
@@ -756,14 +710,31 @@ impl HistoryView {
             let full = TimeRange { start, end };
             let mut range = self
                 .zoom
-                .filter(|zoom| zoom.start >= start.saturating_sub(60) && zoom.end <= end)
+                .and_then(|zoom| {
+                    let clipped = TimeRange {
+                        start: zoom.start.max(start),
+                        end: zoom.end.min(end),
+                    };
+                    (clipped.start < clipped.end).then_some(clipped)
+                })
                 .unwrap_or(full);
+            if ui.input(|input| input.key_pressed(egui::Key::Escape)) {
+                self.pinned = None;
+                self.pinned_activity = None;
+                self.interval = None;
+                self.readings_interval = None;
+                self.drag_start = None;
+            }
             ui.horizontal(|ui| {
                 ui.label(caption("Actual readings"));
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     ui.add(
-                        egui::Label::new(caption("Scroll to zoom · Shift + wheel to pan"))
-                            .truncate(),
+                        egui::Label::new(caption(if self.selecting_interval {
+                            "Drag to select a range"
+                        } else {
+                            "Ctrl + wheel to zoom · Shift + wheel to pan"
+                        }))
+                        .truncate(),
                     );
                 });
             });
@@ -778,16 +749,31 @@ impl HistoryView {
                     &[]
                 },
                 show_charging: self.charging,
+                bridge_gaps: self.bridge_gaps,
+                expanded: self.expanded,
                 recorded_end: if end > generated { latest } else { generated },
                 full,
             };
             let previous = range;
+            let old_pin = self.pinned;
             let hovered = plot.trend(
                 ui,
                 &mut range,
                 &mut self.pinned,
-                self.activity_hover.or(self.table_hover),
+                self.activity_hover
+                    .as_ref()
+                    .map(|hit| hit.at)
+                    .or(self.table_hover),
+                &mut self.interval,
+                &mut self.drag_start,
+                self.selecting_interval,
+                self.pinned_activity
+                    .as_ref()
+                    .or(self.activity_hover.as_ref()),
             );
+            if old_pin != self.pinned {
+                self.pinned_activity = None;
+            }
             if previous != range {
                 self.zoom = (range != full).then_some(range);
             }
@@ -812,116 +798,190 @@ impl HistoryView {
                     });
                 });
             });
-            let activity_hover =
-                plot.activity(ui, range, &mut self.pinned, hovered.or(self.table_hover));
+            let (activity_time, activity_hover) = plot.activity(
+                ui,
+                range,
+                &mut self.pinned,
+                hovered.or(self.table_hover),
+                self.interval,
+                &mut self.pinned_activity,
+                self.activity_hover.as_ref(),
+            );
             if self.activity_hover != activity_hover {
                 self.activity_hover = activity_hover;
                 ui.ctx().request_repaint();
             }
-            let hovered = activity_hover.or(hovered);
+            let hovered = activity_time.or(hovered);
             ui.separator();
             self.inspector(
                 ui,
+                focused,
                 visible,
                 self.pinned.or(hovered).or(self.table_hover),
-                latest,
                 &forecasts,
+                range,
+                target,
             );
-            ui.label(caption(if self.pinned.is_some() {
-                "Timestamp pinned · Click the chart to clear"
-            } else {
-                "Hover to inspect · Click to pin a timestamp"
-            }));
+            if let Some(interval) = self.interval {
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(caption(interval_details(
+                        focused,
+                        interval,
+                        self.drag_start.is_some(),
+                    )));
+                    if ui.button("Zoom to selection").clicked() {
+                        self.zoom = Some(interval);
+                        ui.ctx().request_repaint();
+                    }
+                    if ui.button("View readings").clicked() {
+                        self.show_interval_readings(interval);
+                    }
+                    if ui.button("Clear").clicked() {
+                        self.interval = None;
+                        self.readings_interval = None;
+                    }
+                });
+            }
             (range, hovered)
         })
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn inspector(
-        &self,
+        &mut self,
         ui: &mut Ui,
+        focused: Series<'_>,
         visible: &[Series<'_>],
         at: Option<i64>,
-        latest: i64,
         forecasts: &[Option<Forecast>; 2],
+        range: TimeRange,
+        target: u8,
     ) {
         Frame::new()
             .fill(sidebar_fill(ui))
             .inner_margin(10)
             .corner_radius(5)
             .show(ui, |ui| {
-                let columns = if ui.available_width() < 720.0 { 2 } else { 3 };
-                for (group, chunk) in visible.chunks(columns - 1).enumerate() {
-                    ui.columns(columns, |uis| {
-                        if group == 0 {
-                            let ui = &mut uis[0];
-                            ui.label(heading(ui, "Time inspector", 13.0));
-                            ui.label(caption(at.map_or_else(
+                ui.set_min_width(ui.available_width());
+                ui.spacing_mut().item_spacing.y = 3.0;
+                ui.spacing_mut().interact_size.y = 22.0;
+                let activity = self.pinned_activity.clone().or_else(|| {
+                    self.activity_hover
+                        .clone()
+                        .filter(|_| self.pinned.is_none())
+                });
+                let session = activity
+                    .as_ref()
+                    .filter(|hit| hit.state == ActivityState::Charging && self.pinned.is_some())
+                    .map(|hit| hit.interval)
+                    .or_else(|| {
+                        self.pinned
+                            .filter(|_| self.pinned_activity.is_none())
+                            .and_then(|at| focused.chart.charging_at(at))
+                    });
+                ui.horizontal(|ui| {
+                    let state = if self.pinned.is_some() {
+                        "Pinned"
+                    } else if at.is_some() {
+                        "Inspecting"
+                    } else {
+                        "Time inspector"
+                    };
+                    ui.label(heading(ui, state, 13.0));
+                    ui.add(
+                        egui::Label::new(caption(
+                            at.map_or_else(|| focused.device.name.clone(), platform::exact_date),
+                        ))
+                        .truncate(),
+                    );
+                    if ui
+                        .add_enabled(self.pinned.is_some(), Button::new("Unpin"))
+                        .clicked()
+                    {
+                        self.pinned = None;
+                        self.pinned_activity = None;
+                    }
+                });
+                let details = activity.map_or_else(
+                    || {
+                        session.map_or_else(
+                            || {
+                                format!(
+                                    "{} readings · {}",
+                                    range.points(&focused.device.points).len(),
+                                    online_summary(focused, range)
+                                )
+                            },
+                            |interval| interval_details(focused, interval, false),
+                        )
+                    },
+                    |hit| {
+                        let summary = visible
+                            .iter()
+                            .find(|series| series.device.identity == hit.identity.as_ref())
+                            .map_or_else(
+                                || duration(hit.interval.end - hit.interval.start),
+                                |series| interval_details(*series, hit.interval, false),
+                            );
+                        format!("{} · {summary}", hit.state.label())
+                    },
+                );
+                ui.horizontal(|ui| {
+                    ui.set_min_height(24.0);
+                    ui.add(egui::Label::new(caption(details)).truncate());
+                    if let Some(session) = session {
+                        if ui.button("View session readings").clicked() {
+                            self.show_interval_readings(session);
+                        }
+                    }
+                });
+                ScrollArea::vertical()
+                    .id_salt("time-inspector")
+                    .max_height(58.0)
+                    .min_scrolled_height(58.0)
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
+                        for series in visible {
+                            let text = at.map_or_else(
                                 || {
-                                    "Hover over the chart, an activity lane, or a reading."
-                                        .to_owned()
+                                    format!(
+                                        "{} readings",
+                                        range.points(&series.device.points).len()
+                                    )
                                 },
-                                platform::date,
-                            )));
-                            if let Some(at) = at.filter(|&at| at > latest) {
-                                for (i, fit) in forecasts
-                                    .iter()
-                                    .enumerate()
-                                    .filter_map(|(i, forecast)| Some((i, forecast.as_ref()?)))
+                                |at| chart::reading_at(*series, at),
+                            );
+                            ui.horizontal(|ui| {
+                                ui.label(
+                                    RichText::new(&series.device.name)
+                                        .size(12.0)
+                                        .color(series.color),
+                                );
+                                ui.add(egui::Label::new(caption(text)).truncate());
+                            });
+                        }
+                        if let Some(at) = at {
+                            for (index, fit) in forecasts
+                                .iter()
+                                .enumerate()
+                                .filter_map(|(i, fit)| Some((i, fit.as_ref()?)))
+                            {
+                                if let Some(label) =
+                                    chart::forecast_details(*fit, FORECAST_NAMES[index], at, target)
                                 {
-                                    let estimate = f64::from(fit.latest.p.unwrap_or(0))
-                                        - fit.rate * (at - fit.latest.t) as f64
-                                            / SECONDS_PER_DAY as f64;
-                                    ui.label(caption(format!(
-                                        "{} · {:.1}%",
-                                        FORECAST_NAMES[i],
-                                        estimate.max(0.0)
-                                    )));
+                                    ui.add(egui::Label::new(caption(&label)).truncate())
+                                        .on_hover_text(label);
                                 }
                             }
                         }
-                        for (ui, series) in uis.iter_mut().skip(1).zip(chunk) {
-                            ui.add(
-                                egui::Label::new(
-                                    RichText::new(&series.device.name)
-                                        .size(13.0)
-                                        .strong()
-                                        .color(series.color),
-                                )
-                                .truncate(),
-                            );
-                            if let Some(at) = at {
-                                let nearby = (at <= latest)
-                                    .then(|| chart::nearest(&series.device.points, at))
-                                    .flatten()
-                                    .filter(|point| point.t.abs_diff(at) <= 6 * 3600);
-                                ui.label(caption(nearby.map_or_else(
-                                    || "No nearby reading".into(),
-                                    |point| {
-                                        format!(
-                                            "{} · {}{}",
-                                            percent(point.p),
-                                            platform::date(point.t),
-                                            if point.c { " · Charging" } else { "" }
-                                        )
-                                    },
-                                )));
-                            } else {
-                                let total =
-                                    series.device.online_seconds + series.device.offline_seconds;
-                                ui.label(caption(if total > 0 {
-                                    format!(
-                                        "{:.0}% online · {} online",
-                                        100.0 * series.device.online_seconds as f64 / total as f64,
-                                        duration(series.device.online_seconds)
-                                    )
-                                } else {
-                                    "Activity unavailable".into()
-                                }));
-                            }
-                        }
                     });
-                }
             });
+    }
+
+    fn show_interval_readings(&mut self, interval: TimeRange) {
+        self.readings_interval = Some(interval);
+        self.jump_to_readings = true;
+        self.collapsed = false;
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -930,7 +990,7 @@ impl HistoryView {
         ui: &mut Ui,
         snapshot: &Snapshot,
         visible: &[Series<'_>],
-        focused: usize,
+        focused: Option<usize>,
         range: TimeRange,
         hovered: Option<i64>,
         can_export: bool,
@@ -957,9 +1017,6 @@ impl HistoryView {
                             ui.label(heading(ui, "Readings", 18.0));
                             row_badge = Some(ui.painter().add(egui::Shape::Noop));
                             let count_rect = ui.allocate_space(vec2(66.0, 24.0)).1;
-                            if ui.available_size_before_wrap().x > 464.0 {
-                                ui.add_space(ui.available_size_before_wrap().x - 464.0);
-                            }
                             ComboBox::from_id_salt("analytics-readings-filter")
                                 .width(110.0)
                                 .selected_text(filter.label())
@@ -981,6 +1038,41 @@ impl HistoryView {
                             export = ui
                                 .add_enabled(can_export, Button::new("Export CSV…"))
                                 .clicked();
+                            let selected = self.selected_reading.as_ref().and_then(|selection| {
+                                let device = snapshot
+                                    .data
+                                    .devices
+                                    .iter()
+                                    .find(|device| device.identity == selection.identity)?;
+                                let index = device
+                                    .points
+                                    .partition_point(|point| point.t < selection.at);
+                                device
+                                    .points
+                                    .get(index)
+                                    .filter(|point| point.t == selection.at)
+                                    .map(|point| (device, point))
+                            });
+                            if ui
+                                .add_enabled(selected.is_some(), Button::new("Copy reading"))
+                                .clicked()
+                            {
+                                if let Some((device, point)) = selected {
+                                    ui.ctx().copy_text(format!(
+                                        "{}\t{}\t{}\t{}\t{}\tOnline",
+                                        platform::exact_date(point.t),
+                                        device.name,
+                                        percent(point.p),
+                                        chart::voltage(point.v),
+                                        if point.c { "Charging" } else { "Not charging" }
+                                    ));
+                                }
+                            }
+                            if self.readings_interval.is_some()
+                                && ui.button("Clear interval filter").clicked()
+                            {
+                                self.readings_interval = None;
+                            }
                             if ui
                                 .button(if self.collapsed { "Expand" } else { "Collapse" })
                                 .clicked()
@@ -1000,7 +1092,7 @@ impl HistoryView {
                     let mut rows = Vec::new();
                     for series in visible {
                         let device = series.index;
-                        if filter == ReadingsFilter::Focused && device != focused {
+                        if filter == ReadingsFilter::Focused && Some(device) != focused {
                             continue;
                         }
                         rows.extend(
@@ -1021,8 +1113,14 @@ impl HistoryView {
                 });
                 let time =
                     |&(device, point): &Reading| snapshot.data.devices[device].points[point].t;
-                let start = rows.partition_point(|row| time(row) < range.start);
-                let end = rows.partition_point(|row| time(row) <= range.end);
+                let scope = self.readings_interval.map_or(range, |interval| TimeRange {
+                    start: range.start.max(interval.start),
+                    end: range.end.min(interval.end),
+                });
+                let start = rows.partition_point(|row| time(row) < scope.start);
+                let end = rows
+                    .partition_point(|row| time(row) <= scope.end)
+                    .max(start);
                 let slice = &rows[start..end];
                 if let Some(index) = row_badge {
                     let galley = painter.layout_no_wrap(
@@ -1050,37 +1148,115 @@ impl HistoryView {
                     );
                 }
 
+                let mut edges = self.column_edges;
+                let compact = ui.available_width() < 565.0;
+                if compact {
+                    edges[5] = edges[4];
+                }
                 if !self.collapsed {
                     let (header, _) =
                         ui.allocate_exact_size(vec2(ui.available_width(), 34.0), Sense::hover());
                     ui.painter()
                         .rect_filled(header, 0, ui.visuals().widgets.inactive.weak_bg_fill);
-                    let cells = reading_cells(header);
-                    let mut sort_cell = cell_ui(ui, cells[0]);
-                    sort_cell.spacing_mut().button_padding.x = 0.0;
-                    if sort_cell
-                        .add(
-                            Button::new(if self.oldest_first {
-                                "Local time ↑"
-                            } else {
-                                "Local time ↓"
-                            })
-                            .frame(false),
-                        )
-                        .clicked()
-                    {
-                        self.oldest_first = !self.oldest_first;
-                    }
                     let labels = [
+                        "Local time",
                         "Device / source",
                         "Battery",
                         "Voltage",
-                        "Charging",
-                        "Connection",
+                        if compact { "" } else { "Charging" },
+                        if compact { "State" } else { "Connection" },
                     ];
-                    for (cell, label) in cells.into_iter().skip(1).zip(labels) {
-                        cell_ui(ui, cell).add(egui::Label::new(caption(label)).truncate());
+                    for (index, (cell, label)) in reading_cells(header, edges)
+                        .into_iter()
+                        .zip(labels)
+                        .enumerate()
+                    {
+                        if label.is_empty() {
+                            continue;
+                        }
+                        let mut header_ui = cell_ui(ui, cell);
+                        header_ui.spacing_mut().button_padding.x = 0.0;
+                        let label = if self.sort_column == index {
+                            format!("{label} {}", if self.oldest_first { "↑" } else { "↓" })
+                        } else {
+                            label.to_owned()
+                        };
+                        if header_ui
+                            .add(Button::new(caption(label)).frame(false).truncate())
+                            .clicked()
+                        {
+                            if self.sort_column == index {
+                                self.oldest_first = !self.oldest_first;
+                            } else {
+                                self.sort_column = index;
+                                self.oldest_first = index == 1;
+                            }
+                        }
                     }
+                    for index in 1..6 {
+                        if compact && index == 5 {
+                            continue;
+                        }
+                        let x = header.left() + header.width() * edges[index];
+                        let handle = Rect::from_center_size(
+                            pos2(x, header.center().y),
+                            vec2(8.0, header.height()),
+                        );
+                        let response = ui
+                            .interact(
+                                handle,
+                                ui.scope_id().with(("reading-column", index)),
+                                Sense::drag(),
+                            )
+                            .on_hover_cursor(egui::CursorIcon::ResizeHorizontal);
+                        if response.dragged() && header.width() > 220.0 {
+                            let minimum = (44.0 / header.width()).min(0.08);
+                            let minimum_edge = edges[index - 1] + minimum;
+                            let next = if compact && index == 4 { 6 } else { index + 1 };
+                            let maximum_edge = edges[next] - minimum;
+                            if minimum_edge < maximum_edge {
+                                self.column_edges[index] = (edges[index]
+                                    + response.drag_delta().x / header.width())
+                                .clamp(minimum_edge, maximum_edge);
+                            }
+                        }
+                    }
+                }
+                let sorted = if self.sort_column == 0 {
+                    None
+                } else {
+                    let key = start..end;
+                    if !self
+                        .sorted_readings
+                        .as_ref()
+                        .is_some_and(|(range, column, _)| {
+                            *range == key && *column == self.sort_column
+                        })
+                    {
+                        let mut values = slice.to_vec();
+                        values.sort_by(|&(a, a_row), &(b, b_row)| {
+                            let a = &snapshot.data.devices[a];
+                            let b = &snapshot.data.devices[b];
+                            let first = a.points[a_row];
+                            let second = b.points[b_row];
+                            match self.sort_column {
+                                1 => a
+                                    .name
+                                    .cmp(&b.name)
+                                    .then_with(|| a.identity.cmp(&b.identity)),
+                                2 => first.p.cmp(&second.p),
+                                3 => first.v.cmp(&second.v),
+                                4 => first.c.cmp(&second.c),
+                                5 if compact => first.c.cmp(&second.c),
+                                _ => first.t.cmp(&second.t),
+                            }
+                        });
+                        self.sorted_readings = Some((key, self.sort_column, Arc::new(values)));
+                    }
+                    self.sorted_readings.as_ref().map(|(_, _, rows)| rows)
+                };
+                let displayed = sorted.map_or(slice, |rows| rows.as_slice());
+                if !self.collapsed {
                     let mut scroll = ScrollArea::vertical()
                         .id_salt("analytics-reading-rows")
                         .max_height(216.0)
@@ -1097,22 +1273,89 @@ impl HistoryView {
                             after
                         }
                     });
-                    if let Some(nearest) = nearest.filter(|_| jump) {
-                        let index = if self.oldest_first {
-                            nearest
+                    let display_index = |index| {
+                        if self.oldest_first {
+                            index
                         } else {
-                            slice.len() - 1 - nearest
-                        };
+                            displayed.len() - 1 - index
+                        }
+                    };
+                    let keyboard = ui.scope_id().with("reading-grid-keyboard");
+                    let keyboard_rect =
+                        Rect::from_min_size(ui.cursor().min, vec2(ui.available_width(), 216.0));
+                    let keyboard_response =
+                        ui.interact(keyboard_rect, keyboard, Sense::focusable_noninteractive());
+                    keyboard_response.widget_info(|| {
+                        egui::WidgetInfo::labeled(
+                            egui::Role::Grid,
+                            true,
+                            "Battery readings. Use arrow keys to select a reading.",
+                        )
+                    });
+                    if keyboard_response.has_focus() {
+                        ui.memory_mut(|memory| {
+                            memory.set_focus_lock_filter(
+                                keyboard,
+                                egui::EventFilter {
+                                    vertical_arrows: true,
+                                    ..egui::EventFilter::default()
+                                },
+                            )
+                        });
+                        ui.painter().rect_stroke(
+                            keyboard_rect,
+                            2,
+                            ui.visuals().selection.stroke,
+                            egui::StrokeKind::Inside,
+                        );
+                    }
+                    let step = if ui.memory(|memory| memory.has_focus(keyboard)) {
+                        ui.input(|input| {
+                            i32::from(input.key_pressed(egui::Key::ArrowDown))
+                                - i32::from(input.key_pressed(egui::Key::ArrowUp))
+                        })
+                    } else {
+                        0
+                    };
+                    let mut scroll_index = None;
+                    if let Some(nearest) = nearest.filter(|_| jump) {
+                        scroll_index = displayed
+                            .iter()
+                            .position(|row| *row == slice[nearest])
+                            .map(display_index);
+                    }
+                    if step != 0 && !displayed.is_empty() {
+                        let current = self
+                            .selected_reading
+                            .as_ref()
+                            .and_then(|selection| {
+                                displayed.iter().position(|&(device, point)| {
+                                    let device = &snapshot.data.devices[device];
+                                    selection.matches(&device.identity, device.points[point].t)
+                                })
+                            })
+                            .map(display_index);
+                        let index = current.map_or(0, |i| {
+                            i.saturating_add_signed(step as isize)
+                                .min(displayed.len() - 1)
+                        });
+                        let row = displayed[display_index(index)];
+                        self.selected_reading = Some(SelectedReading {
+                            identity: snapshot.data.devices[row.0].identity.clone(),
+                            at: time(&row),
+                        });
+                        self.pinned = Some(time(&row));
+                        self.pinned_activity = None;
+                        scroll_index = Some(index);
+                    }
+                    if let Some(index) = scroll_index {
                         scroll =
                             scroll.vertical_scroll_offset((index as f32 * 34.0 - 85.0).max(0.0));
                     }
-                    scroll.show_rows(ui, 34.0, slice.len(), |ui, indices| {
+                    scroll.show_rows(ui, 34.0, displayed.len(), |ui, indices| {
                         for index in indices {
-                            let (device, point) = slice[if self.oldest_first {
-                                index
-                            } else {
-                                slice.len() - 1 - index
-                            }];
+                            let row = displayed[display_index(index)];
+                            let (device, point) = row;
                             let device_data = &snapshot.data.devices[device];
                             let point = device_data.points[point];
                             let color = visible
@@ -1127,14 +1370,19 @@ impl HistoryView {
                                 table_hover = Some(point.t);
                             }
                             if response.clicked() {
-                                self.pinned = if self.pinned == Some(point.t) {
-                                    None
-                                } else {
-                                    Some(point.t)
-                                };
+                                ui.memory_mut(|memory| memory.request_focus(keyboard));
+                                self.selected_reading = Some(SelectedReading {
+                                    identity: device_data.identity.clone(),
+                                    at: point.t,
+                                });
+                                self.pinned_activity = None;
+                                self.pinned = Some(point.t);
                             }
                             if response.hovered()
-                                || nearest.is_some_and(|i| time(&slice[i]) == point.t)
+                                || self.selected_reading.as_ref().is_some_and(|selection| {
+                                    selection.matches(&device_data.identity, point.t)
+                                }) && self.pinned == Some(point.t)
+                                || nearest.is_some_and(|i| slice[i] == row)
                             {
                                 ui.painter()
                                     .rect_filled(rect, 0, ui.visuals().selection.bg_fill);
@@ -1144,9 +1392,13 @@ impl HistoryView {
                                 rect.bottom(),
                                 ui.visuals().window_stroke,
                             );
-                            let cells = reading_cells(rect);
+                            let cells = reading_cells(rect, edges);
                             let labels = [
-                                RichText::new(platform::date(point.t)),
+                                RichText::new(if compact {
+                                    platform::summary_date(point.t)
+                                } else {
+                                    platform::date(point.t)
+                                }),
                                 RichText::new(format!(
                                     "{} · {}",
                                     device_data.name,
@@ -1155,11 +1407,18 @@ impl HistoryView {
                                 RichText::new(percent(point.p)).strong(),
                                 RichText::new(chart::voltage(point.v)),
                                 RichText::new(if point.c { "Yes" } else { "No" }),
-                                RichText::new("Online"),
+                                RichText::new(if compact && point.c {
+                                    "Online · Charging"
+                                } else {
+                                    "Online"
+                                }),
                             ];
                             for (index, (mut cell, label)) in
                                 cells.into_iter().zip(labels).enumerate()
                             {
+                                if compact && index == 4 {
+                                    continue;
+                                }
                                 if matches!(index, 1 | 5) {
                                     ui.painter().rect_filled(
                                         Rect::from_center_size(
@@ -1200,18 +1459,65 @@ impl HistoryView {
                         });
                     });
                 (export && !slice.is_empty()).then(|| Export {
-                    rows: Arc::clone(rows),
-                    range: start..end,
+                    rows: Arc::clone(sorted.unwrap_or(rows)),
+                    range: if sorted.is_some() {
+                        0..displayed.len()
+                    } else {
+                        start..end
+                    },
                     oldest_first: self.oldest_first,
                 })
-            })
-            .inner;
+            });
         self.table_hover = table_hover;
+        if std::mem::take(&mut self.jump_to_readings) {
+            result.response.scroll_to_me(Some(Align::BOTTOM));
+        }
         if old_hover != self.table_hover || old_pinned != self.pinned {
             ui.ctx().request_repaint();
         }
-        result
+        result.inner
     }
+}
+
+fn online_summary(series: Series<'_>, interval: TimeRange) -> String {
+    series
+        .chart
+        .online_time(series.device, interval)
+        .map_or_else(
+            || "Activity unavailable".to_owned(),
+            |seconds| format!("{} observed online", duration(seconds)),
+        )
+}
+
+fn interval_details(series: Series<'_>, interval: TimeRange, dragging: bool) -> String {
+    let points = interval.points(&series.device.points);
+    let elapsed = interval.end - interval.start;
+    let mut result = format!("{} elapsed · {} readings", duration(elapsed), points.len());
+    if dragging {
+        return result;
+    }
+    use std::fmt::Write;
+    let _ = write!(result, " · {}", online_summary(series, interval));
+    if let (Some(first), Some(last)) = (points.first(), points.last()) {
+        if let (Some(start), Some(end)) = (first.p, last.p) {
+            let change = i16::from(end) - i16::from(start);
+            let sample_span = last.t - first.t;
+            if sample_span > 0 {
+                let _ = write!(result, " · {change:+} pp between readings");
+                if change <= 0
+                    && !first.c
+                    && !last.c
+                    && series
+                        .chart
+                        .continuous_discharge(TimeRange::ordered(first.t, last.t))
+                {
+                    let rate = -f64::from(change) * SECONDS_PER_DAY as f64 / sample_span as f64;
+                    let _ = write!(result, " · {rate:.1} pp/day elapsed");
+                }
+            }
+        }
+    }
+    result
 }
 
 pub(super) struct Export {
@@ -1230,8 +1536,7 @@ fn cell_ui(ui: &mut Ui, rect: Rect) -> Ui {
     cell
 }
 
-fn reading_cells(rect: Rect) -> [Rect; 6] {
-    let fractions = [0.0, 0.22, 0.52, 0.63, 0.74, 0.86, 1.0];
+fn reading_cells(rect: Rect, fractions: [f32; 7]) -> [Rect; 6] {
     std::array::from_fn(|index| {
         Rect::from_min_max(
             pos2(
@@ -1368,29 +1673,14 @@ fn layer_toggle(
     .inner
 }
 
-fn legend_key(ui: &mut Ui, label: &str, mark: LegendMark) {
-    let label = ui.painter().layout_no_wrap(
-        label.to_owned(),
-        egui::FontId::proportional(11.0),
-        ui.visuals().weak_text_color(),
-    );
-    let (rect, _) = ui.allocate_exact_size(
-        vec2(mark.width() + 6.0 + label.size().x, 20.0),
-        Sense::hover(),
-    );
-    mark.paint(
-        ui,
-        Rect::from_min_size(rect.min, vec2(mark.width(), rect.height())),
-    );
-    let text_top = rect.center().y - label.size().y * 0.5;
-    ui.painter().galley(
-        pos2(rect.left() + mark.width() + 6.0, text_top),
-        label,
-        ui.visuals().weak_text_color(),
-    );
-}
-
-fn forecast_card(ui: &mut Ui, name: &str, forecast: Option<Forecast>, target: u8, color: Color32) {
+fn forecast_card(
+    ui: &mut Ui,
+    name: &str,
+    forecast: Option<Forecast>,
+    target: u8,
+    color: Color32,
+    horizon: i64,
+) {
     let frame = Frame::new()
         .fill(sidebar_fill(ui))
         .stroke(ui.visuals().window_stroke)
@@ -1409,8 +1699,16 @@ fn forecast_card(ui: &mut Ui, name: &str, forecast: Option<Forecast>, target: u8
                 RichText::new(forecast.map_or_else(
                     || "Unavailable".into(),
                     |fit| {
-                        fit.eta(target)
-                            .map_or_else(|| format!("Below {target}%"), platform::summary_date)
+                        fit.eta(target).map_or_else(
+                            || format!("Below {target}%"),
+                            |eta| {
+                                if eta > horizon {
+                                    format!("{} · beyond chart", platform::summary_date(eta))
+                                } else {
+                                    platform::summary_date(eta)
+                                }
+                            },
+                        )
                     },
                 ))
                 .strong(),
@@ -1418,7 +1716,7 @@ fn forecast_card(ui: &mut Ui, name: &str, forecast: Option<Forecast>, target: u8
             if let Some(fit) = forecast {
                 ui.add(
                     egui::Label::new(caption(format!(
-                        "Fit from {} · {:.1} pp/day",
+                        "From {} · {:.1} pp/day elapsed",
                         platform::summary_date(fit.start.t),
                         fit.rate
                     )))
@@ -1518,7 +1816,11 @@ fn source(identity: &str) -> &'static str {
     }
 }
 
-fn series_color(ui: &Ui, index: usize) -> Color32 {
+fn series_color(ui: &Ui, identity: &str) -> Color32 {
+    use std::hash::{DefaultHasher, Hash, Hasher};
+    let mut hash = DefaultHasher::new();
+    identity.hash(&mut hash);
+    let index = (hash.finish() % 13) as usize;
     if index == 0 {
         return accent(ui);
     }

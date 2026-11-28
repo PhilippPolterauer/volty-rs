@@ -95,7 +95,6 @@ struct App {
     session: DeviceSession,
     live_publisher: Option<LivePublisher>,
     dashboard_shutdown_event: crate::DashboardShutdownEvent,
-    settings_shutdown_event: crate::DashboardSettingsShutdownEvent,
     about_window_open: bool,
     config_reload_due: Option<Instant>,
     discovery_due: Option<Instant>,
@@ -120,15 +119,8 @@ pub fn run() -> Result<(), Box<dyn Error>> {
     app.start_update_check(UpdateCheckOrigin::Automatic)?;
     let result = app.run_loop();
     let dashboard_shutdown = app.dashboard_shutdown_event.signal();
-    let settings_shutdown = app.settings_shutdown_event.signal();
     if let Err(error) = &dashboard_shutdown {
         let message = format!("Could not close the dashboard during shutdown: {error}");
-        if let Err(log_error) = app.record_event(LogLevel::Error, &message) {
-            eprintln!("{message}; could not record the error: {log_error}");
-        }
-    }
-    if let Err(error) = &settings_shutdown {
-        let message = format!("Could not close Settings during shutdown: {error}");
         if let Err(log_error) = app.record_event(LogLevel::Error, &message) {
             eprintln!("{message}; could not record the error: {log_error}");
         }
@@ -141,15 +133,12 @@ pub fn run() -> Result<(), Box<dyn Error>> {
         .and(flushed.map_err(Into::into))
         .and(history.map_err(Into::into))
         .and(dashboard_shutdown.map_err(Into::into))
-        .and(settings_shutdown.map_err(Into::into))
 }
 impl App {
     fn start() -> Result<Self, Box<dyn Error>> {
         wake::init()?;
         let dashboard_shutdown_event = crate::DashboardShutdownEvent::create()?;
-        let settings_shutdown_event = crate::DashboardSettingsShutdownEvent::create()?;
         dashboard_shutdown_event.reset()?;
-        settings_shutdown_event.reset()?;
         let started = Instant::now();
         let mut startup = load_startup_state();
         let mut diagnostic_log = VecDeque::new();
@@ -304,7 +293,6 @@ impl App {
                 })
                 .ok(),
             dashboard_shutdown_event,
-            settings_shutdown_event,
             about_window_open: false,
             config_reload_due: None,
             discovery_due: None,

@@ -16,7 +16,10 @@ use windows_sys::Win32::{
             CreateEventW, OpenEventW, SetEvent, WaitForMultipleObjects, EVENT_MODIFY_STATE,
             INFINITE, SYNCHRONIZATION_SYNCHRONIZE,
         },
-        Time::{FileTimeToSystemTime, SystemTimeToTzSpecificLocalTimeEx},
+        Time::{
+            FileTimeToSystemTime, SystemTimeToFileTime, SystemTimeToTzSpecificLocalTimeEx,
+            TzSpecificLocalTimeToSystemTimeEx,
+        },
     },
     UI::Controls::Dialogs::{
         CommDlgExtendedError, GetSaveFileNameW, OFN_EXPLORER, OFN_NOCHANGEDIR, OFN_OVERWRITEPROMPT,
@@ -143,6 +146,7 @@ fn signal_event(name: &str) {
 
 pub(super) enum Signal {
     Activate,
+    Settings,
     Shutdown,
     Appearance(AppTheme),
 }
@@ -195,6 +199,7 @@ impl WindowSignals {
     pub(super) fn start(ctx: Context) -> io::Result<Self> {
         let activation = Event::open(crate::DASHBOARD_ACTIVATION_EVENT)?;
         let shutdown = Event::open(crate::DASHBOARD_SHUTDOWN_EVENT)?;
+        let settings = Event::open(crate::DASHBOARD_SETTINGS_ACTIVATION_EVENT)?;
         let named_event = |name| {
             let name = to_wide(name);
             // SAFETY: name is terminated and the remaining arguments select an auto-reset event.
@@ -236,6 +241,7 @@ impl WindowSignals {
                     changed_event.handle(),
                     live_event.handle(),
                     appearance_event.handle(),
+                    settings.handle(),
                 ];
                 loop {
                     // SAFETY: all event handles stay valid for the lifetime of this thread.
@@ -263,6 +269,12 @@ impl WindowSignals {
                         }
                         result if result == WAIT_OBJECT_0 + 4 => update_live(),
                         result if result == WAIT_OBJECT_0 + 5 => update_appearance(),
+                        result if result == WAIT_OBJECT_0 + 6 => {
+                            if send.send(Signal::Settings).is_err() {
+                                break;
+                            }
+                            ctx.request_repaint();
+                        }
                         WAIT_FAILED => {
                             eprintln!(
                                 "Dashboard event wait failed: {}",
@@ -362,6 +374,11 @@ fn format_date(timestamp: i64, with_seconds: bool) -> String {
     if with_seconds {
         use std::fmt::Write;
         let _ = write!(date, ":{:02}", time.wSecond);
+        if let Some(offset) = unix_time(&time).map(|wall| (wall - timestamp) / 60) {
+            let sign = if offset < 0 { '-' } else { '+' };
+            let minutes = offset.unsigned_abs();
+            let _ = write!(date, " UTC{sign}{:02}:{:02}", minutes / 60, minutes % 60);
+        }
     }
     date
 }
@@ -394,6 +411,19 @@ pub(super) fn chart_date(timestamp: i64, short_range: bool) -> String {
 }
 
 fn local_time(timestamp: i64) -> Option<SYSTEMTIME> {
+    let utc = utc_time(timestamp)?;
+    let mut local = SYSTEMTIME::default();
+    // SAFETY: the input and output are initialized, separate structures.
+    unsafe {
+        if SystemTimeToTzSpecificLocalTimeEx(ptr::null(), &utc, &mut local) != 0 {
+            Some(local)
+        } else {
+            Some(utc)
+        }
+    }
+}
+
+fn utc_time(timestamp: i64) -> Option<SYSTEMTIME> {
     let ticks = timestamp
         .checked_add(11_644_473_600)
         .and_then(|seconds| u64::try_from(seconds).ok())
@@ -404,17 +434,134 @@ fn local_time(timestamp: i64) -> Option<SYSTEMTIME> {
         dwHighDateTime: (ticks >> 32) as u32,
     };
     let mut utc = SYSTEMTIME::default();
-    let mut local = SYSTEMTIME::default();
-    // SAFETY: both calls take initialized input and write to valid, separate output structures.
-    let time = unsafe {
-        if FileTimeToSystemTime(&file_time, &mut utc) == 0 {
-            return None;
-        }
-        if SystemTimeToTzSpecificLocalTimeEx(ptr::null(), &utc, &mut local) != 0 {
-            local
-        } else {
-            utc
-        }
+    // SAFETY: the input and output are initialized, separate structures.
+    (unsafe { FileTimeToSystemTime(&file_time, &mut utc) } != 0).then_some(utc)
+}
+
+fn unix_time(time: &SYSTEMTIME) -> Option<i64> {
+    let mut file = FILETIME::default();
+    // SAFETY: the input and output are initialized, separate structures.
+    (unsafe { SystemTimeToFileTime(time, &mut file) } != 0).then(|| {
+        let ticks = u64::from(file.dwHighDateTime) << 32 | u64::from(file.dwLowDateTime);
+        (ticks / 10_000_000) as i64 - 11_644_473_600
+    })
+}
+
+pub(super) fn chart_ticks(start: i64, end: i64, width: f32) -> Vec<(i64, String)> {
+    const HOUR: i64 = 3600;
+    const DAY: i64 = 24 * HOUR;
+    let Some(wall_start) = local_time(start).as_ref().and_then(unix_time) else {
+        return vec![];
     };
-    Some(time)
+    let span = (end - start).max(1);
+    let spacing = span as f64 * 82.0 / f64::from(width.max(82.0));
+    let monthly = span > 60 * DAY;
+    let hourly = span <= 2 * DAY;
+    let step = if span <= 4 * HOUR {
+        [1, 5, 10, 15, 30, 60]
+            .into_iter()
+            .map(|n| n * 60)
+            .find(|&step| step as f64 >= spacing)
+            .unwrap_or(HOUR)
+    } else if hourly {
+        [1, 2, 3, 4, 6, 8, 12, 24]
+            .into_iter()
+            .map(|n| n * HOUR)
+            .find(|&step| step as f64 >= spacing)
+            .unwrap_or(DAY)
+    } else {
+        [1, 2, 3, 5, 7, 14]
+            .into_iter()
+            .map(|n| n * DAY)
+            .find(|&step| step as f64 >= spacing)
+            .unwrap_or(14 * DAY)
+    };
+    let month_step = (spacing / (28 * DAY) as f64).ceil().max(1.0) as i64;
+    let mut local = if monthly {
+        let Some(mut time) = utc_time(wall_start) else {
+            return vec![];
+        };
+        time.wDay = 1;
+        time.wHour = 0;
+        time.wMinute = 0;
+        time.wSecond = 0;
+        time
+    } else {
+        let Some(time) = utc_time(wall_start.div_euclid(step) * step) else {
+            return vec![];
+        };
+        time
+    };
+    let mut ticks: Vec<(i64, String)> = Vec::new();
+    while let Some(wall) = unix_time(&local) {
+        if wall > end.saturating_add(2 * DAY) {
+            break;
+        }
+        let mut utc = SYSTEMTIME::default();
+        // SAFETY: null selects the system time zone, and the time structures are separate.
+        if unsafe { TzSpecificLocalTimeToSystemTimeEx(ptr::null(), &local, &mut utc) } != 0 {
+            if let Some(at) = unix_time(&utc).filter(|&at| {
+                (start..=end).contains(&at)
+                    && local_time(at).as_ref().and_then(unix_time) == Some(wall)
+            }) {
+                let text = if monthly {
+                    format!("{} {}", MONTHS[usize::from(local.wMonth - 1)], local.wYear)
+                } else if hourly {
+                    format!("{:02}:{:02}", local.wHour, local.wMinute)
+                } else {
+                    format!("{} {}", local.wDay, MONTHS[usize::from(local.wMonth - 1)])
+                };
+                let spaced = ticks
+                    .last()
+                    .is_none_or(|(last, _)| (at - last) as f64 >= spacing * 0.82);
+                if spaced && !ticks.iter().any(|(_, label)| *label == text) {
+                    ticks.push((at, text));
+                }
+            }
+        }
+        if monthly {
+            let next = i64::from(local.wYear) * 12 + i64::from(local.wMonth - 1) + month_step;
+            let Ok(year) = u16::try_from(next / 12) else {
+                break;
+            };
+            local.wYear = year;
+            local.wMonth = (next % 12 + 1) as u16;
+        } else if let Some(next) = utc_time(wall.saturating_add(step)) {
+            local = next;
+        } else {
+            break;
+        }
+    }
+    ticks
+}
+
+#[cfg(test)]
+mod tick_tests {
+    use super::*;
+
+    #[test]
+    fn chart_ticks_are_calendar_aligned_unique_and_width_aware() {
+        let end = 1_795_845_600;
+        for days in [1, 7, 30, 365] {
+            let start = end - days * 86_400;
+            let narrow = chart_ticks(start, end, 390.0);
+            let wide = chart_ticks(start, end, 1050.0);
+            assert!(!narrow.is_empty());
+            assert!(narrow.len() <= wide.len());
+            assert!(wide.windows(2).all(|pair| pair[0].0 < pair[1].0));
+            let mut seen = std::collections::HashSet::new();
+            for (at, label) in wide {
+                assert!((start..=end).contains(&at));
+                assert!(seen.insert(label));
+                let local = local_time(at).unwrap();
+                assert_eq!(local.wMinute, 0);
+                if days > 1 {
+                    assert_eq!(local.wHour, 0);
+                }
+                if days == 365 {
+                    assert_eq!(local.wDay, 1);
+                }
+            }
+        }
+    }
 }

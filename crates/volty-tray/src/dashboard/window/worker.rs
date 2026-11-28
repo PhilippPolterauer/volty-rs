@@ -7,7 +7,7 @@ use std::{
 
 use eframe::egui::Context;
 
-use crate::{config::AppTheme, history::HistoryDeletion};
+use crate::history::HistoryDeletion;
 
 use super::{
     super::{
@@ -75,9 +75,6 @@ pub(super) struct Failure {
 }
 
 pub(super) struct Worker {
-    ctx: Context,
-    launched: mpsc::Sender<io::Result<()>>,
-    launches: mpsc::Receiver<io::Result<()>>,
     send: mpsc::SyncSender<Action>,
     receive: mpsc::Receiver<Result<Reply, Failure>>,
     load: mpsc::SyncSender<(u32, bool)>,
@@ -87,15 +84,18 @@ pub(super) struct Worker {
 }
 
 impl Worker {
-    pub(super) fn start(ctx: Context, backend: DashboardBackend) -> io::Result<Self> {
+    pub(super) fn start(
+        ctx: Context,
+        backend: DashboardBackend,
+    ) -> io::Result<(Self, super::settings::Worker)> {
         let (send, requests) = mpsc::sync_channel(1);
         let (responses, receive) = mpsc::channel();
         let (load, loads) = mpsc::sync_channel(1);
         let (loaded, snapshots) = mpsc::channel();
         let (export, export_requests) = mpsc::sync_channel::<ExportRequest>(1);
         let (exported, exports) = mpsc::channel();
-        let (launched, launches) = mpsc::channel();
         let backend = Arc::new(backend);
+        let settings = super::settings::Worker::start(ctx.clone(), Arc::clone(&backend))?;
         let read_backend = Arc::clone(&backend);
         let repaint = ctx.clone();
         thread::Builder::new()
@@ -144,17 +144,17 @@ impl Worker {
                     repaint.request_repaint();
                 }
             })?;
-        Ok(Self {
-            ctx,
-            launched,
-            launches,
-            send,
-            receive,
-            load,
-            snapshots,
-            export,
-            exports,
-        })
+        Ok((
+            Self {
+                send,
+                receive,
+                load,
+                snapshots,
+                export,
+                exports,
+            },
+            settings,
+        ))
     }
 
     pub(super) fn send(&self, action: Action) -> io::Result<()> {
@@ -186,36 +186,6 @@ impl Worker {
 
     pub(super) fn exported(&self) -> Option<Result<String, String>> {
         self.exports.try_recv().ok()
-    }
-
-    pub(super) fn launch_settings(&self, preview: Option<AppTheme>) -> io::Result<()> {
-        use std::os::windows::process::CommandExt;
-        let launched = self.launched.clone();
-        let ctx = self.ctx.clone();
-        thread::Builder::new()
-            .name("volty-open-settings".to_owned())
-            .spawn(move || {
-                let result = std::env::current_exe().and_then(|executable| {
-                    let mut command = std::process::Command::new(executable);
-                    if let Some(theme) = preview {
-                        command.args(["ui-preview", "settings", "--theme", theme.as_str()]);
-                    } else {
-                        command.args(["dashboard", "--settings"]);
-                    }
-                    command
-                        .creation_flags(windows_sys::Win32::System::Threading::CREATE_NO_WINDOW)
-                        .spawn()
-                        .map(|_| ())
-                });
-                if launched.send(result).is_ok() {
-                    ctx.request_repaint();
-                }
-            })?;
-        Ok(())
-    }
-
-    pub(super) fn settings_launched(&self) -> Option<io::Result<()>> {
-        self.launches.try_recv().ok()
     }
 }
 

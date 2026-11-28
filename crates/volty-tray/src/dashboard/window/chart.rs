@@ -1,18 +1,30 @@
+use std::sync::{
+    atomic::{AtomicU64, Ordering},
+    Arc,
+};
+
 use eframe::egui::{
     self, pos2, vec2, Align2, Color32, FontId, Painter, Rect, Sense, Shape, Stroke, Ui,
 };
 
 use super::{
     super::model::{DashboardDevice, DashboardPoint, OFFLINE_AFTER_SECONDS, SECONDS_PER_DAY},
-    duration, platform,
+    duration, percent, platform,
 };
 
 const COLUMNS: usize = 640;
+static NEXT_CHART_ID: AtomicU64 = AtomicU64::new(0);
 pub(super) const CHARGING: Color32 = Color32::from_rgb(250, 204, 21);
+pub(super) const FORECAST_NAMES: [&str; 2] = ["Since last charge", "Current discharge rate"];
 
 pub(super) struct Chart {
+    revision: u64,
+    identity: Arc<str>,
     points: Vec<DashboardPoint>,
+    bridges: Vec<(DashboardPoint, DashboardPoint)>,
     charging: Vec<(i64, i64)>,
+    drain_boundaries: Vec<i64>,
+    online_prefix: Vec<i64>,
     pub(super) forecasts: [Option<Forecast>; 2],
 }
 
@@ -49,58 +61,45 @@ impl Chart {
         let mut points = Vec::new();
         let start = device.first_at;
         let end = device.last_at;
-        let mut remaining = device.points.as_slice();
-        let mut previous_group_end = None;
 
-        for column in 0..COLUMNS {
-            let count = remaining.partition_point(|point| bucket(start, end, point.t) <= column);
-            let (group, rest) = remaining.split_at(count);
-            remaining = rest;
-            if group.is_empty() {
+        // Downsample within a contiguous observed run. Combining runs inside a
+        // bucket would draw a recorded line through an unobserved interval.
+        let mut previous_end = None;
+        let mut index = 0;
+        while index < device.points.len() {
+            let first = device.points[index];
+            if first.p.is_none() {
+                index += 1;
                 continue;
             }
-            let valid = || {
-                group
-                    .iter()
-                    .enumerate()
-                    .filter_map(|(index, point)| point.p.map(|p| (p, index)))
-            };
-            let first_gap = if previous_group_end
-                .is_some_and(|previous| group[0].t.saturating_sub(previous) > OFFLINE_AFTER_SECONDS)
-            {
-                Some(0)
-            } else {
-                group
-                    .windows(2)
-                    .position(|pair| pair[1].t.saturating_sub(pair[0].t) > OFFLINE_AFTER_SECONDS)
-                    .map(|index| index + 1)
-            };
-            previous_group_end = Some(group[group.len() - 1].t);
-            let mut indices = [
-                Some(0),
-                Some(group.len() - 1),
-                valid().min().map(|(_, index)| index),
-                valid().max().map(|(_, index)| index),
-                group.iter().position(|point| point.p.is_none()),
-                first_gap.and_then(|index| index.checked_sub(1)),
-                first_gap,
-            ];
-            indices.sort_unstable();
-            let mut previous = None;
-            for index in indices.into_iter().flatten() {
-                if previous != Some(index) {
-                    if first_gap == Some(index) {
-                        points.push(DashboardPoint {
-                            p: None,
-                            ..group[index]
-                        });
-                    }
-                    points.push(group[index]);
-                    previous = Some(index);
+            let column = bucket(start, end, first.t);
+            let break_before = previous_end.is_none_or(|(previous_index, previous_time)| {
+                index != previous_index + 1 || first.t - previous_time > OFFLINE_AFTER_SECONDS
+            });
+            let mut next = index + 1;
+            while let Some(point) = device.points.get(next) {
+                if point.p.is_none()
+                    || point.t - device.points[next - 1].t > OFFLINE_AFTER_SECONDS
+                    || bucket(start, end, point.t) != column
+                {
+                    break;
                 }
+                next += 1;
             }
+            let group = &device.points[index..next];
+            let min = (0..group.len()).min_by_key(|&i| group[i].p).unwrap_or(0);
+            let max = (0..group.len()).max_by_key(|&i| group[i].p).unwrap_or(0);
+            let mut indices = [0, min, max, group.len() - 1];
+            indices.sort_unstable();
+            if break_before && !points.is_empty() {
+                points.push(DashboardPoint { p: None, ..first });
+            }
+            points.extend(indices.into_iter().enumerate().filter_map(|(i, sample)| {
+                (i == 0 || indices[i - 1] != sample).then_some(group[sample])
+            }));
+            previous_end = Some((next - 1, group[group.len() - 1].t));
+            index = next;
         }
-
         let charging = device
             .points
             .iter()
@@ -119,30 +118,173 @@ impl Chart {
                 intervals
             });
         let mut forecasts = [None; 2];
-        if let Some(&latest) = device.points.last().filter(|p| !p.c && p.p.is_some()) {
+        if let Some((index, &latest)) = device
+            .points
+            .iter()
+            .enumerate()
+            .rfind(|(_, p)| p.p.is_some())
+        {
+            let eligible = &device.points[..=index];
+            let charging_now = device.points[index..].iter().any(|point| point.c);
             let since_charge = device
                 .points
                 .iter()
                 .rposition(|p| p.c)
-                .map(|index| &device.points[index + 1..]);
-            if let Some(cycle) =
-                since_charge.and_then(|points| points.iter().find(|p| p.p.is_some()))
-            {
-                forecasts[0] = Forecast::new(*cycle, latest);
+                .filter(|&charge| charge < index)
+                .map(|charge| &eligible[charge + 1..]);
+            let discharge = since_charge.unwrap_or(eligible);
+            let discontinuity = discharge.windows(2).rposition(|pair| {
+                pair[0]
+                    .p
+                    .zip(pair[1].p)
+                    .is_none_or(|(left, right)| right > left)
+            });
+            if since_charge.is_some() && discontinuity.is_none() {
+                forecasts[0] = discharge
+                    .first()
+                    .and_then(|&start| Forecast::new(start, latest));
             }
-            let discharge = since_charge.unwrap_or(&device.points);
+            let discharge = discontinuity.map_or(discharge, |index| &discharge[index + 1..]);
             let cutoff = latest.t.saturating_sub(SECONDS_PER_DAY);
             let recent = discharge.partition_point(|p| p.t < cutoff);
             if let Some(first) = discharge[recent..].iter().find(|p| p.p.is_some()) {
                 forecasts[1] = Forecast::new(*first, latest);
             }
+            if charging_now {
+                forecasts = [None; 2];
+            }
+        }
+        let mut online_prefix = vec![0];
+        for session in &device.sessions {
+            let total = online_prefix.last().copied().unwrap_or_default();
+            online_prefix.push(
+                total
+                    + if session.online {
+                        session.end - session.start
+                    } else {
+                        0
+                    },
+            );
         }
         Self {
+            revision: NEXT_CHART_ID.fetch_add(1, Ordering::Relaxed),
+            identity: Arc::from(device.identity.as_str()),
             points,
+            drain_boundaries: device
+                .points
+                .windows(2)
+                .filter_map(|pair| {
+                    let [left, right] = [pair[0], pair[1]];
+                    (left.c
+                        || right.c
+                        || left.p.is_none()
+                        || right.p.is_none()
+                        || left.p < right.p
+                        || right.t - left.t > OFFLINE_AFTER_SECONDS)
+                        .then_some(right.t)
+                })
+                .collect(),
+            online_prefix,
+            bridges: device
+                .points
+                .windows(2)
+                .filter_map(|pair| {
+                    let [left, right] = [pair[0], pair[1]];
+                    (left.p.is_some()
+                        && right.p.is_some()
+                        && !left.c
+                        && !right.c
+                        && right.t - left.t > OFFLINE_AFTER_SECONDS
+                        && left.p >= right.p)
+                        .then_some((left, right))
+                })
+                .collect(),
             charging,
             forecasts,
         }
     }
+
+    pub(super) fn continuous_discharge(&self, range: TimeRange) -> bool {
+        let index = self
+            .drain_boundaries
+            .partition_point(|&at| at <= range.start);
+        self.drain_boundaries
+            .get(index)
+            .is_none_or(|&at| at > range.end)
+    }
+
+    pub(super) fn online_time(&self, device: &DashboardDevice, range: TimeRange) -> Option<i64> {
+        let first = device
+            .sessions
+            .partition_point(|session| session.end <= range.start);
+        if device
+            .sessions
+            .get(first)
+            .is_none_or(|session| session.start >= range.end)
+        {
+            return None;
+        }
+        let elapsed = |at| {
+            let index = device.sessions.partition_point(|session| session.end <= at);
+            self.online_prefix[index]
+                + device
+                    .sessions
+                    .get(index)
+                    .filter(|session| session.online)
+                    .map_or(0, |session| (at - session.start).max(0))
+        };
+        Some(elapsed(range.end) - elapsed(range.start))
+    }
+
+    pub(super) fn charging_at(&self, at: i64) -> Option<TimeRange> {
+        let index = self.charging.partition_point(|&(_, end)| end < at);
+        self.charging
+            .get(index)
+            .filter(|&&(start, _)| start <= at)
+            .map(|&(start, end)| TimeRange { start, end })
+    }
+}
+
+#[derive(Clone, PartialEq)]
+struct TraceKey {
+    revision: u64,
+    range: TimeRange,
+    plot: Rect,
+    color: Color32,
+    focused: bool,
+}
+
+#[derive(Clone)]
+struct TraceGeometry {
+    key: TraceKey,
+    shapes: Arc<[Shape]>,
+}
+
+fn recorded_geometry(chart: &Chart, key: &TraceKey) -> Arc<[Shape]> {
+    let x = |t| key.range.x(key.plot, t);
+    let y = |level: u8| key.plot.bottom() - f32::from(level.min(100)) / 100.0 * key.plot.height();
+    let width = if key.focused { 2.1 } else { 1.6 };
+    let samples = &chart.points;
+    let first = samples
+        .partition_point(|point| point.t < key.range.start)
+        .saturating_sub(1);
+    let last = (samples.partition_point(|point| point.t <= key.range.end) + 1).min(samples.len());
+    let mut shapes = Vec::new();
+    for segment in samples[first..last].split(|point| point.p.is_none()) {
+        let path: Vec<_> = segment
+            .iter()
+            .filter_map(|point| point.p.map(|level| pos2(x(point.t), y(level))))
+            .collect();
+        shapes.extend(
+            path.iter()
+                .filter(|&&point| key.plot.contains(point))
+                .map(|&point| Shape::circle_filled(point, 1.7, key.color)),
+        );
+        if path.len() > 1 {
+            shapes.push(Shape::line(path, Stroke::new(width, key.color)));
+        }
+    }
+    shapes.into()
 }
 
 #[derive(Clone, Copy)]
@@ -160,6 +302,19 @@ pub(super) struct TimeRange {
 }
 
 impl TimeRange {
+    pub(super) fn points(self, points: &[DashboardPoint]) -> &[DashboardPoint] {
+        let start = points.partition_point(|point| point.t < self.start);
+        let end = points.partition_point(|point| point.t <= self.end);
+        &points[start..end]
+    }
+
+    pub(super) fn ordered(a: i64, b: i64) -> Self {
+        Self {
+            start: a.min(b),
+            end: a.max(b),
+        }
+    }
+
     fn x(self, rect: Rect, time: i64) -> f32 {
         rect.left() + fraction(self.start, self.end, time) as f32 * rect.width()
     }
@@ -221,45 +376,134 @@ pub(super) struct Plot<'a> {
     pub(super) target: u8,
     pub(super) thresholds: &'a [u8],
     pub(super) show_charging: bool,
+    pub(super) bridge_gaps: bool,
+    pub(super) expanded: bool,
     pub(super) recorded_end: i64,
     pub(super) full: TimeRange,
 }
 
+#[derive(Clone, PartialEq, Eq)]
+pub(super) struct ActivityHit {
+    pub(super) at: i64,
+    pub(super) identity: Arc<str>,
+    pub(super) interval: TimeRange,
+    pub(super) state: ActivityState,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum ActivityState {
+    Online,
+    Offline,
+    Charging,
+    Unknown,
+}
+
+impl ActivityState {
+    pub(super) fn label(self) -> &'static str {
+        match self {
+            Self::Online => "Online (inferred)",
+            Self::Offline => "Offline (inferred)",
+            Self::Charging => "Charging (observed samples)",
+            Self::Unknown => "Unknown",
+        }
+    }
+}
+
 impl Plot<'_> {
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn trend(
         &self,
         ui: &mut Ui,
         range: &mut TimeRange,
         cursor: &mut Option<i64>,
         external_cursor: Option<i64>,
+        selection: &mut Option<TimeRange>,
+        drag_start: &mut Option<i64>,
+        select_interval: bool,
+        activity: Option<&ActivityHit>,
     ) -> Option<i64> {
-        let (area, response) =
-            ui.allocate_exact_size(vec2(ui.available_width(), 266.0), Sense::click());
+        let height = if self.expanded {
+            (ui.ctx().content_rect().height() - 130.0).max(360.0)
+        } else {
+            let available = ui.ctx().content_rect().height();
+            (available * 0.48).clamp(if available < 650.0 { 270.0 } else { 330.0 }, 440.0)
+        };
+        let (area, response) = ui.allocate_exact_size(
+            vec2(ui.available_width(), height),
+            if select_interval {
+                Sense::click_and_drag()
+            } else {
+                Sense::click()
+            },
+        );
         if !ui.is_rect_visible(area) {
             return None;
         }
+        response.widget_info(|| {
+            egui::WidgetInfo::labeled(
+                egui::Role::Group,
+                true,
+                "Battery trend. Use left and right arrow keys to inspect readings.",
+            )
+        });
         let plot = Rect::from_min_max(
             area.min + vec2(gutter(area.width()), 20.0),
-            area.max - vec2(14.0, 30.0),
+            area.max - vec2(42.0, 30.0),
         );
         let hover = response.hover_pos().filter(|pos| plot.contains(*pos));
         if let Some(pos) = hover {
-            let scroll =
-                ui.input(|input| input.smooth_scroll_delta.y + input.smooth_scroll_delta.x);
+            let (scroll, pan) = ui.input(|input| {
+                let pan = input.modifiers.shift;
+                let zoom = input.modifiers.ctrl || input.modifiers.command;
+                let scroll = if zoom || pan {
+                    input.smooth_scroll_delta.y + input.smooth_scroll_delta.x
+                } else {
+                    0.0
+                };
+                (scroll, pan)
+            });
             if scroll != 0.0 {
-                let pan = ui.input(|input| input.modifiers.shift);
                 *range = range.zoom(self.full, range.at(plot, pos.x), scroll, pan);
                 ui.input_mut(|input| input.smooth_scroll_delta = egui::Vec2::ZERO);
             }
         }
         let hovered_at = hover.map(|pos| range.at(plot, pos.x));
+        if select_interval {
+            if response.drag_started() {
+                *drag_start = ui
+                    .input(|input| input.pointer.press_origin())
+                    .filter(|pos| plot.contains(*pos))
+                    .map(|pos| {
+                        if let Some(interval) = *selection {
+                            if (range.x(plot, interval.start) - pos.x).abs() <= 7.0 {
+                                return interval.end;
+                            }
+                            if (range.x(plot, interval.end) - pos.x).abs() <= 7.0 {
+                                return interval.start;
+                            }
+                        }
+                        range.at(plot, pos.x).min(self.recorded_end)
+                    });
+            }
+            if let Some(start) = *drag_start {
+                if let Some(pos) = response.interact_pointer_pos() {
+                    let end = range
+                        .at(plot, pos.x.clamp(plot.left(), plot.right()))
+                        .min(self.recorded_end);
+                    *selection = (start != end).then(|| TimeRange::ordered(start, end));
+                }
+            }
+            if response.drag_stopped() {
+                *drag_start = None;
+            }
+        }
         if response.clicked() {
             if let Some(at) = response
                 .interact_pointer_pos()
                 .filter(|pos| plot.contains(*pos))
                 .map(|pos| range.at(plot, pos.x))
             {
-                *cursor = if cursor.is_some() { None } else { Some(at) };
+                *cursor = (*cursor != Some(at)).then_some(at);
             }
         }
         if response.has_focus() && ui.input(|input| input.key_pressed(egui::Key::Escape)) {
@@ -269,6 +513,55 @@ impl Plot<'_> {
         let painter = ui.painter();
         let clipped = painter.with_clip_rect(plot.intersect(ui.clip_rect()));
         let label = ui.visuals().weak_text_color();
+        if response.has_focus() {
+            ui.memory_mut(|memory| {
+                memory.set_focus_lock_filter(
+                    response.id,
+                    egui::EventFilter {
+                        horizontal_arrows: true,
+                        ..egui::EventFilter::default()
+                    },
+                )
+            });
+            painter.rect_stroke(
+                plot,
+                0,
+                ui.visuals().selection.stroke,
+                egui::StrokeKind::Inside,
+            );
+            let step = ui.input(|input| {
+                i64::from(input.key_pressed(egui::Key::ArrowRight))
+                    - i64::from(input.key_pressed(egui::Key::ArrowLeft))
+            });
+            if step != 0 {
+                let at = cursor.unwrap_or(range.start.saturating_sub(1));
+                let points = &self.focused.device.points;
+                let next = if step > 0 {
+                    points.get(points.partition_point(|point| point.t <= at))
+                } else {
+                    points
+                        .partition_point(|point| point.t < at)
+                        .checked_sub(1)
+                        .and_then(|index| points.get(index))
+                };
+                if let Some(point) =
+                    next.filter(|point| (range.start..=range.end).contains(&point.t))
+                {
+                    if select_interval && ui.input(|input| input.modifiers.shift) {
+                        let anchor = selection.map_or(at.max(range.start), |interval| {
+                            if interval.start == at {
+                                interval.end
+                            } else {
+                                interval.start
+                            }
+                        });
+                        *selection =
+                            (anchor != point.t).then(|| TimeRange::ordered(anchor, point.t));
+                    }
+                    *cursor = Some(point.t);
+                }
+            }
+        }
         let rule = ui.visuals().window_stroke;
         let x = |time| range.x(plot, time);
         let y = |level: u8| plot.bottom() - f32::from(level.min(100)) / 100.0 * plot.height();
@@ -310,19 +603,39 @@ impl Plot<'_> {
                 pos2(plot.left() - 8.0, y(level)),
                 Align2::RIGHT_CENTER,
                 format!("{level}%"),
-                FontId::proportional(11.0),
+                FontId::proportional(12.0),
                 label,
             );
         }
-        for &level in self.thresholds {
+        let mut levels = self.thresholds.to_vec();
+        levels.sort_unstable();
+        levels.dedup();
+        let mut previous_y = plot.bottom() + 14.0;
+        for level in levels {
+            let color = if level <= 10 {
+                Color32::from_rgb(197, 108, 114)
+            } else {
+                Color32::from_rgb(174, 127, 92)
+            };
             dash(
                 &clipped,
                 pos2(plot.left(), y(level)),
                 pos2(plot.right(), y(level)),
-                label.gamma_multiply(0.55),
+                color.gamma_multiply(0.68),
                 2.0,
                 5.0,
             );
+            let label_y = y(level).min(previous_y - 14.0);
+            if label_y >= plot.top() {
+                painter.text(
+                    pos2(plot.right() + 4.0, label_y),
+                    Align2::LEFT_CENTER,
+                    format!("{level}%"),
+                    FontId::proportional(12.0),
+                    color,
+                );
+                previous_y = label_y;
+            }
         }
         if self.show_charging {
             paint_charging(
@@ -334,37 +647,73 @@ impl Plot<'_> {
             );
         }
         for series in self.series {
-            let width = if series.device.identity == self.focused.device.identity {
-                2.1
-            } else {
-                1.6
-            };
-            for segment in series.chart.points.split(|point| point.p.is_none()) {
-                let path: Vec<_> = segment
-                    .iter()
-                    .filter_map(|p| p.p.map(|level| pos2(x(p.t), y(level))))
-                    .collect();
-                if path.len() > 1 {
-                    clipped.add(Shape::line(path.clone(), Stroke::new(width, series.color)));
-                }
-                for point in path {
-                    if plot.contains(point) {
-                        clipped.circle_filled(point, 1.7, series.color);
+            if self.bridge_gaps {
+                let first = series
+                    .chart
+                    .bridges
+                    .partition_point(|&(_, right)| right.t < range.start);
+                for &(left, right) in &series.chart.bridges[first..] {
+                    if left.t > range.end {
+                        break;
                     }
+                    dash(
+                        &clipped,
+                        pos2(x(left.t), y(left.p.unwrap_or_default())),
+                        pos2(x(right.t), y(right.p.unwrap_or_default())),
+                        series.color.gamma_multiply(0.48),
+                        4.0,
+                        4.0,
+                    );
                 }
             }
+            let key = TraceKey {
+                revision: series.chart.revision,
+                range: *range,
+                plot,
+                color: series.color,
+                focused: series.device.identity == self.focused.device.identity,
+            };
+            let id = response
+                .id
+                .with(("recorded-geometry", &series.device.identity));
+            let cached = ui.data(|data| data.get_temp::<TraceGeometry>(id));
+            let geometry = cached
+                .filter(|cached| cached.key == key)
+                .unwrap_or_else(|| {
+                    let shapes = recorded_geometry(series.chart, &key);
+                    let geometry = TraceGeometry { key, shapes };
+                    ui.data_mut(|data| data.insert_temp(id, geometry.clone()));
+                    geometry
+                });
+            clipped.extend(geometry.shapes.iter().cloned());
         }
         for series in self.series {
-            if let Some(point) = series.device.points.last() {
+            if let Some(point) = series.device.points.iter().rfind(|point| point.p.is_some()) {
                 if let Some(level) = point.p {
                     let center = pos2(x(point.t), y(level));
                     if plot.contains(center) {
-                        clipped.circle(
+                        let markers =
+                            painter.with_clip_rect(plot.expand(4.0).intersect(ui.clip_rect()));
+                        markers.circle(
                             center,
                             3.7,
                             series.color,
                             Stroke::new(1.25, ui.visuals().window_fill),
                         );
+                        if series.device.identity == self.focused.device.identity {
+                            let text_y = if center.y - plot.top() < 22.0 {
+                                18.0
+                            } else {
+                                -18.0
+                            };
+                            clipped.text(
+                                center + vec2(-7.0, text_y),
+                                Align2::RIGHT_BOTTOM,
+                                format!("{level}% latest"),
+                                FontId::proportional(12.0),
+                                series.color,
+                            );
+                        }
                     }
                 }
             }
@@ -384,7 +733,7 @@ impl Plot<'_> {
                 &clipped,
                 start,
                 latest,
-                label.gamma_multiply(0.65),
+                color.lerp_to_gamma(label, 0.45).gamma_multiply(0.62),
                 length,
                 4.0,
             );
@@ -402,6 +751,19 @@ impl Plot<'_> {
                     },
                     FontId::proportional(10.0),
                     label,
+                );
+            }
+            if start.x < plot.left() && latest.x > plot.left() + 20.0 {
+                clipped.text(
+                    pos2(plot.left() + 5.0, plot.top() + 5.0 + index as f32 * 14.0),
+                    Align2::LEFT_TOP,
+                    if index == 0 {
+                        "← Charge fit"
+                    } else {
+                        "← Recent fit"
+                    },
+                    FontId::proportional(11.0),
+                    color,
                 );
             }
             for &target in self.thresholds {
@@ -425,19 +787,34 @@ impl Plot<'_> {
                 );
             }
         }
-        let ticks = ((plot.width() / 105.0) as i64).clamp(2, 9);
-        for tick in 0..=ticks {
-            let at = range.start + (range.end - range.start) * tick / ticks;
+        let ticks = platform::chart_ticks(range.start, range.end, plot.width());
+        for (at, tick) in ticks {
             painter.text(
                 pos2(x(at), plot.bottom() + 6.0),
-                match tick {
-                    0 => Align2::LEFT_TOP,
-                    n if n == ticks => Align2::RIGHT_TOP,
-                    _ => Align2::CENTER_TOP,
-                },
-                platform::chart_date(at, range.end - range.start < 3 * SECONDS_PER_DAY),
-                FontId::proportional(11.0),
+                Align2::CENTER_TOP,
+                tick,
+                FontId::proportional(12.0),
                 label,
+            );
+        }
+        if let Some(selection) = *selection {
+            paint_interval(
+                &clipped,
+                plot,
+                *range,
+                selection,
+                ui.visuals().selection.stroke.color,
+                true,
+            );
+        }
+        if let Some(activity) = activity {
+            paint_interval(
+                &clipped,
+                plot,
+                *range,
+                activity.interval,
+                ui.visuals().selection.stroke.color,
+                false,
             );
         }
         if let Some(at) = cursor
@@ -455,26 +832,61 @@ impl Plot<'_> {
                 3.0,
             );
         }
+        if let Some(at) = hovered_at.filter(|_| drag_start.is_none()) {
+            response.on_hover_ui_at_pointer(|ui| {
+                ui.set_max_width(390.0);
+                ui.label(platform::exact_date(at));
+                for series in self.series {
+                    ui.label(format!(
+                        "{} · {}",
+                        series.device.name,
+                        reading_at(*series, at)
+                    ));
+                }
+                for (index, fit) in self.forecasts.into_iter().enumerate() {
+                    let Some(fit) = fit else { continue };
+                    if let Some(details) =
+                        forecast_details(fit, FORECAST_NAMES[index], at, self.target)
+                    {
+                        ui.label(details);
+                        for &threshold in self
+                            .thresholds
+                            .iter()
+                            .filter(|&&level| level != self.target)
+                        {
+                            if let Some(eta) = fit.eta(threshold) {
+                                ui.label(format!("{threshold}% at {}", platform::exact_date(eta)));
+                            }
+                        }
+                    }
+                }
+            });
+        }
         hovered_at
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn activity(
         &self,
         ui: &mut Ui,
         range: TimeRange,
         cursor: &mut Option<i64>,
         external_cursor: Option<i64>,
-    ) -> Option<i64> {
+        selection: Option<TimeRange>,
+        pinned_activity: &mut Option<ActivityHit>,
+        previous_hover: Option<&ActivityHit>,
+    ) -> (Option<i64>, Option<ActivityHit>) {
         let mut hovered = None;
+        let mut active_hit = None;
         for series in self.series {
             let (area, response) =
-                ui.allocate_exact_size(vec2(ui.available_width(), 19.0), Sense::click());
+                ui.allocate_exact_size(vec2(ui.available_width(), 22.0), Sense::click());
             if !ui.is_rect_visible(area) {
                 continue;
             }
             let track = Rect::from_min_max(
                 area.min + vec2(gutter(area.width()), 1.0),
-                area.max - vec2(14.0, 1.0),
+                area.max - vec2(42.0, 1.0),
             );
             let name = Rect::from_min_max(area.min, pos2(track.left() - 6.0, area.bottom()));
             ui.put(
@@ -489,7 +901,52 @@ impl Plot<'_> {
             let painter = ui.painter().with_clip_rect(track.intersect(ui.clip_rect()));
             painter.rect_filled(track, 0, ui.visuals().extreme_bg_color);
             let known_end = range.x(track, self.recorded_end).min(track.right());
+            if known_end > track.left() {
+                let known = Rect::from_min_max(track.min, pos2(known_end, track.bottom()));
+                let hatch = painter.with_clip_rect(known.intersect(ui.clip_rect()));
+                for offset in (0..known.width() as usize + 24).step_by(8) {
+                    let left = known.left() + offset as f32;
+                    hatch.line_segment(
+                        [pos2(left, known.top()), pos2(left - 22.0, known.bottom())],
+                        ui.visuals().window_stroke,
+                    );
+                }
+            }
             let sessions = &series.device.sessions;
+            let activity_at = |at| {
+                if at > self.recorded_end {
+                    return None;
+                }
+                let index = sessions.partition_point(|session| session.end <= at);
+                let (interval, state) = if let Some(interval) =
+                    series.chart.charging_at(at).filter(|_| self.show_charging)
+                {
+                    (interval, ActivityState::Charging)
+                } else if let Some(session) = sessions.get(index).filter(|s| s.start <= at) {
+                    (
+                        TimeRange::ordered(session.start, session.end),
+                        if session.online {
+                            ActivityState::Online
+                        } else {
+                            ActivityState::Offline
+                        },
+                    )
+                } else {
+                    let start = index
+                        .checked_sub(1)
+                        .map_or(range.start, |i| sessions[i].end);
+                    let end = sessions
+                        .get(index)
+                        .map_or(self.recorded_end, |session| session.start);
+                    (TimeRange::ordered(start, end), ActivityState::Unknown)
+                };
+                Some(ActivityHit {
+                    at,
+                    identity: Arc::clone(&series.chart.identity),
+                    interval,
+                    state,
+                })
+            };
             let first = sessions.partition_point(|s| s.end <= range.start);
             // Draw at most one segment per pixel column, even for very dense histories.
             let columns = (track.width().min(COLUMNS as f32) as usize).max(1);
@@ -516,7 +973,9 @@ impl Plot<'_> {
                         let color = if online {
                             series.color
                         } else {
-                            ui.visuals().weak_text_color().gamma_multiply(0.30)
+                            ui.visuals()
+                                .extreme_bg_color
+                                .lerp_to_gamma(ui.visuals().weak_text_color(), 0.34)
                         };
                         painter.rect_filled(
                             Rect::from_min_max(
@@ -532,7 +991,41 @@ impl Plot<'_> {
                 }
             }
             if self.show_charging {
-                paint_charging(&painter, track, range, series.chart, CHARGING);
+                let overlay =
+                    Rect::from_min_max(pos2(track.left(), track.bottom() - 5.0), track.max);
+                paint_charging(&painter, overlay, range, series.chart, CHARGING);
+                let first = series
+                    .chart
+                    .charging
+                    .partition_point(|&(_, end)| end < range.start);
+                for &(start, end) in &series.chart.charging[first..] {
+                    if start > range.end {
+                        break;
+                    }
+                    let left = range.x(track, start).max(track.left());
+                    let right = range.x(track, end).min(track.right());
+                    if right - left >= 23.0 {
+                        let center = pos2((left + right) * 0.5, track.center().y - 2.0);
+                        let bolt = [
+                            center + vec2(1.0, -5.0),
+                            center + vec2(-2.0, 0.0),
+                            center + vec2(2.0, 0.0),
+                            center + vec2(-1.0, 5.0),
+                        ];
+                        painter.add(Shape::line(bolt.to_vec(), Stroke::new(2.0, Color32::BLACK)));
+                        painter.add(Shape::line(bolt.to_vec(), Stroke::new(1.0, CHARGING)));
+                    }
+                }
+            }
+            if let Some(selection) = selection {
+                paint_interval(
+                    &painter,
+                    track,
+                    range,
+                    selection,
+                    ui.visuals().selection.stroke.color,
+                    false,
+                );
             }
             if response.clicked() {
                 if let Some(pos) = response
@@ -540,28 +1033,59 @@ impl Plot<'_> {
                     .filter(|pos| track.contains(*pos))
                 {
                     let at = range.at(track, pos.x);
-                    *cursor = if *cursor == Some(at) { None } else { Some(at) };
+                    *pinned_activity = activity_at(at);
+                    *cursor = Some(at);
                 }
             }
             if let Some(pos) = response.hover_pos().filter(|pos| track.contains(*pos)) {
                 let at = range.at(track, pos.x);
                 hovered = Some(at);
-                let index = sessions.partition_point(|s| s.end <= at);
-                if let Some(session) = sessions
-                    .get(index)
-                    .filter(|s| s.start <= at && at <= self.recorded_end)
-                {
+                active_hit = activity_at(at);
+                if let Some(hit) = &active_hit {
+                    let samples = hit.interval.points(&series.device.points);
+                    let endpoints = samples
+                        .first()
+                        .zip(samples.last())
+                        .and_then(|(start, end)| Some((start.p?, end.p?)));
+                    let battery = endpoints.map_or_else(
+                        || "Battery unavailable".to_owned(),
+                        |(start, end)| {
+                            format!(
+                                "{start}% to {end}% · {:+} pp",
+                                i16::from(end) - i16::from(start)
+                            )
+                        },
+                    );
                     response.on_hover_text(format!(
-                        "{} · {} (inferred)\n{} to {}",
-                        duration(session.end - session.start),
-                        if session.online { "Online" } else { "Offline" },
-                        platform::exact_date(session.start),
-                        platform::exact_date(session.end)
+                        "{} · {} · {}\n{} to {}\n{} · {} readings",
+                        series.device.name,
+                        hit.state.label(),
+                        duration(hit.interval.end - hit.interval.start),
+                        platform::exact_date(hit.interval.start),
+                        platform::exact_date(hit.interval.end),
+                        battery,
+                        samples.len()
                     ));
                 }
             }
+            if let Some(hit) = pinned_activity
+                .as_ref()
+                .or(active_hit.as_ref())
+                .or(previous_hover)
+                .filter(|hit| hit.identity == series.chart.identity)
+            {
+                paint_interval(
+                    &painter,
+                    track,
+                    range,
+                    hit.interval,
+                    ui.visuals().selection.stroke.color,
+                    false,
+                );
+            }
             if let Some(at) = cursor
                 .or(hovered)
+                .or(previous_hover.map(|hit| hit.at))
                 .or(external_cursor)
                 .filter(|at| (range.start..=range.end).contains(at))
             {
@@ -572,7 +1096,37 @@ impl Plot<'_> {
                 );
             }
         }
-        hovered
+        (hovered, active_hit)
+    }
+}
+
+fn paint_interval(
+    painter: &Painter,
+    rect: Rect,
+    range: TimeRange,
+    interval: TimeRange,
+    color: Color32,
+    handles: bool,
+) {
+    let left = range.x(rect, interval.start);
+    let right = range.x(rect, interval.end);
+    let highlight =
+        Rect::from_min_max(pos2(left, rect.top()), pos2(right, rect.bottom())).intersect(rect);
+    if highlight.is_positive() {
+        painter.rect_filled(highlight, 0, color.gamma_multiply(0.22));
+        if handles {
+            for x in [left, right]
+                .into_iter()
+                .filter(|x| rect.x_range().contains(*x))
+            {
+                painter.vline(x, rect.y_range(), Stroke::new(1.0, color));
+                painter.rect_filled(
+                    Rect::from_center_size(pos2(x, rect.center().y), vec2(5.0, 18.0)),
+                    2,
+                    color,
+                );
+            }
+        }
     }
 }
 
@@ -658,6 +1212,61 @@ pub(super) fn nearest(points: &[DashboardPoint], time: i64) -> Option<DashboardP
         .copied()
 }
 
+pub(super) fn reading_at(series: Series<'_>, at: i64) -> String {
+    let points = &series.device.points;
+    let next = points.partition_point(|point| point.t < at);
+    let exact = points.get(next).filter(|point| point.t == at);
+    let nearby = exact.copied().or_else(|| {
+        let before = next.checked_sub(1).and_then(|index| points.get(index))?;
+        let after = points.get(next)?;
+        (before.p.is_some()
+            && after.p.is_some()
+            && before.c == after.c
+            && after.t - before.t <= super::super::model::OFFLINE_AFTER_SECONDS)
+            .then(|| nearest(points, at))
+            .flatten()
+    });
+    nearby.map_or_else(
+        || "No recorded reading".into(),
+        |point| {
+            format!(
+                "{}{} · {} · {} · {}",
+                if exact.is_some() { "" } else { "Nearest: " },
+                percent(point.p),
+                if point.c {
+                    "Online, charging"
+                } else {
+                    "Online"
+                },
+                voltage(point.v),
+                platform::exact_date(point.t),
+            )
+        },
+    )
+}
+
+pub(super) fn forecast_details(fit: Forecast, model: &str, at: i64, target: u8) -> Option<String> {
+    let estimate =
+        f64::from(fit.latest.p?) - fit.rate * (at - fit.latest.t) as f64 / SECONDS_PER_DAY as f64;
+    if at < fit.start.t || !(0.0..=100.0).contains(&estimate) {
+        return None;
+    }
+    let kind = if at <= fit.latest.t {
+        "Historical fit"
+    } else {
+        "Forecast"
+    };
+    let eta = fit.eta(target).map_or_else(
+        || format!("{target}% already passed"),
+        |eta| format!("{target}% at {}", platform::summary_date(eta)),
+    );
+    Some(format!(
+        "{kind} · {model} · {estimate:.0}% · {:.1} pp/day elapsed · basis {} to {} · {eta}",
+        fit.rate,
+        platform::summary_date(fit.start.t),
+        platform::summary_date(fit.latest.t)
+    ))
+}
 pub(super) fn voltage(value: Option<u16>) -> String {
     value.map_or_else(
         || "—".to_owned(),
@@ -668,6 +1277,63 @@ pub(super) fn voltage(value: Option<u16>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn gaps_survive_downsampling_and_only_eligible_endpoints_are_bridged() {
+        use crate::history::HistorySample;
+        let samples = [
+            (0, Some(94), false),
+            (60, Some(93), false),
+            (1_000, Some(91), false),
+            (2_000, Some(90), false),
+            (3_000, Some(95), true),
+            (4_000, Some(80), false),
+            (4_100, None, false),
+            (4_200, Some(79), false),
+            (10_000_000, Some(70), false),
+        ]
+        .into_iter()
+        .map(|(recorded_at, percent, charging)| HistorySample {
+            identity: "hid:fixture".to_owned(),
+            name: "Fixture".to_owned(),
+            recorded_at,
+            percent,
+            charging,
+            voltage_mv: None,
+        })
+        .collect();
+        let data =
+            super::super::super::model::build_data(samples, 365, 10_000_000, 0, false, vec![])
+                .unwrap();
+        let device = &data.devices[0];
+        let chart = Chart::new(device);
+        assert_eq!(
+            bucket(device.first_at, device.last_at, 0),
+            bucket(device.first_at, device.last_at, 4_200)
+        );
+        let starts = chart
+            .points
+            .split(|point| point.p.is_none())
+            .filter_map(|run| run.first().map(|point| point.t))
+            .collect::<Vec<_>>();
+        assert_eq!(starts, [0, 1_000, 2_000, 3_000, 4_000, 4_200, 10_000_000]);
+        let bridges = chart
+            .bridges
+            .iter()
+            .map(|(left, right)| (left.t, right.t))
+            .collect::<Vec<_>>();
+        assert_eq!(bridges, [(60, 1_000), (1_000, 2_000), (4_200, 10_000_000)]);
+        let series = Series {
+            index: 0,
+            device,
+            chart: &chart,
+            color: Color32::WHITE,
+        };
+        assert_eq!(reading_at(series, 500), "No recorded reading");
+        assert!(reading_at(series, 30).starts_with("Nearest:"));
+        assert!(!reading_at(series, 60).starts_with("Nearest:"));
+        assert!(!chart.continuous_discharge(TimeRange::ordered(60, 1_000)));
+    }
 
     #[test]
     fn discharge_forecasts_use_the_latest_cycle_and_ignore_earlier_charging() {

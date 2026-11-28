@@ -1,6 +1,7 @@
 mod analytics;
 mod chart;
 mod platform;
+mod settings;
 mod worker;
 
 pub(crate) use platform::{notify_appearance, notify_dashboard, notify_live};
@@ -30,6 +31,7 @@ use worker::{Action, Confirmation, Reply, Snapshot, Worker};
 pub(super) struct WindowOptions {
     pub(super) size: Option<[u32; 2]>,
     pub(super) preview: Option<PreviewOptions>,
+    pub(super) settings: bool,
 }
 
 pub(super) struct PreviewOptions {
@@ -37,6 +39,7 @@ pub(super) struct PreviewOptions {
     pub(super) live: Vec<LiveDevice>,
     pub(super) manage: bool,
     pub(super) cleanup: bool,
+    pub(super) invalid_settings: bool,
 }
 
 pub(super) fn open_dashboard_window(
@@ -98,7 +101,11 @@ pub(super) fn open_dashboard_window(
                 .as_ref()
                 .is_some_and(|preview| preview.cleanup);
             let backend_is_local = backend.is_local();
-            let worker = Worker::start(ctx.clone(), backend)?;
+            let (worker, settings_worker) = Worker::start(ctx.clone(), backend)?;
+            let invalid_settings = launch
+                .preview
+                .as_ref()
+                .is_some_and(|preview| preview.invalid_settings);
             let brand = ctx.load_texture(
                 "Volty",
                 egui::ColorImage::from_rgba_unmultiplied(
@@ -126,7 +133,8 @@ pub(super) fn open_dashboard_window(
                 busy: false,
                 loading: false,
                 exporting: false,
-                opening_settings: false,
+                settings: settings::Settings::new(ctx, settings_worker, invalid_settings),
+                committed_theme: preview_theme.unwrap_or(AppTheme::System),
                 discard_load: false,
                 artifacts_pending: manage,
                 artifacts: None,
@@ -135,20 +143,30 @@ pub(super) fn open_dashboard_window(
                 status: None,
                 confirmation: None,
                 confirmation_focus: None,
-                page: if manage { Page::Manage } else { Page::History },
+                page: if launch.settings {
+                    Page::Settings
+                } else if manage {
+                    Page::Manage
+                } else {
+                    Page::History
+                },
                 older_days: 7,
                 inactive_days: 7,
             };
             dashboard.refresh();
+            if launch.settings {
+                dashboard.settings.open();
+            }
             Ok(Box::new(dashboard))
         }),
     )?)
 }
 
-#[derive(PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 enum Page {
     History,
     Manage,
+    Settings,
 }
 
 struct Dashboard {
@@ -170,7 +188,8 @@ struct Dashboard {
     busy: bool,
     loading: bool,
     exporting: bool,
-    opening_settings: bool,
+    settings: settings::Settings,
+    committed_theme: AppTheme,
     discard_load: bool,
     artifacts_pending: bool,
     artifacts: Option<Result<Vec<super::management::ManagedArtifact>, String>>,
@@ -247,47 +266,56 @@ impl Dashboard {
         self.snapshot = Some(Arc::new(snapshot));
     }
 
+    fn navigate(&mut self, page: Page) {
+        if self.page != page && !self.settings.intercept(settings::Destination::Page(page)) {
+            self.set_page(page);
+        }
+    }
+
+    fn set_page(&mut self, page: Page) {
+        self.page = page;
+        if page == Page::Settings {
+            self.settings.open();
+        } else if page == Page::Manage && self.artifacts.is_none() {
+            self.artifacts_pending = true;
+            self.refresh();
+        }
+    }
+
+    fn finish_settings_navigation(
+        &mut self,
+        ctx: &egui::Context,
+        destination: settings::Destination,
+    ) {
+        match destination {
+            settings::Destination::Page(page) => self.set_page(page),
+            settings::Destination::Close => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
+        }
+    }
+
     fn header(&mut self, ui: &mut Ui) {
         ui.horizontal(|ui| {
             ui.image((self.brand.id(), egui::vec2(28.0, 28.0)));
             ui.label(analytics::heading(ui, "Volty", 22.0));
             ui.add_space(12.0);
-            if ui
-                .add(analytics::tab(
-                    self.page == Page::History,
-                    "Battery history",
-                ))
-                .clicked()
-            {
-                self.page = Page::History;
-            }
-            if ui
-                .add(analytics::tab(self.page == Page::Manage, "Manage data"))
-                .clicked()
-                && self.page != Page::Manage
-            {
-                self.page = Page::Manage;
-                if self.artifacts.is_none() {
-                    self.artifacts_pending = true;
-                    self.refresh();
+            for (page, label) in [
+                (Page::History, "Battery history"),
+                (Page::Manage, "Manage data"),
+                (Page::Settings, "Settings"),
+            ] {
+                if ui.add(analytics::tab(self.page == page, label)).clicked() {
+                    self.navigate(page);
                 }
             }
-            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                if ui
-                    .add_enabled(!self.opening_settings, Button::new("Settings"))
-                    .clicked()
-                {
-                    match self.worker.launch_settings(self.preview_theme) {
-                        Ok(()) => self.opening_settings = true,
-                        Err(error) => self.status = Some(Err(error.to_string())),
+            if self.page != Page::Settings {
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    if ui.button("Refresh").clicked() {
+                        self.status = None;
+                        self.artifacts_pending |= self.page == Page::Manage;
+                        self.refresh();
                     }
-                }
-                if ui.button("Refresh").clicked() {
-                    self.status = None;
-                    self.artifacts_pending |= self.page == Page::Manage;
-                    self.refresh();
-                }
-            });
+                });
+            }
         });
 
         if let Some(status) = &self.status {
@@ -573,7 +601,10 @@ impl eframe::App for Dashboard {
             .and_then(|signals| signals.receive.try_recv().ok())
         {
             match signal {
-                Signal::Activate => {
+                Signal::Activate | Signal::Settings => {
+                    if matches!(signal, Signal::Settings) {
+                        self.navigate(Page::Settings);
+                    }
                     ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
                     ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
                     self.refresh();
@@ -583,7 +614,7 @@ impl eframe::App for Dashboard {
                     return;
                 }
                 Signal::Appearance(theme) => {
-                    apply_theme(ctx, theme);
+                    self.committed_theme = theme;
                     self.refresh_pending = true;
                 }
             }
@@ -637,12 +668,30 @@ impl eframe::App for Dashboard {
             self.exporting = false;
             self.export_status = Some(result);
         }
-        if let Some(result) = self.worker.settings_launched() {
-            self.opening_settings = false;
-            if let Err(error) = result {
-                self.status = Some(Err(error.to_string()));
+        let (saved, destination) = self.settings.poll();
+        if saved {
+            if let Some(theme) = self.settings.preview_theme() {
+                self.committed_theme = theme;
             }
+            self.refresh_pending = true;
+            self.discard_load = true;
         }
+        if let Some(destination) = destination {
+            self.finish_settings_navigation(ctx, destination);
+        }
+        if ctx.input(|input| input.viewport().close_requested())
+            && self.settings.intercept(settings::Destination::Close)
+        {
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+        }
+        let theme = if self.page == Page::Settings {
+            self.settings
+                .preview_theme()
+                .unwrap_or(self.committed_theme)
+        } else {
+            self.committed_theme
+        };
+        apply_theme(ctx, theme);
         if self.refresh_pending && !self.loading {
             self.refresh();
         }
@@ -663,6 +712,7 @@ impl eframe::App for Dashboard {
             ui.separator();
             match self.page {
                 Page::History => self.history(ui, frame),
+                Page::Settings => self.settings.ui(ui, frame),
                 Page::Manage => {
                     Frame::new().inner_margin(20).show(ui, |ui| {
                         ui.spacing_mut().item_spacing.y = GAP as f32;
@@ -672,14 +722,23 @@ impl eframe::App for Dashboard {
             }
         });
         self.confirm(ui.ctx());
+        if let Some(destination) = self.settings.confirm(ui.ctx()) {
+            self.finish_settings_navigation(ui.ctx(), destination);
+        }
         if self.preview_theme.is_some()
             && !self.preview_ready
             && self.snapshot.is_some()
             && !self.busy
+            && (self.page != Page::Settings || self.settings.ready())
         {
             self.preview_ready = true;
             ui.ctx().send_viewport_cmd(egui::ViewportCommand::Title(
-                "Volty UI Preview — Dashboard".to_owned(),
+                if self.page == Page::Settings {
+                    "Volty UI Preview — Settings"
+                } else {
+                    "Volty UI Preview — Dashboard"
+                }
+                .to_owned(),
             ));
         }
     }
