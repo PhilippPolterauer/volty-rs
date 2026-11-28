@@ -2,9 +2,8 @@ use std::{
     io::{self, BufWriter, Write},
     path::{Path, PathBuf},
     sync::{
-        Arc,
         atomic::{AtomicU64, Ordering},
-        mpsc,
+        mpsc, Arc,
     },
     thread,
 };
@@ -574,11 +573,9 @@ mod tests {
             thread::sleep(Duration::from_millis(5));
         };
         assert!(result.is_ok(), "{result:?}");
-        assert!(
-            std::fs::read_to_string(&export)
-                .unwrap()
-                .starts_with("time,percent,charging,millivolts\r\n")
-        );
+        assert!(std::fs::read_to_string(&export)
+            .unwrap()
+            .starts_with("time,percent,charging,millivolts\r\n"));
         writer.execute_batch("ROLLBACK").unwrap();
         let loaded = loop {
             if let Some((days, result)) = worker.snapshot() {
