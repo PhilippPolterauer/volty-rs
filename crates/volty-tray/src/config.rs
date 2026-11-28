@@ -421,7 +421,7 @@ pub fn update_dashboard_settings(settings: &DashboardSettingsUpdate) -> Result<(
     update_dashboard_settings_at(path, settings)
 }
 
-fn update_dashboard_settings_at(
+pub(crate) fn update_dashboard_settings_at(
     path: impl AsRef<Path>,
     settings: &DashboardSettingsUpdate,
 ) -> Result<(), ConfigError> {

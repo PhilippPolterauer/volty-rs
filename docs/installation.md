@@ -95,13 +95,10 @@ dashboard uses the same system-aware appearance.
 
 ## Battery history dashboard
 
-Left-click the tray icon to open the local dashboard in a native WebView2
-window. It starts with a summary of tracked devices, data points, and online
-devices, followed by per-device battery details and history charts. Use the
-device selector or search field to narrow the view. In the native window, the
-Refresh button reloads the latest saved history. The layout adapts to narrow
-windows, and its colors follow the Windows light or dark theme. If WebView2 is
-unavailable, Volty opens a read-only HTML snapshot in your default browser.
+Left-click the tray icon to open the native dashboard. The device list has a
+search field and a date-range picker. Select a device to see its battery trend,
+estimated time remaining, activity, and individual readings. **Refresh** reloads
+the latest saved history. The dashboard follows the app theme set in **Settings**.
 
 Choose **Settings** in the dashboard or **Settings...** from the tray menu to
 open a dedicated native window for low-battery thresholds, repeat timing,

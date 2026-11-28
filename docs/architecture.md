@@ -64,11 +64,103 @@ learning, percentage history, or numeric low-battery thresholds.
 The XInput player slot is the best available device identity. See
 [HID support and adding devices](hid-battery-support.md).
 
-The Windows tray crate centralizes executable-resource icon loading, native
-window icons, the WebView window icon, and the dashboard favicon in
-`app_icon.rs`. The local dashboard is organized as `dashboard/model.rs` for
-history aggregation, `dashboard/render.rs` for HTML generation, and
-`dashboard/window.rs` for the native WebView host; CLI orchestration remains in
-`dashboard.rs`. Native dashboard data-management requests use a typed local
-WebView IPC bridge and operate on Volty-owned history, preferences, and managed
-diagnostic files; standalone HTML exports remain read-only.
+The Windows tray crate centralizes application icons in `app_icon.rs`.
+`dashboard/model.rs` aggregates history and `dashboard/render.rs` generates
+standalone HTML exports. The native dashboard uses egui with the OpenGL
+renderer and the Windows AccessKit adapter. Settings is a separate Win32
+window with native controls. Both use the semantic colors in
+`dashboard/design.rs` and retain the Windows title bar.
+
+## Reactive desktop state
+
+| State | Owner | Consumers |
+| --- | --- | --- |
+| Current devices and readings | Monitor's `DeviceSession` | Tray and dashboard |
+| History and preferences | SQLite, `config.toml`, and Windows startup registration | Monitor, dashboard, and Settings |
+| Prepared charts and statistics | Dashboard history worker | Dashboard renderer |
+| Unsaved settings, selections, dialogs, and operation feedback | The window showing them | That window |
+
+The tray process owns discovery and battery sampling independently of either
+window. It publishes a small, versioned snapshot of detected devices and
+readings through session-local shared memory. The dashboard event thread
+reads it and replaces a single pending snapshot. A sequence counter lets
+readers reject an update that overlaps a write. Closing the monitor clears
+the snapshot. Battery percentages retain their exact or estimated status.
+Pausing history recording still allows the monitor to publish live readings.
+
+Windows device and resume messages request discovery through the existing
+provider worker. Device-change bursts are coalesced. The providers continue
+to use their configured polling intervals for readings that Windows cannot
+push. A bounded history recorder owns the SQLite writer so writing a sample
+cannot block tray message handling or device discovery. The recorder checks
+the current recording preference before inserting and reports a full queue.
+A saved preference wakes the tray process to reload its committed
+state. Appearance changes reach the dashboard separately from history so
+theme and battery colors can update during a query.
+
+The dashboard has separate bounded request queues for history, management,
+and CSV export. It allows one outstanding history read and coalesces
+additional refreshes. A range change discards the superseded result; the
+previously displayed data stays labeled while the replacement loads. CSV
+export retains the displayed immutable snapshot. The history worker prepares
+the chart's bounded set of points, charging bands, activity intervals, and
+axis labels. Hover looks up original readings in memory, and the readings
+table only lays out visible rows. History gaps and the period before evidence
+appears are shown explicitly. Historical connectivity is inferred from
+samples. The live dashboard uses the monitor's current observations for
+device status.
+
+Delete confirmations keep the preview cutoff and check the affected sample
+and device counts inside the SQLite write transaction. Changed counts require
+a new preview. Settings loads its form and performs saves and test
+notifications on a background worker. The form tracks a draft and the last
+successful submission independently, so a save response preserves edits made
+while it was running. The color slider renders with the same icon routines as
+the tray and uses cached preview inputs. The startup checkbox reads Windows
+registration when Settings opens and requests a registration change when its
+value is edited.
+
+The desktop changes are concentrated in `dashboard/window/`,
+`dashboard/settings_window.rs` and its `appearance.rs`, and
+`dashboard/design.rs`. `dashboard/live.rs`, `app.rs`, `app/wake.rs`,
+`app/history_recorder.rs`, and `tray.rs` connect the monitor and tray to the windows.
+`dashboard/management.rs` and `history.rs` own history and preference
+operations.
+
+## Windows validation
+
+The development host ran Windows build 26300 on an AMD Ryzen 7 5800X3D.
+The comparison used the existing optimized executable from before this work
+and an optimized build with the reactive desktop changes. Settings was
+driven through Win32 control messages over all 101 slider values. The
+dashboard used a synthetic SQLite fixture with 100,000 rows across four
+devices. Working set and CPU time were sampled at the process level.
+
+| Check | Baseline | Revised build |
+| --- | ---: | ---: |
+| Settings controls ready, two runs | 103–205 ms | 102–118 ms |
+| Settings slider message processing, p95 | 1.16–1.27 ms | 1.16–1.24 ms |
+| Settings working set, two runs | 17.9–18.2 MiB | 18.3 MiB |
+| Dashboard native window available | 443 ms | 322 ms |
+| Dashboard working set after three seconds | 216.5 MiB | 137.6 MiB |
+| Dashboard CPU time over five seconds at rest | 0.00 s recorded | 0.00 s recorded |
+| Optimized executable size | 12.41 MiB | 12.95 MiB |
+
+A Windows UI Automation client found dashboard navigation, device entries,
+metrics, and chart headings. A visible dashboard completed 30 scripted resize
+calls in 287 ms. The Settings check changed the theme in an isolated profile,
+verified the written configuration, and observed Save return to its disabled
+state. A debug test loaded 100,000 readings and prepared their chart in 262 ms.
+The same test exported that immutable snapshot while another connection
+held an exclusive database lock. A Windows mapping test exercised publication,
+readback, and rejection of malformed or partially written live snapshots.
+
+These measurements are local smoke checks. Win32 slider timings stop before
+display composition, and resize-call timing does not measure presented
+frames. GPU usage, frame rate, Narrator speech, mixed-DPI monitor moves,
+physical device disconnects, and sleep/resume still need manual verification.
+Settings uses horizontal and vertical scrolling when the controls cannot fit.
+Window positions and sizes still reset to defaults on launch. The tray
+retains synchronous access to some small configuration and notification-state
+operations. Settings commits its TOML, SQLite, and startup registration
+through separate stores and reports partial failures.

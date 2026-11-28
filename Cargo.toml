@@ -34,3 +34,7 @@ lto = "thin"
 codegen-units = 16
 strip = true
 panic = "abort"
+
+[profile.ui-preview]
+inherits = "dev"
+debug = 0

@@ -33,21 +33,18 @@ volty dashboard --database .\battery-history.sqlite3
 
 By default, the dashboard covers the last seven days, writes
 `%TEMP%\volty-dashboard.html`, and opens it in the default browser. Use
-`--no-open` to only write the file, or `--window` to show it in a native
-WebView2 window. The Microsoft WebView2 Runtime is required for the native
-window; if it is unavailable, Volty writes the HTML file and opens it in the
-default browser. Left-click the Volty tray icon to open the same native window.
-Only one native dashboard window can be open at a time; opening it again brings
-the existing window to the foreground and refreshes its data. The dashboard has
-a responsive, summary-first layout with device filtering, history charts, and
-per-device battery and ETA cards. Its light or dark colors follow the system
-appearance.
+`--no-open` to only write the file, or `--window` to show the native
+dashboard. Left-click the Volty tray icon to open the same window.
+Opening it again brings the existing window to the foreground and refreshes its
+data. Use the device list and date-range picker to browse battery and activity
+charts, or export the selected device's readings to CSV.
 The native window supports filtering by device, previewing age- and inactivity-
 based history cleanup, forgetting one device's history or Volty preferences,
 and pausing or resuming future history recording without changing monitoring.
 It can also list and delete managed capture and diagnostic report files.
 
-The generated HTML file and any browser fallback are read-only. Raw HID traces
+The generated HTML file and native windows opened with `--database` are
+read-only. Raw HID traces
 created with `volty hid sniff --output <path>` are stored at the selected path,
 may contain button or keyboard input, and are not scanned or deleted by the
 dashboard. All data stays local; nothing is uploaded.

@@ -1,5 +1,6 @@
 mod battery_eta;
 mod device_ui;
+mod history_recorder;
 mod labels;
 mod liveness;
 mod notifications;
@@ -7,11 +8,13 @@ mod poll;
 mod session;
 mod startup;
 mod wake;
+pub(crate) use wake::notify_preferences;
 
 use device_ui::{
     apply_poll_result, is_device_monitored, update_monitored_device_menu, update_tray_devices,
     update_visible_devices,
 };
+use history_recorder::HistoryRecorder;
 use labels::{append_config_error, battery_is_full, battery_status_label};
 use liveness::Liveness;
 use notifications::{process_device_reading, DeviceNotifications};
@@ -31,7 +34,8 @@ use std::{
     time::{Duration, Instant},
 };
 use volty_battery::{
-    BatteryState, BatteryStatus, DeviceId, DeviceLabel, ProviderEvent, SourceReading,
+    BatteryPercentage, BatteryState, BatteryStatus, DeviceId, DeviceLabel, ProviderEvent,
+    SourceReading,
 };
 
 #[cfg(feature = "self-update")]
@@ -40,8 +44,9 @@ use crate::{
     about::show_about_window,
     capture,
     config::{config_path, AppConfig, LogLevel},
+    dashboard::live::{LiveDevice, LiveLevel, LivePublisher, LiveReading},
     diagnose::show_diagnose_window,
-    history::{unix_now, HistorySample, HistoryStore},
+    history::{unix_now, HistorySample},
     logging::FileLogger,
     report::generate_diagnostic_report,
     state::{local_state_path, DeviceState, TrayIconStyle, TrayIconTheme},
@@ -49,10 +54,18 @@ use crate::{
 };
 
 const CONFIG_RELOAD_DEBOUNCE: Duration = Duration::from_millis(200);
+const DEVICE_CHANGE_DEBOUNCE: Duration = Duration::from_millis(300);
 const UI_REFRESH_INTERVAL: Duration = Duration::from_secs(60);
 #[cfg(feature = "self-update")]
 const UPDATE_CHECK_INTERVAL: Duration = Duration::from_secs(24 * 60 * 60);
 const MAX_DIAGNOSTIC_LOG_ENTRIES: usize = 200;
+
+fn is_charging(state: BatteryState) -> bool {
+    matches!(
+        state,
+        BatteryState::Charging | BatteryState::ChargingNearlyFull | BatteryState::ChargingSlow
+    )
+}
 
 #[derive(Clone)]
 struct DeviceReading {
@@ -80,13 +93,15 @@ struct App {
     notification_config_error: Option<String>,
     notifications: DeviceNotifications,
     session: DeviceSession,
+    live_publisher: Option<LivePublisher>,
     dashboard_shutdown_event: crate::DashboardShutdownEvent,
-    settings_shutdown_event: crate::DashboardSettingsShutdownEvent,
     about_window_open: bool,
     config_reload_due: Option<Instant>,
+    discovery_due: Option<Instant>,
+    preferences_changed: Option<wake::PreferencesChanged>,
     next_ui_refresh: Instant,
     liveness: Liveness,
-    history: Option<HistoryStore>,
+    history: Option<HistoryRecorder>,
     history_error: Option<String>,
     #[cfg(feature = "self-update")]
     update_operation_running: bool,
@@ -104,15 +119,8 @@ pub fn run() -> Result<(), Box<dyn Error>> {
     app.start_update_check(UpdateCheckOrigin::Automatic)?;
     let result = app.run_loop();
     let dashboard_shutdown = app.dashboard_shutdown_event.signal();
-    let settings_shutdown = app.settings_shutdown_event.signal();
     if let Err(error) = &dashboard_shutdown {
         let message = format!("Could not close the dashboard during shutdown: {error}");
-        if let Err(log_error) = app.record_event(LogLevel::Error, &message) {
-            eprintln!("{message}; could not record the error: {log_error}");
-        }
-    }
-    if let Err(error) = &settings_shutdown {
-        let message = format!("Could not close Settings during shutdown: {error}");
         if let Err(log_error) = app.record_event(LogLevel::Error, &message) {
             eprintln!("{message}; could not record the error: {log_error}");
         }
@@ -120,18 +128,17 @@ pub fn run() -> Result<(), Box<dyn Error>> {
     let _ = app.record_event(LogLevel::Info, "Volty stopped");
     app.liveness.clean_exit();
     let flushed = app.flush_discharge_rates(true);
+    let history = app.history.take().map_or(Ok(()), HistoryRecorder::finish);
     result
         .and(flushed.map_err(Into::into))
+        .and(history.map_err(Into::into))
         .and(dashboard_shutdown.map_err(Into::into))
-        .and(settings_shutdown.map_err(Into::into))
 }
 impl App {
     fn start() -> Result<Self, Box<dyn Error>> {
         wake::init()?;
         let dashboard_shutdown_event = crate::DashboardShutdownEvent::create()?;
-        let settings_shutdown_event = crate::DashboardSettingsShutdownEvent::create()?;
         dashboard_shutdown_event.reset()?;
-        settings_shutdown_event.reset()?;
         let started = Instant::now();
         let mut startup = load_startup_state();
         let mut diagnostic_log = VecDeque::new();
@@ -157,7 +164,7 @@ impl App {
                 &message,
             )?;
         }
-        let history = match HistoryStore::open_local() {
+        let history = match HistoryRecorder::start() {
             Ok(store) => Some(store),
             Err(error) => {
                 record_event(
@@ -199,6 +206,14 @@ impl App {
         );
         tray.set_pinned_device_checked(startup.tray_display.pinned_device.as_deref());
         tray.update_status("", "Searching for supported devices", None)?;
+        if let Err(error) = wake::listen_to_system(tray.window_handle()) {
+            eprintln!("{error}");
+        }
+        let preferences_changed = wake::PreferencesChanged::new()
+            .inspect_err(|error| {
+                eprintln!("Could not subscribe to shared preferences: {error}");
+            })
+            .ok();
         let config_watch = watch_config_file()?;
 
         if let Some(message) = startup.notification_config_error.as_deref() {
@@ -272,10 +287,16 @@ impl App {
             notification_config_error: startup.notification_config_error,
             notifications,
             session,
+            live_publisher: LivePublisher::start()
+                .inspect_err(|error| {
+                    eprintln!("Could not publish live battery state: {error}");
+                })
+                .ok(),
             dashboard_shutdown_event,
-            settings_shutdown_event,
             about_window_open: false,
             config_reload_due: None,
+            discovery_due: None,
+            preferences_changed,
             next_ui_refresh: Instant::now() + UI_REFRESH_INTERVAL,
             liveness,
             history,
@@ -317,7 +338,9 @@ impl App {
             }
             self.process_config_events()?;
             self.reload_config_if_due()?;
+            self.process_history_feedback()?;
             self.process_poll_results()?;
+            self.process_system_events()?;
             self.refresh_ui_if_due()?;
             #[cfg(feature = "self-update")]
             self.check_update_if_due()?;
@@ -327,13 +350,68 @@ impl App {
             let wait = self.config_reload_due.map_or(ui_wait, |due| {
                 due.saturating_duration_since(Instant::now()).min(ui_wait)
             });
+            let wait = self.discovery_due.map_or(wait, |due| {
+                due.saturating_duration_since(Instant::now()).min(wait)
+            });
             #[cfg(feature = "self-update")]
             let wait = self
                 .next_update_check
                 .saturating_duration_since(Instant::now())
                 .min(wait);
-            wake::wait(Some(wait))?;
+            if wake::wait(Some(wait), self.preferences_changed.as_ref())? {
+                self.refresh_committed_preferences()?;
+            }
         }
+    }
+
+    fn process_system_events(&mut self) -> io::Result<()> {
+        let events = wake::take_system_events();
+        if events & wake::REDISCOVER != 0 {
+            self.discovery_due
+                .get_or_insert_with(|| Instant::now() + DEVICE_CHANGE_DEBOUNCE);
+        }
+        if self.discovery_due.is_some_and(|due| Instant::now() >= due) {
+            self.discovery_due = None;
+            if self.session.discover().is_err() {
+                self.report_error("Discovery error", "device discovery poller has stopped")?;
+            }
+        }
+        if events & wake::APPEARANCE != 0 {
+            self.refresh_visible_devices()?;
+        }
+        Ok(())
+    }
+
+    fn process_history_feedback(&mut self) -> io::Result<()> {
+        while let Some(error) = self.history.as_ref().and_then(HistoryRecorder::poll_error) {
+            if let Some(error) = error {
+                self.report_history_error(error)?;
+            } else {
+                self.history_error = None;
+            }
+        }
+        Ok(())
+    }
+
+    fn refresh_committed_preferences(&mut self) -> Result<(), Box<dyn Error>> {
+        if let Some(state) = &self.monitor_state {
+            match state.monitored_devices() {
+                Ok(devices) if devices != self.monitored_devices => {
+                    self.monitored_devices = devices;
+                    self.notifications
+                        .retain_monitored_devices(&self.monitored_devices);
+                    self.discovery_due = Some(Instant::now() + DEVICE_CHANGE_DEBOUNCE);
+                }
+                Ok(_) => {}
+                Err(error) => {
+                    self.report_error("Could not load monitoring preferences", &error.to_string())?
+                }
+            }
+        }
+        self.reload_notification_config()?;
+        self.refresh_visible_devices()?;
+        self.publish_live_devices()?;
+        Ok(())
     }
 
     #[cfg(feature = "self-update")]
@@ -355,7 +433,8 @@ impl App {
         }
         self.next_ui_refresh = now + UI_REFRESH_INTERVAL;
         let _ = self.liveness.write_heartbeat();
-        self.refresh_visible_devices()
+        self.refresh_visible_devices()?;
+        self.publish_live_devices()
     }
 
     fn process_tray_menu_events(&mut self) -> io::Result<()> {
@@ -956,6 +1035,7 @@ impl App {
             Ok(()) => {
                 self.monitored_devices
                     .insert(identity.to_owned(), monitored);
+                crate::dashboard::notify_dashboard();
                 let refresh_failed = self.session.discover_if_monitored(monitored).is_err();
                 self.notifications
                     .retain_monitored_devices(&self.monitored_devices);
@@ -978,6 +1058,7 @@ impl App {
                     ),
                 )?;
                 self.session.retain_monitored(&self.monitored_devices);
+                self.publish_live_devices()?;
                 self.refresh_visible_devices()?;
                 if refresh_failed {
                     self.report_error("Discovery error", "device discovery poller has stopped")?;
@@ -1009,8 +1090,12 @@ impl App {
             startup_reset_errors.push(error.to_string());
         }
         self.session.shutdown("during reset")?;
+        if let Some(history) = self.history.take() {
+            history.finish()?;
+        }
         drop(self.monitor_state.take());
         remove_reset_files(&configuration_file, &local_state_file)?;
+        self.history = Some(HistoryRecorder::start()?);
         self.diagnostic_log.clear();
 
         self.monitor_state = match DeviceState::open_local() {
@@ -1196,6 +1281,7 @@ impl App {
         self.active_config = config;
         let recovered = self.notification_config_error.take().is_some();
         if recovered || config_changed {
+            crate::dashboard::notify_appearance();
             self.record_event(LogLevel::Info, "Configuration reloaded successfully")?;
         }
         Ok(recovered || config_changed)
@@ -1247,11 +1333,20 @@ impl App {
         )
     }
     fn process_poll_results(&mut self) -> Result<(), Box<dyn Error>> {
+        let mut live_changed = false;
         #[allow(clippy::while_let_loop)]
         loop {
             match self.session.try_recv() {
-                Ok(update) => self.handle_poll_update(update)?,
-                Err(TryRecvError::Empty) => return Ok(()),
+                Ok(update) => {
+                    live_changed |= matches!(
+                        &update,
+                        PollUpdate::Event(
+                            ProviderEvent::Reading(_) | ProviderEvent::DeviceName { .. }
+                        ) | PollUpdate::Finished(_)
+                    );
+                    self.handle_poll_update(update)?;
+                }
+                Err(TryRecvError::Empty) => break,
                 Err(TryRecvError::Disconnected) => {
                     self.record_event(
                         LogLevel::Error,
@@ -1261,6 +1356,55 @@ impl App {
                 }
             }
         }
+        if live_changed {
+            self.publish_live_devices()?;
+        }
+        Ok(())
+    }
+
+    fn publish_live_devices(&mut self) -> io::Result<()> {
+        let stale_after = self.stale_after();
+        let Some(publisher) = &mut self.live_publisher else {
+            return Ok(());
+        };
+        let mut devices: Vec<_> = self
+            .session
+            .discovered_devices
+            .iter()
+            .map(|(id, name)| {
+                let reading = self
+                    .session
+                    .latest_readings
+                    .get(id)
+                    .filter(|reading| reading.observed_at.elapsed() <= stale_after)
+                    .map(|reading| LiveReading {
+                        level: match reading.battery.percentage {
+                            BatteryPercentage::Exact(value) => LiveLevel::Exact(value),
+                            BatteryPercentage::Estimated { value, .. } => {
+                                LiveLevel::Estimated(value)
+                            }
+                            BatteryPercentage::Unavailable => LiveLevel::Unavailable,
+                        },
+                        charging: is_charging(reading.battery.state),
+                        remaining_seconds: reading
+                            .estimated_time_remaining
+                            .map(|eta| eta.as_secs()),
+                    });
+                LiveDevice {
+                    identity: id.as_str().to_owned(),
+                    name: name.clone(),
+                    reading,
+                }
+            })
+            .collect();
+        devices.sort_unstable_by(|a, b| a.identity.cmp(&b.identity));
+        if let Err(error) = publisher.publish(devices) {
+            self.record_event(
+                LogLevel::Warn,
+                &format!("Could not publish live battery state: {error}"),
+            )?;
+        }
+        Ok(())
     }
 
     fn handle_poll_update(&mut self, update: PollUpdate) -> Result<(), Box<dyn Error>> {
@@ -1429,29 +1573,9 @@ impl App {
     /// Records the freshest reading in the local battery history. A failure is
     /// logged but never interrupts polling; identical errors are logged once.
     fn record_history_sample(&mut self, reading: &DeviceReading) -> io::Result<()> {
-        if self.history.is_none() {
+        let Some(history) = &self.history else {
             return Ok(());
-        }
-        let history_enabled = match self.monitor_state.as_ref() {
-            Some(state) => match state.history_recording_enabled(reading.id.as_str()) {
-                Ok(enabled) => enabled,
-                Err(error) => {
-                    return self.report_history_error(format!(
-                        "Could not read history recording preference for {}: {error}",
-                        reading.label.display()
-                    ));
-                }
-            },
-            None => {
-                return self.report_history_error(format!(
-                    "Could not read history recording preference for {}: local device state is unavailable",
-                    reading.label.display()
-                ));
-            }
         };
-        if !history_enabled {
-            return Ok(());
-        }
         let recorded_at = match unix_now() {
             Ok(recorded_at) => recorded_at,
             Err(error) => {
@@ -1466,28 +1590,13 @@ impl App {
             name: reading.label.display(),
             recorded_at,
             percent: reading.battery.percentage.exact(),
-            charging: matches!(
-                reading.battery.state,
-                BatteryState::Charging
-                    | BatteryState::ChargingNearlyFull
-                    | BatteryState::ChargingSlow
-            ),
+            charging: is_charging(reading.battery.state),
             voltage_mv: reading.battery.voltage_mv,
         };
-        let result = match self.history.as_mut() {
-            Some(history) => history.record(&sample),
-            None => return Ok(()),
-        };
-        match result {
-            Ok(_) => {
-                self.history_error = None;
-                Ok(())
-            }
-            Err(error) => self.report_history_error(format!(
-                "Could not record battery history for {}: {error}",
-                sample.name
-            )),
+        if let Err(error) = history.record(sample) {
+            self.report_history_error(error.to_string())?;
         }
+        Ok(())
     }
 
     fn report_history_error(&mut self, message: String) -> io::Result<()> {

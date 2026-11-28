@@ -37,6 +37,56 @@ behavior need Windows and compatible hardware. A successful diagnostic command
 alone does not establish that the tray polls a device; verify it through the
 normal tray path.
 
+## Native UI preview
+
+Use PowerShell 7 from the workspace root. The script builds incrementally with
+the `ui-preview` Cargo profile, then opens the requested page in the native
+Volty window with a disposable fixture. The first build prepares the preview
+profile's dependency cache.
+
+```powershell
+./scripts/ui-preview.ps1 History
+./scripts/ui-preview.ps1 Manage -Theme Light -NoBuild
+./scripts/ui-preview.ps1 Cleanup -Narrow -NoBuild -Screenshot "$env:TEMP/volty-cleanup.png"
+./scripts/ui-preview.ps1 Settings -Size 1024x760 -NoBuild
+./scripts/ui-preview.ps1 InvalidSettings -Theme Light -NoBuild
+./scripts/ui-preview.ps1 History -Empty -NoBuild
+./scripts/ui-preview.ps1 -Stop
+```
+
+Rerun the command after a Rust or layout change. Use `-NoBuild` to switch
+scenarios with the already-built executable. `-Screenshot` waits for the
+requested content and saves the native window as PNG. `-Size` takes logical
+pixels. It sets the dashboard client area or the Settings outer window.
+`-Narrow` selects 700 × 560.
+
+The launcher restarts the preview executable for this checkout. Volty's
+installed tray, dashboard, and Settings can stay open. Every launch starts
+with fresh sample history, live device states, and preferences. Cleanup,
+device controls, and Settings saves use the disposable profile. The startup
+checkbox and test-notification command simulate their effects for UI testing.
+
+On the Windows development machine, the first preview build took about
+38 seconds. Subsequent Rust edits rebuilt in about 4 seconds, and the
+tested `-NoBuild` scenarios reached their capture-ready state in
+0.25–0.61 seconds.
+
+For a visual change, rebuild and capture the affected scenario. For fixture
+or isolation changes, also run the focused tests. Run the workspace checks
+above before handing off a set of changes.
+
+```powershell
+cargo test -p volty-tray --features ui-preview --locked dashboard::preview
+```
+
+### Manage data
+
+Manage data uses the native dashboard shell, navigation, palette, typography, and DPI scaling. It shares Battery history’s device icons, series colors, battery indicator, table cell layout, and row highlighting. The device picker now uses the same inventory and selected identity as the other pages.
+
+Settings and Manage data share the responsive settings row, text field, and toggle. Manage data also reuses the dashboard’s background workers, refresh signals, and confirmation dialog. The dialog now shows the retention period, affected counts and device names, and the permanence warning. Cleanup rechecks the affected device identities, reading counts, and time bounds inside the deletion transaction.
+
+The new page-specific pieces are the searchable, sortable inventory table, device detail and cleanup layouts, and overview counters. The diagnostic list uses the supplied file icon and the existing file deletion operations. Inactive-device cleanup removes history. Forget device also clears stored monitoring, recording, and tray preferences.
+
 ## README visuals
 
 The renderer test generates temporary PNG previews for the README hero and tray
