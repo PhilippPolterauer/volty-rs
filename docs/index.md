@@ -26,6 +26,10 @@ affiliated with Logitech.
 ## At a glance
 
 - Windows 10/11, 64-bit x86; standalone executable, no installer.
+- The native Rust tray app used **about 4 MiB of private RAM** in a Windows
+  measurement of Volty 0.17.0. The dashboard loads WebView2 only when opened,
+  and its processes exit when the window closes.
+  See [memory footprint](diagnostics.md#memory-footprint).
 - Theme-aware battery tray icon and menu, per-device monitoring, configurable
   low-battery alerts, estimated time remaining, and local history.
 - Left-click the tray icon to open the responsive battery-history dashboard in

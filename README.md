@@ -4,9 +4,10 @@
 
 <h1 align="center">Volty</h1>
 
-<p align="center">Battery levels for your wireless devices, right in the Windows system tray.</p>
+<p align="center">Volty is a wireless device battery monitor for Windows. See battery levels for supported mice, headsets, and game controllers in the system tray.</p>
 
 <p align="center">
+  <a href="docs/device-support.md#tested-devices">Check your device model</a> ·
   <a href="https://apps.microsoft.com/detail/9np6xlpqmd7b">Microsoft Store</a> ·
   <a href="https://github.com/PhilippPolterauer/volty-rs/releases/latest">Download for Windows</a> ·
   <a href="https://philipppolterauer.github.io/volty-rs/">Documentation</a>
@@ -20,9 +21,13 @@
 
 ![Volty preview showing three tray icon styles, a low battery alert, and the battery history dashboard](docs/hero.png)
 
-Volty monitors supported mice, headsets, gamepads, and other peripherals on
-Windows 10 and 11 (x64). It shows the lowest monitored battery level by default,
-or you can pin the device you care about most.
+On Windows 10 and 11 (x64), Volty shows the lowest monitored battery level by
+default, or you can pin the device you care about most.
+
+The native Rust tray app is optimized to stay small. Volty 0.17.0 used
+**about 4 MiB of private RAM** in the tray on one Windows PC. The history
+dashboard loads WebView2 on demand, and its processes exit when you close it.
+See the [memory measurements](docs/diagnostics.md#memory-footprint).
 
 - **Hover** over the tray icon for each device’s charge and estimated time remaining, when available.
 - **Left-click** to open the battery history dashboard and see how quickly your devices drain.
@@ -32,6 +37,8 @@ or you can pin the device you care about most.
 Battery readings and history stay on your PC.
 
 ## Install
+
+Before installing, [check your exact model and connection type](docs/device-support.md#tested-devices).
 
 - **Microsoft Store** handles installation and updates. [Get Volty](https://apps.microsoft.com/detail/9np6xlpqmd7b)
 - **Standalone** runs without an installer. Download the `Volty-v*-x86_64-pc-windows-msvc.exe` release asset and open it. [Latest release](https://github.com/PhilippPolterauer/volty-rs/releases/latest)
