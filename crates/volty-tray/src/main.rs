@@ -228,7 +228,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         #[cfg(windows)]
         Some("history") => return history::run_cli(&args.collect::<Vec<_>>()),
         #[cfg(windows)]
-        Some("dashboard") => return run_dashboard_cli(&args.collect::<Vec<_>>()),
+        Some("dashboard") => return dashboard::run_cli(&args.collect::<Vec<_>>()),
         #[cfg(all(windows, feature = "ui-preview"))]
         Some("ui-preview") => return dashboard::run_preview(&args.collect::<Vec<_>>()),
         #[cfg(all(windows, not(feature = "ui-preview")))]
@@ -263,26 +263,24 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 #[cfg(windows)]
-fn run_dashboard_cli(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
-    let settings = args.iter().any(|argument| argument == "--settings");
-    if settings || args.iter().any(|argument| argument == "--window") {
-        let _shutdown_event = DashboardShutdownEvent::create()?;
-        let activation_event = DashboardActivationEvent::create(DASHBOARD_ACTIVATION_EVENT)?;
-        let settings_event = DashboardActivationEvent::create(DASHBOARD_SETTINGS_ACTIVATION_EVENT)?;
-        let _single_instance = SingleInstance::acquire_named(DASHBOARD_INSTANCE_MUTEX)?;
-        if !_single_instance.is_first() {
-            if settings {
-                settings_event.signal()?;
-            } else {
-                activation_event.signal()?;
-            }
-            return Ok(());
+fn run_local_dashboard(
+    settings: bool,
+    open_window: impl FnOnce() -> Result<(), Box<dyn std::error::Error>>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let shutdown_event = DashboardShutdownEvent::create()?;
+    let activation_event = DashboardActivationEvent::create(DASHBOARD_ACTIVATION_EVENT)?;
+    let settings_event = DashboardActivationEvent::create(DASHBOARD_SETTINGS_ACTIVATION_EVENT)?;
+    let single_instance = SingleInstance::acquire_named(DASHBOARD_INSTANCE_MUTEX)?;
+    if !single_instance.is_first() {
+        if settings {
+            settings_event.signal()?;
+        } else {
+            activation_event.signal()?;
         }
-        _shutdown_event.reset()?;
-        return dashboard::run_cli(args);
+        return Ok(());
     }
-
-    dashboard::run_cli(args)
+    shutdown_event.reset()?;
+    open_window()
 }
 
 #[cfg(windows)]

@@ -10,7 +10,7 @@ use eframe::egui::{
 };
 
 use super::{
-    super::model::SECONDS_PER_DAY,
+    super::model::{DashboardDevice, DashboardPoint, SECONDS_PER_DAY},
     accent,
     assets::Icon,
     canvas,
@@ -25,12 +25,44 @@ pub(super) type Reading = (usize, usize);
 
 struct SelectedReading {
     identity: String,
-    at: i64,
+    point: DashboardPoint,
+    // Distinguish identical samples within the timestamp without storing snapshot indices.
+    occurrence: usize,
 }
 
 impl SelectedReading {
-    fn matches(&self, identity: &str, at: i64) -> bool {
-        self.identity == identity && self.at == at
+    fn new(device: &DashboardDevice, index: usize) -> Self {
+        let point = device.points[index];
+        let start = device.points.partition_point(|reading| reading.t < point.t);
+        let occurrence = device.points[start..index]
+            .iter()
+            .filter(|reading| **reading == point)
+            .count();
+        Self {
+            identity: device.identity.clone(),
+            point,
+            occurrence,
+        }
+    }
+
+    fn resolve(&self, snapshot: &Snapshot) -> Option<Reading> {
+        let (device, data) = snapshot
+            .data
+            .devices
+            .iter()
+            .enumerate()
+            .find(|(_, device)| device.identity == self.identity)?;
+        let start = data
+            .points
+            .partition_point(|reading| reading.t < self.point.t);
+        let index = data.points[start..]
+            .iter()
+            .take_while(|reading| reading.t == self.point.t)
+            .enumerate()
+            .filter(|(_, reading)| **reading == self.point)
+            .nth(self.occurrence)?
+            .0;
+        Some((device, start + index))
     }
 }
 
@@ -62,6 +94,7 @@ pub(super) struct HistoryView {
     collapsed: bool,
     filter: ReadingsFilter,
     readings: Option<Arc<Vec<Reading>>>,
+    readings_focus: Option<usize>,
 }
 
 impl Default for HistoryView {
@@ -94,6 +127,7 @@ impl Default for HistoryView {
             collapsed: false,
             filter: ReadingsFilter::Visible,
             readings: None,
+            readings_focus: None,
         }
     }
 }
@@ -1234,6 +1268,10 @@ impl HistoryView {
         hovered: Option<i64>,
         can_export: bool,
     ) -> Option<Export> {
+        let selected_row = self
+            .selected_reading
+            .as_ref()
+            .and_then(|row| row.resolve(snapshot));
         let mut export = false;
         let mut jump = false;
         let mut table_hover = None;
@@ -1277,26 +1315,13 @@ impl HistoryView {
                             export = ui
                                 .add_enabled(can_export, Button::new("Export CSV…"))
                                 .clicked();
-                            let selected = self.selected_reading.as_ref().and_then(|selection| {
-                                let device = snapshot
-                                    .data
-                                    .devices
-                                    .iter()
-                                    .find(|device| device.identity == selection.identity)?;
-                                let index = device
-                                    .points
-                                    .partition_point(|point| point.t < selection.at);
-                                device
-                                    .points
-                                    .get(index)
-                                    .filter(|point| point.t == selection.at)
-                                    .map(|point| (device, point))
-                            });
                             if ui
-                                .add_enabled(selected.is_some(), Button::new("Copy reading"))
+                                .add_enabled(selected_row.is_some(), Button::new("Copy reading"))
                                 .clicked()
                             {
-                                if let Some((device, point)) = selected {
+                                if let Some((device, point)) = selected_row {
+                                    let device = &snapshot.data.devices[device];
+                                    let point = device.points[point];
                                     ui.ctx().copy_text(format!(
                                         "{}\t{}\t{}\t{}\t{}\tOnline",
                                         platform::exact_date(point.t),
@@ -1323,17 +1348,24 @@ impl HistoryView {
                         .inner
                     })
                     .inner;
-                if filter != self.filter {
+                let readings_focus = focused.filter(|_| filter == ReadingsFilter::Focused);
+                if filter != self.filter || readings_focus != self.readings_focus {
+                    self.readings_focus = readings_focus;
                     self.filter = filter;
                     self.invalidate_readings();
                 }
                 let rows = self.readings.get_or_insert_with(|| {
                     let mut rows = Vec::new();
-                    for series in visible {
-                        let device = series.index;
-                        if filter == ReadingsFilter::Focused && Some(device) != focused {
-                            continue;
-                        }
+                    let devices = if filter == ReadingsFilter::Focused {
+                        &[]
+                    } else {
+                        visible
+                    };
+                    for device in devices
+                        .iter()
+                        .map(|series| series.index)
+                        .chain(readings_focus)
+                    {
                         rows.extend(
                             snapshot.data.devices[device]
                                 .points
@@ -1501,31 +1533,43 @@ impl HistoryView {
                         .max_height(175.0)
                         .min_scrolled_height(216.0)
                         .auto_shrink([false, true]);
-                    let nearest = cursor
-                        .filter(|at| {
-                            slice
-                                .first()
-                                .zip(slice.last())
-                                .is_some_and(|(first, last)| {
-                                    (time(first)..=time(last)).contains(at)
-                                })
-                        })
-                        .and_then(|at| {
-                            let after = slice
-                                .partition_point(|row| time(row) < at)
-                                .min(slice.len() - 1);
-                            let before = after.saturating_sub(1);
-                            let nearest = if time(&slice[before]).abs_diff(at)
-                                < time(&slice[after]).abs_diff(at)
-                            {
-                                before
-                            } else {
-                                after
-                            };
-                            (time(&slice[nearest]).abs_diff(at)
-                                <= (super::super::model::OFFLINE_AFTER_SECONDS / 2) as u64)
-                                .then_some(nearest)
-                        });
+                    let selected_index = |selected: Reading| {
+                        slice
+                            .binary_search_by_key(&(time(&selected), selected), |row| {
+                                (time(row), *row)
+                            })
+                            .ok()
+                    };
+                    let mut pinned_selection = selected_row
+                        .filter(|row| self.pinned == Some(time(row)))
+                        .and_then(selected_index);
+                    let nearest = pinned_selection.or_else(|| {
+                        cursor
+                            .filter(|at| {
+                                slice
+                                    .first()
+                                    .zip(slice.last())
+                                    .is_some_and(|(first, last)| {
+                                        (time(first)..=time(last)).contains(at)
+                                    })
+                            })
+                            .and_then(|at| {
+                                let after = slice
+                                    .partition_point(|row| time(row) < at)
+                                    .min(slice.len() - 1);
+                                let before = after.saturating_sub(1);
+                                let nearest = if time(&slice[before]).abs_diff(at)
+                                    < time(&slice[after]).abs_diff(at)
+                                {
+                                    before
+                                } else {
+                                    after
+                                };
+                                (time(&slice[nearest]).abs_diff(at)
+                                    <= (super::super::model::OFFLINE_AFTER_SECONDS / 2) as u64)
+                                    .then_some(nearest)
+                            })
+                    });
                     let display_index = |index| {
                         if self.oldest_first {
                             index
@@ -1578,25 +1622,17 @@ impl HistoryView {
                             .map(display_index);
                     }
                     if step != 0 && !displayed.is_empty() {
-                        let current = self
-                            .selected_reading
-                            .as_ref()
-                            .and_then(|selection| {
-                                displayed.iter().position(|&(device, point)| {
-                                    let device = &snapshot.data.devices[device];
-                                    selection.matches(&device.identity, device.points[point].t)
-                                })
-                            })
+                        let current = selected_row
+                            .and_then(|selected| displayed.iter().position(|row| *row == selected))
                             .map(display_index);
                         let index = current.map_or(0, |i| {
                             i.saturating_add_signed(step as isize)
                                 .min(displayed.len() - 1)
                         });
                         let row = displayed[display_index(index)];
-                        self.selected_reading = Some(SelectedReading {
-                            identity: snapshot.data.devices[row.0].identity.clone(),
-                            at: time(&row),
-                        });
+                        pinned_selection = selected_index(row);
+                        self.selected_reading =
+                            Some(SelectedReading::new(&snapshot.data.devices[row.0], row.1));
                         self.pinned = Some(time(&row));
                         self.pinned_activity = None;
                         scroll_index = Some(index);
@@ -1624,10 +1660,9 @@ impl HistoryView {
                             }
                             if response.clicked() {
                                 ui.memory_mut(|memory| memory.request_focus(keyboard));
-                                self.selected_reading = Some(SelectedReading {
-                                    identity: device_data.identity.clone(),
-                                    at: point.t,
-                                });
+                                pinned_selection = selected_index(row);
+                                self.selected_reading =
+                                    Some(SelectedReading::new(device_data, row.1));
                                 self.pinned_activity = None;
                                 self.pinned = Some(point.t);
                             }
@@ -1635,10 +1670,9 @@ impl HistoryView {
                                 ui,
                                 rect,
                                 response.hovered()
-                                    || self.selected_reading.as_ref().is_some_and(|selection| {
-                                        selection.matches(&device_data.identity, point.t)
-                                    }) && self.pinned == Some(point.t)
-                                    || nearest.is_some_and(|i| slice[i] == row),
+                                    || pinned_selection
+                                        .or(nearest)
+                                        .is_some_and(|i| slice[i] == row),
                             );
                             let cells = reading_cells(rect, edges);
                             let labels = [
