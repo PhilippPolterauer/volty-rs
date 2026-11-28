@@ -7,8 +7,8 @@ use crate::{
     provider::is_invalid_hidpp_slot,
 };
 
-const OFFLINE_AFTER_SECONDS: i64 = 15 * 60;
-const SECONDS_PER_DAY: i64 = 86_400;
+pub(super) const OFFLINE_AFTER_SECONDS: i64 = 15 * 60;
+pub(super) const SECONDS_PER_DAY: i64 = 86_400;
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub(super) struct DashboardData {

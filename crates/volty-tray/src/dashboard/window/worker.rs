@@ -7,12 +7,12 @@ use std::{
 
 use eframe::egui::Context;
 
-use crate::config::{AppConfig, AppTheme, BatteryColorMap};
+use crate::history::HistoryDeletion;
 
 use super::{
     super::{
         management::{CleanupKind, CleanupResult, DashboardBackend, ManagedArtifact},
-        model::{DashboardData, DashboardPoint},
+        model::{DashboardData, DashboardPoint, SECONDS_PER_DAY},
     },
     chart::Chart,
 };
@@ -22,14 +22,15 @@ type BackendError = Box<dyn std::error::Error>;
 pub(super) struct Snapshot {
     pub(super) data: DashboardData,
     pub(super) charts: Vec<Chart>,
-    pub(super) theme: AppTheme,
-    pub(super) colors: BatteryColorMap,
     pub(super) artifacts: Option<Result<Vec<ManagedArtifact>, String>>,
 }
 
 pub(super) enum Action {
-    OpenSettings,
     Recording {
+        identity: String,
+        enabled: bool,
+    },
+    Monitoring {
         identity: String,
         enabled: bool,
     },
@@ -44,13 +45,18 @@ pub(super) enum Action {
 }
 
 pub(super) enum Operation {
-    Cleanup(CleanupKind, u32),
-    Forget { identity: String, preferences: bool },
+    Cleanup(CleanupResult),
+    Forget {
+        identity: String,
+        preferences: bool,
+        expected: HistoryDeletion,
+    },
     DeleteArtifacts(Vec<ManagedArtifact>),
 }
 
 pub(super) struct Confirmation {
     pub(super) title: String,
+    pub(super) action: &'static str,
     pub(super) description: String,
     pub(super) operation: Operation,
 }
@@ -66,6 +72,9 @@ pub(super) struct Failure {
 }
 
 pub(super) struct Worker {
+    ctx: Context,
+    launched: mpsc::Sender<io::Result<()>>,
+    launches: mpsc::Receiver<io::Result<()>>,
     send: mpsc::SyncSender<Action>,
     receive: mpsc::Receiver<Result<Reply, Failure>>,
     load: mpsc::SyncSender<(u32, bool)>,
@@ -82,6 +91,7 @@ impl Worker {
         let (loaded, snapshots) = mpsc::channel();
         let (export, export_requests) = mpsc::sync_channel::<(PathBuf, Arc<Snapshot>, usize)>(1);
         let (exported, exports) = mpsc::channel();
+        let (launched, launches) = mpsc::channel();
         let backend = Arc::new(backend);
         let read_backend = Arc::clone(&backend);
         let repaint = ctx.clone();
@@ -114,11 +124,15 @@ impl Worker {
                     repaint.request_repaint();
                 }
             })?;
+        let repaint = ctx.clone();
         thread::Builder::new()
             .name("volty-dashboard-data".to_owned())
             .spawn(move || {
                 while let Ok(action) = requests.recv() {
-                    let refresh = matches!(action, Action::Execute(_) | Action::Recording { .. });
+                    let refresh = matches!(
+                        action,
+                        Action::Execute(_) | Action::Recording { .. } | Action::Monitoring { .. }
+                    );
                     let response = handle(&backend, action).map_err(|error| Failure {
                         message: error.to_string(),
                         refresh,
@@ -126,16 +140,24 @@ impl Worker {
                     if responses.send(response).is_err() {
                         break;
                     }
-                    ctx.request_repaint();
+                    repaint.request_repaint();
                 }
             })?;
-        Ok(Self { send, receive, load, snapshots, export, exports })
+        Ok(Self {
+            ctx,
+            launched,
+            launches,
+            send,
+            receive,
+            load,
+            snapshots,
+            export,
+            exports,
+        })
     }
 
     pub(super) fn send(&self, action: Action) -> io::Result<()> {
-        self.send
-            .try_send(action)
-            .map_err(queue_error)
+        self.send.try_send(action).map_err(queue_error)
     }
 
     pub(super) fn poll(&self) -> Option<Result<Reply, Failure>> {
@@ -150,12 +172,44 @@ impl Worker {
         self.snapshots.try_recv().ok()
     }
 
-    pub(super) fn export(&self, path: PathBuf, snapshot: Arc<Snapshot>, index: usize) -> io::Result<()> {
-        self.export.try_send((path, snapshot, index)).map_err(queue_error)
+    pub(super) fn export(
+        &self,
+        path: PathBuf,
+        snapshot: Arc<Snapshot>,
+        index: usize,
+    ) -> io::Result<()> {
+        self.export
+            .try_send((path, snapshot, index))
+            .map_err(queue_error)
     }
 
     pub(super) fn exported(&self) -> Option<Result<String, String>> {
         self.exports.try_recv().ok()
+    }
+
+    pub(super) fn launch_settings(&self) -> io::Result<()> {
+        use std::os::windows::process::CommandExt;
+        let launched = self.launched.clone();
+        let ctx = self.ctx.clone();
+        thread::Builder::new()
+            .name("volty-open-settings".to_owned())
+            .spawn(move || {
+                let result = std::env::current_exe().and_then(|executable| {
+                    std::process::Command::new(executable)
+                        .args(["dashboard", "--settings"])
+                        .creation_flags(windows_sys::Win32::System::Threading::CREATE_NO_WINDOW)
+                        .spawn()
+                        .map(|_| ())
+                });
+                if launched.send(result).is_ok() {
+                    ctx.request_repaint();
+                }
+            })?;
+        Ok(())
+    }
+
+    pub(super) fn settings_launched(&self) -> Option<io::Result<()>> {
+        self.launches.try_recv().ok()
     }
 }
 
@@ -166,26 +220,31 @@ fn queue_error<T>(error: mpsc::TrySendError<T>) -> io::Error {
     }
 }
 
-fn load_snapshot(backend: &DashboardBackend, days: u32, include_artifacts: bool) -> Result<Snapshot, BackendError> {
+fn load_snapshot(
+    backend: &DashboardBackend,
+    days: u32,
+    include_artifacts: bool,
+) -> Result<Snapshot, BackendError> {
     let data = backend.get_history_data(days)?;
-    let config = AppConfig::load().unwrap_or_default();
-    let charts = data.devices.iter().map(Chart::new).collect();
-    let artifacts = include_artifacts.then(|| backend.list_artifacts().map_err(|err| err.to_string()));
+    let start = data
+        .generated_at
+        .saturating_sub(i64::from(days) * SECONDS_PER_DAY);
+    let charts = data
+        .devices
+        .iter()
+        .map(|device| Chart::new(device, start, data.generated_at))
+        .collect();
+    let artifacts =
+        include_artifacts.then(|| backend.list_artifacts().map_err(|err| err.to_string()));
     Ok(Snapshot {
         data,
         charts,
-        theme: config.app_theme,
-        colors: config.battery_color_map,
         artifacts,
     })
 }
 
 fn handle(backend: &DashboardBackend, action: Action) -> Result<Reply, BackendError> {
     Ok(match action {
-        Action::OpenSettings => {
-            backend.open_settings()?;
-            Reply::Done(None, false)
-        }
         Action::Recording { identity, enabled } => {
             backend.set_history_recording(&identity, enabled)?;
             Reply::Done(
@@ -194,6 +253,20 @@ fn handle(backend: &DashboardBackend, action: Action) -> Result<Reply, BackendEr
                         "History recording resumed."
                     } else {
                         "History recording paused."
+                    }
+                    .to_owned(),
+                ),
+                true,
+            )
+        }
+        Action::Monitoring { identity, enabled } => {
+            backend.set_monitored(&identity, enabled)?;
+            Reply::Done(
+                Some(
+                    if enabled {
+                        "Monitoring enabled."
+                    } else {
+                        "Monitoring paused."
                     }
                     .to_owned(),
                 ),
@@ -214,6 +287,11 @@ fn handle(backend: &DashboardBackend, action: Action) -> Result<Reply, BackendEr
                 description.push_str("\nNew readings can appear if history recording is enabled.");
             }
             Reply::Confirm(Confirmation {
+                action: if preferences {
+                    "Forget device"
+                } else {
+                    "Delete history"
+                },
                 title: if preferences {
                     "Forget device?"
                 } else {
@@ -224,6 +302,7 @@ fn handle(backend: &DashboardBackend, action: Action) -> Result<Reply, BackendEr
                 operation: Operation::Forget {
                     identity,
                     preferences,
+                    expected: preview.counts(),
                 },
             })
         }
@@ -243,8 +322,9 @@ fn handle(backend: &DashboardBackend, action: Action) -> Result<Reply, BackendEr
                 };
                 Reply::Confirm(Confirmation {
                     title,
+                    action: "Delete samples",
                     description: preview_text(&preview),
-                    operation: Operation::Cleanup(kind, days),
+                    operation: Operation::Cleanup(preview),
                 })
             }
         }
@@ -260,6 +340,11 @@ fn handle(backend: &DashboardBackend, action: Action) -> Result<Reply, BackendEr
             }
             description.push_str("\n\nThis deletion is permanent.");
             Reply::Confirm(Confirmation {
+                action: if files.len() == 1 {
+                    "Delete file"
+                } else {
+                    "Delete files"
+                },
                 title: format!(
                     "Delete {} diagnostic file{}?",
                     files.len(),
@@ -283,15 +368,26 @@ fn preview_text(preview: &CleanupResult) -> String {
         _ => String::new(),
     };
     format!(
-        "{} samples across {} device(s).{range}\nThis deletion is permanent.",
-        preview.samples, preview.devices
+        "{} {} across {} {}.{range}\nThis deletion is permanent.",
+        preview.samples,
+        if preview.samples == 1 {
+            "sample"
+        } else {
+            "samples"
+        },
+        preview.devices,
+        if preview.devices == 1 {
+            "device"
+        } else {
+            "devices"
+        }
     )
 }
 
 fn execute(backend: &DashboardBackend, operation: Operation) -> Result<String, BackendError> {
     match operation {
-        Operation::Cleanup(kind, days) => {
-            let deleted = backend.execute_cleanup(kind, Some(days), None)?;
+        Operation::Cleanup(preview) => {
+            let deleted = backend.execute_cleanup(preview)?;
             Ok(format!(
                 "Deleted {} samples across {} device(s).",
                 deleted.samples, deleted.devices
@@ -300,8 +396,9 @@ fn execute(backend: &DashboardBackend, operation: Operation) -> Result<String, B
         Operation::Forget {
             identity,
             preferences,
+            expected,
         } => {
-            let result = backend.forget_device(&identity, preferences)?;
+            let result = backend.forget_device(&identity, preferences, expected)?;
             let suffix = if preferences {
                 " Device preferences reset."
             } else {
@@ -353,6 +450,70 @@ fn write_csv(mut writer: impl Write, points: &[DashboardPoint]) -> io::Result<()
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::history::HistoryStore;
+    use std::time::{Duration, Instant};
+
+    #[test]
+    fn export_uses_displayed_snapshot_while_history_read_waits_for_sqlite() {
+        let directory =
+            std::env::temp_dir().join(format!("volty-dashboard-workers-{}", std::process::id()));
+        std::fs::create_dir(&directory).unwrap();
+        let database = directory.join("history.sqlite3");
+        drop(HistoryStore::open(&database).unwrap());
+        let writer = rusqlite::Connection::open(&database).unwrap();
+        writer
+            .execute_batch(
+                "PRAGMA journal_mode = DELETE;
+             WITH RECURSIVE counter(n) AS (
+                 SELECT 1 UNION ALL SELECT n + 1 FROM counter WHERE n < 100000
+             )
+             INSERT INTO samples (identity, name, recorded_at, percent, charging)
+             SELECT 'hid:fixture', 'Fixture', unixepoch() - 100000 + n, n % 101, (n / 200) % 2
+             FROM counter;",
+            )
+            .unwrap();
+        let backend = DashboardBackend::new(database, false);
+        let start = Instant::now();
+        let snapshot = Arc::new(load_snapshot(&backend, 7, false).unwrap());
+        assert_eq!(snapshot.data.devices[0].points.len(), 100_000);
+        eprintln!(
+            "100,000 readings loaded and chart prepared in {:?}",
+            start.elapsed()
+        );
+
+        writer.execute_batch("BEGIN EXCLUSIVE").unwrap();
+        let worker = Worker::start(Context::default(), backend).unwrap();
+        worker.load(1, false).unwrap();
+        let export = directory.join("history.csv");
+        worker
+            .export(export.clone(), Arc::clone(&snapshot), 0)
+            .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let result = loop {
+            if let Some(result) = worker.exported() {
+                break result;
+            }
+            assert!(Instant::now() < deadline, "CSV worker did not finish");
+            thread::sleep(Duration::from_millis(5));
+        };
+        assert!(result.is_ok(), "{result:?}");
+        writer.execute_batch("ROLLBACK").unwrap();
+        let loaded = loop {
+            if let Some((days, result)) = worker.snapshot() {
+                assert_eq!(days, 1);
+                break result;
+            }
+            assert!(Instant::now() < deadline, "History worker did not finish");
+            thread::sleep(Duration::from_millis(5));
+        };
+        let readings = loaded.unwrap().data.devices[0].points.len();
+        assert!(readings < 100_000);
+        drop(worker);
+        drop(writer);
+        std::fs::remove_file(export).unwrap();
+        std::fs::remove_file(directory.join("history.sqlite3")).unwrap();
+        std::fs::remove_dir(directory).unwrap();
+    }
 
     #[test]
     fn csv_preserves_missing_readings_and_the_dashboard_column_order() {

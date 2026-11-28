@@ -1,7 +1,7 @@
 use eframe::egui::{self, pos2, vec2, Align2, FontId, Rect, Sense, Stroke, Ui};
 
 use super::{
-    super::model::{DashboardDevice, DashboardPoint},
+    super::model::{DashboardDevice, DashboardPoint, OFFLINE_AFTER_SECONDS},
     accent, duration, percent, platform,
 };
 
@@ -12,6 +12,9 @@ pub(super) struct Chart {
     points: Vec<DashboardPoint>,
     charging: Vec<(usize, usize)>,
     activity: Vec<(usize, usize, bool)>,
+    activity_start: i64,
+    activity_end: i64,
+    labels: Vec<(i64, String)>,
 }
 
 impl Chart {
@@ -19,13 +22,14 @@ impl Chart {
         !self.charging.is_empty()
     }
 
-    pub(super) fn new(device: &DashboardDevice) -> Self {
+    pub(super) fn new(device: &DashboardDevice, activity_start: i64, activity_end: i64) -> Self {
         let mut points = Vec::new();
         let mut charging = Vec::new();
         let mut activity = Vec::new();
         let start = device.first_at;
         let end = device.last_at;
         let mut remaining = device.points.as_slice();
+        let mut previous_group_end = None;
 
         for column in 0..COLUMNS {
             let count = remaining.partition_point(|point| bucket(start, end, point.t) <= column);
@@ -43,32 +47,55 @@ impl Chart {
                     .enumerate()
                     .filter_map(|(index, point)| point.p.map(|p| (p, index)))
             };
+            let first_gap = if previous_group_end
+                .is_some_and(|previous| group[0].t.saturating_sub(previous) > OFFLINE_AFTER_SECONDS)
+            {
+                Some(0)
+            } else {
+                group
+                    .windows(2)
+                    .position(|pair| pair[1].t.saturating_sub(pair[0].t) > OFFLINE_AFTER_SECONDS)
+                    .map(|index| index + 1)
+            };
+            previous_group_end = Some(group[group.len() - 1].t);
             let mut indices = [
                 Some(0),
                 Some(group.len() - 1),
                 valid().min().map(|(_, index)| index),
                 valid().max().map(|(_, index)| index),
                 group.iter().position(|point| point.p.is_none()),
+                first_gap.and_then(|index| index.checked_sub(1)),
+                first_gap,
             ];
             indices.sort_unstable();
             let mut previous = None;
             for index in indices.into_iter().flatten() {
                 if previous != Some(index) {
+                    if first_gap == Some(index) {
+                        points.push(DashboardPoint {
+                            p: None,
+                            ..group[index]
+                        });
+                    }
                     points.push(group[index]);
                     previous = Some(index);
                 }
             }
         }
 
-        if let (Some(first), Some(last)) = (device.sessions.first(), device.sessions.last()) {
+        if !device.sessions.is_empty() {
             for column in 0..COLUMNS {
                 let at = interpolate(
-                    first.start,
-                    last.end,
+                    activity_start,
+                    activity_end,
                     (column as f64 + 0.5) / COLUMNS as f64,
                 );
                 let index = device.sessions.partition_point(|session| session.end <= at);
-                if let Some(session) = device.sessions.get(index) {
+                if let Some(session) = device
+                    .sessions
+                    .get(index)
+                    .filter(|session| session.start <= at)
+                {
                     match activity.last_mut() {
                         Some((_, right, online))
                             if *online == session.online && *right == column =>
@@ -84,6 +111,13 @@ impl Chart {
             points,
             charging,
             activity,
+            activity_start,
+            activity_end,
+            labels: [0.0, 0.25, 0.5, 0.75, 1.0]
+                .into_iter()
+                .map(|fraction| interpolate(start, end, fraction))
+                .map(|time| (time, platform::date(time)))
+                .collect(),
         }
     }
 
@@ -135,20 +169,24 @@ impl Chart {
                 }
             }
         }
-        for (time, position, align) in [
-            (device.first_at, plot.left_bottom(), Align2::LEFT_TOP),
-            (device.last_at, plot.right_bottom(), Align2::RIGHT_TOP),
-        ] {
+        for (index, (time, label)) in self.labels.iter().enumerate() {
+            let align = match index {
+                0 => Align2::LEFT_TOP,
+                4 => Align2::RIGHT_TOP,
+                2 if plot.width() >= 480.0 => Align2::CENTER_TOP,
+                1 | 3 if plot.width() >= 850.0 => Align2::CENTER_TOP,
+                _ => continue,
+            };
+            if index > 0 && device.first_at == device.last_at {
+                break;
+            }
             painter.text(
-                position + vec2(0.0, 5.0),
+                pos2(x(*time), plot.bottom() + 5.0),
                 align,
-                platform::date(time),
+                label,
                 FontId::proportional(12.0),
                 label_color,
             );
-            if device.first_at == device.last_at {
-                break;
-            }
         }
         if let Some(pos) = response.hover_pos().filter(|pos| plot.contains(*pos)) {
             let at = interpolate(
@@ -166,9 +204,9 @@ impl Chart {
                 if let Some(p) = point.p {
                     painter.circle_filled(pos2(x, y(p)), 4.0, color);
                 }
-                response.on_hover_text(format!(
+                response.on_hover_text_at_pointer(format!(
                     "{}\n{}  ·  {}{}",
-                    platform::date(point.t),
+                    platform::exact_date(point.t),
                     percent(point.p),
                     voltage(point.v),
                     if point.c { "  ·  Charging" } else { "" }
@@ -178,14 +216,12 @@ impl Chart {
     }
 
     pub(super) fn timeline(&self, ui: &mut Ui, device: &DashboardDevice) {
-        if self.activity.is_empty() {
-            ui.label("No activity intervals in this range.");
-            return;
-        }
         let (rect, response) =
             ui.allocate_exact_size(vec2(ui.available_width(), 16.0), Sense::hover());
         let online_color = accent(ui);
-        let offline_color = ui.visuals().widgets.inactive.bg_fill;
+        let offline_color = ui.visuals().widgets.noninteractive.bg_stroke.color;
+        ui.painter()
+            .rect_filled(rect, 0, ui.visuals().extreme_bg_color);
         for &(from, to, online) in &self.activity {
             ui.painter().rect_filled(
                 band_rect(rect, from, to),
@@ -193,27 +229,46 @@ impl Chart {
                 if online { online_color } else { offline_color },
             );
         }
-        if let (Some(pos), Some(first), Some(last)) = (
-            response.hover_pos(),
-            device.sessions.first(),
-            device.sessions.last(),
-        ) {
+        if let Some(pos) = response.hover_pos() {
             let at = interpolate(
-                first.start,
-                last.end,
+                self.activity_start,
+                self.activity_end,
                 f64::from((pos.x - rect.left()) / rect.width()),
             );
             let index = device.sessions.partition_point(|session| session.end <= at);
-            if let Some(session) = device.sessions.get(index) {
-                response.on_hover_text(format!(
+            if let Some(session) = device
+                .sessions
+                .get(index)
+                .filter(|session| session.start <= at)
+            {
+                response.on_hover_text_at_pointer(format!(
                     "{}  ·  {}\n{} to {}",
-                    if session.online { "Online" } else { "Offline" },
+                    if session.online {
+                        "Online (inferred)"
+                    } else {
+                        "Offline (inferred)"
+                    },
                     duration(session.end - session.start),
-                    platform::date(session.start),
-                    platform::date(session.end)
+                    platform::exact_date(session.start),
+                    platform::exact_date(session.end)
+                ));
+            } else if let Some(first) = device.sessions.first() {
+                response.on_hover_text_at_pointer(format!(
+                    "Unknown  ·  {}\n{} to {}",
+                    duration(first.start.saturating_sub(self.activity_start)),
+                    platform::date(self.activity_start),
+                    platform::date(first.start),
                 ));
             }
         }
+    }
+
+    pub(super) fn unknown_seconds(&self, device: &DashboardDevice) -> i64 {
+        device
+            .sessions
+            .first()
+            .map_or(self.activity_end, |first| first.start)
+            .saturating_sub(self.activity_start)
     }
 }
 

@@ -10,7 +10,7 @@ use sha2::{Digest, Sha256};
 
 use crate::{
     config::AppConfig,
-    history::{unix_now, HistoryDeletion, HistoryRangePreview, HistoryStore},
+    history::{check_cleanup_scope, unix_now, HistoryDeletion, HistoryRangePreview, HistoryStore},
     state::{DeviceState, ForgottenDevicePreferences, TrayIconStyle, TrayIconTheme},
 };
 
@@ -26,6 +26,10 @@ pub(super) struct DashboardBackend {
 }
 
 impl DashboardBackend {
+    pub(super) fn is_local(&self) -> bool {
+        self.mutations_allowed
+    }
+
     pub(super) fn new(history_path: PathBuf, mutations_allowed: bool) -> Self {
         Self {
             history_path,
@@ -35,12 +39,18 @@ impl DashboardBackend {
 
     pub(super) fn get_settings_data(&self) -> Result<SettingsData, Box<dyn std::error::Error>> {
         if !self.mutations_allowed {
-            return Ok(SettingsData { settings: None, inventory: Vec::new() });
+            return Ok(SettingsData {
+                settings: None,
+                inventory: Vec::new(),
+            });
         }
         let history = open_history_for_read(&self.history_path)?;
         let state = DeviceState::open_local()?;
         let (inventory, tray_display) = self.inventory(history.as_ref(), &state)?;
-        Ok(SettingsData { settings: Some(self.load_settings(tray_display)), inventory })
+        Ok(SettingsData {
+            settings: Some(self.load_settings(tray_display)),
+            inventory,
+        })
     }
 
     pub(super) fn get_history_data(
@@ -56,8 +66,21 @@ impl DashboardBackend {
             Some(store) => store.samples_since(window_start)?,
             None => Vec::new(),
         };
-        let state = DeviceState::open_local()?;
-        let (inventory, _) = self.inventory(history.as_ref(), &state)?;
+        let inventory = if self.mutations_allowed {
+            self.inventory(history.as_ref(), &DeviceState::open_local()?)?
+                .0
+        } else {
+            build_inventory(
+                history
+                    .as_ref()
+                    .map(HistoryStore::inventory)
+                    .transpose()?
+                    .unwrap_or_default(),
+                BTreeMap::new(),
+                BTreeMap::new(),
+                None,
+            )
+        };
         self.build_dashboard_data(samples, days, generated_at, window_start, inventory)
     }
 
@@ -65,9 +88,15 @@ impl DashboardBackend {
         &self,
         history: Option<&HistoryStore>,
         state: &DeviceState,
-    ) -> Result<(Vec<DashboardInventoryDevice>, crate::state::TrayDisplaySettings), Box<dyn std::error::Error>> {
+    ) -> Result<
+        (
+            Vec<DashboardInventoryDevice>,
+            crate::state::TrayDisplaySettings,
+        ),
+        Box<dyn std::error::Error>,
+    > {
         let tray_display = state.tray_display()?;
-        let inventory = build_inventory(
+        let mut inventory = build_inventory(
             history
                 .map(HistoryStore::inventory)
                 .transpose()?
@@ -76,13 +105,24 @@ impl DashboardBackend {
             state.history_recording_preferences()?,
             tray_display.pinned_device.clone(),
         );
+        if self.mutations_allowed {
+            if let Some(live) = super::live::read() {
+                for device in live {
+                    match inventory.binary_search_by(|item| item.identity.cmp(&device.identity)) {
+                        Ok(index) => inventory[index].name = device.name,
+                        Err(index) => {
+                            let mut item = inventory_entry(device.identity);
+                            item.name = device.name;
+                            inventory.insert(index, item);
+                        }
+                    }
+                }
+            }
+        }
         Ok((inventory, tray_display))
     }
 
-    fn load_settings(
-        &self,
-        tray_display: crate::state::TrayDisplaySettings,
-    ) -> DashboardSettings {
+    fn load_settings(&self, tray_display: crate::state::TrayDisplaySettings) -> DashboardSettings {
         let (config, config_error) = match AppConfig::load() {
             Ok(config) => (config, None),
             Err(error) => (AppConfig::default(), Some(error.to_string())),
@@ -196,55 +236,57 @@ impl DashboardBackend {
 
     pub(super) fn execute_cleanup(
         &self,
-        kind: CleanupKind,
-        days: Option<u32>,
-        identity: Option<&str>,
+        preview: CleanupResult,
     ) -> Result<CleanupResult, Box<dyn std::error::Error>> {
         self.require_mutations()?;
-        let days = days.ok_or_else(|| {
-            io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "cleanup execution requires a days value",
-            )
-        })?;
-        validate_days(days, MAX_CLEANUP_DAYS)?;
-        validate_identity(identity)?;
-        if kind == CleanupKind::DeviceHistory {
+        let Some(cutoff) = preview.cutoff else {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
-                "device_history is a preview-only cleanup kind; use forget_device to delete history",
+                "Cleanup execution requires a confirmed cutoff",
             )
             .into());
-        }
-        let cutoff = cutoff_for_days(days)?;
-        if !self.history_path.exists() {
-            return Ok(CleanupResult::new(
-                kind,
-                days,
-                cutoff,
-                HistoryDeletion::default(),
-                true,
-            ));
-        }
-        let mut store = HistoryStore::open_for_edit(&self.history_path)?;
-        let counts = match kind {
-            CleanupKind::OlderThan => store.delete_older_than(cutoff, identity)?,
-            CleanupKind::InactiveDevices => store.delete_inactive(cutoff, identity)?,
-            CleanupKind::DeviceHistory => unreachable!("preview-only kind rejected above"),
         };
-        Ok(CleanupResult::new(kind, days, cutoff, counts, true))
+        let expected = preview.counts();
+        let counts = if self.history_path.try_exists()? {
+            let mut store = HistoryStore::open_for_edit(&self.history_path)?;
+            match preview.kind {
+                CleanupKind::OlderThan => {
+                    store.delete_older_than(cutoff, preview.identity.as_deref(), expected)?
+                }
+                CleanupKind::InactiveDevices => {
+                    store.delete_inactive(cutoff, preview.identity.as_deref(), expected)?
+                }
+                CleanupKind::DeviceHistory => {
+                    return Err(io::Error::other(
+                        "Use device history deletion for an exact identity",
+                    )
+                    .into())
+                }
+            }
+        } else {
+            check_cleanup_scope(HistoryDeletion::default(), expected)?;
+            HistoryDeletion::default()
+        };
+        Ok(CleanupResult {
+            samples: counts.samples,
+            devices: counts.devices,
+            deleted: true,
+            ..preview
+        })
     }
 
     pub(super) fn forget_device(
         &self,
         identity: &str,
         include_preferences: bool,
+        expected: HistoryDeletion,
     ) -> Result<ForgetResult, Box<dyn std::error::Error>> {
         self.require_mutations()?;
         validate_identity(Some(identity))?;
-        let deletion = if self.history_path.exists() {
-            HistoryStore::open_for_edit(&self.history_path)?.delete_identity(identity)?
+        let deletion = if self.history_path.try_exists()? {
+            HistoryStore::open_for_edit(&self.history_path)?.delete_identity(identity, expected)?
         } else {
+            check_cleanup_scope(HistoryDeletion::default(), expected)?;
             HistoryDeletion::default()
         };
         if !include_preferences {
@@ -270,6 +312,7 @@ impl DashboardBackend {
                 .into());
             }
         };
+        crate::app::notify_preferences();
         Ok(ForgetResult {
             identity: identity.to_owned(),
             deleted_samples: deletion.samples,
@@ -293,6 +336,18 @@ impl DashboardBackend {
             enabled,
             monitoring_unchanged: true,
         })
+    }
+
+    pub(super) fn set_monitored(
+        &self,
+        identity: &str,
+        enabled: bool,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        self.require_mutations()?;
+        validate_identity(Some(identity))?;
+        DeviceState::open_local()?.set_device_monitored(identity, enabled)?;
+        crate::app::notify_preferences();
+        Ok(())
     }
 
     pub(super) fn update_settings(
@@ -350,16 +405,6 @@ impl DashboardBackend {
     pub(super) fn test_notification(&self) -> Result<(), Box<dyn std::error::Error>> {
         self.require_mutations()?;
         crate::notify::show_low_battery_notification("Volty test", 15)?;
-        Ok(())
-    }
-
-    pub(super) fn open_settings(&self) -> Result<(), Box<dyn std::error::Error>> {
-        let executable = env::current_exe()?;
-        use std::os::windows::process::CommandExt;
-        std::process::Command::new(executable)
-            .args(["dashboard", "--settings"])
-            .creation_flags(windows_sys::Win32::System::Threading::CREATE_NO_WINDOW)
-            .spawn()?;
         Ok(())
     }
 
@@ -532,6 +577,12 @@ pub(super) struct CleanupResult {
 }
 
 impl CleanupResult {
+    pub(super) fn counts(&self) -> HistoryDeletion {
+        HistoryDeletion {
+            samples: self.samples,
+            devices: self.devices,
+        }
+    }
     fn new(
         kind: CleanupKind,
         days: u32,

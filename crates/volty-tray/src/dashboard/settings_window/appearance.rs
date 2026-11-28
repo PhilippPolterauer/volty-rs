@@ -4,18 +4,20 @@ use std::{io, ptr};
 use windows_sys::Win32::{
     Foundation::{COLORREF, HWND, LPARAM, LRESULT, RECT, WPARAM},
     Graphics::Gdi::{
-        BeginPaint, CreateSolidBrush, DeleteObject, EndPaint, FillRect, GetStockObject, GetSysColor,
-        RoundRect, SelectObject, SetBkColor, SetBkMode, SetDCPenColor, SetTextColor,
-        StretchDIBits, BITMAPINFO, BI_RGB, DC_PEN, DIB_RGB_COLORS,
-        HBRUSH, HDC, PAINTSTRUCT, SRCCOPY, TRANSPARENT,
+        BeginPaint, CreateSolidBrush, DeleteObject, EndPaint, FillRect, GetStockObject,
+        GetSysColor, RoundRect, SelectObject, SetBkColor, SetBkMode, SetDCPenColor, SetTextColor,
+        StretchDIBits, BITMAPINFO, BI_RGB, DC_PEN, DIB_RGB_COLORS, HBRUSH, HDC, PAINTSTRUCT,
+        SRCCOPY, TRANSPARENT,
     },
     UI::WindowsAndMessaging::GetClientRect,
 };
 
 use super::super::design::{apply_title_bar, Palette};
 
+use super::super::design::SECTION_RADIUS;
 use super::{
-    control, get_control_text, parse_hex_color, top_card_layout, ControlRole, SettingsWindow,
+    control, get_control_text, parse_hex_color, top_card_layout, ControlRole, Geometry,
+    SettingsWindow,
 };
 
 pub(super) struct Appearance {
@@ -94,14 +96,6 @@ impl Appearance {
             && self.high_contrast == other.high_contrast
             && self.canvas_color == other.canvas_color
             && self.text == other.text
-    }
-
-    pub(super) fn surface_rgb(&self) -> [u8; 3] {
-        [
-            self.surface_color as u8,
-            (self.surface_color >> 8) as u8,
-            (self.surface_color >> 16) as u8,
-        ]
     }
 
     pub(super) fn apply_native_theme(&self, window: HWND, state: &SettingsWindow) {
@@ -356,8 +350,12 @@ impl Appearance {
             let hdc: HDC = BeginPaint(window, &mut paint);
             GetClientRect(window, &mut rect);
             FillRect(hdc, &rect, self.canvas);
-            let width = (rect.right - rect.left).min(960);
-            let offset = (rect.right - width) / 2;
+            if !state.controls_ready {
+                EndPaint(window, &paint);
+                return;
+            }
+            let geometry = Geometry::for_client(window, state.dpi, rect);
+            let width = geometry.width;
             let old_brush = SelectObject(hdc, self.surface);
             let old_pen = SelectObject(hdc, GetStockObject(DC_PEN));
             SetDCPenColor(hdc, self.border);
@@ -368,12 +366,46 @@ impl Appearance {
                 (32, 400, width - 32, 670),
                 (32, 678, width - 32, 720),
             ] {
-                RoundRect(hdc, offset + left, top, offset + right, bottom, 10, 10);
+                let bounds = geometry.rect(left, top, right, bottom);
+                let radius = geometry.size(SECTION_RADIUS * 2);
+                RoundRect(
+                    hdc,
+                    bounds.left,
+                    bounds.top,
+                    bounds.right,
+                    bounds.bottom,
+                    radius,
+                    radius,
+                );
             }
             let inset = 56;
             let full_width = width - inset * 2;
             let gap = 16;
             let column_width = (full_width - gap * 2) / 3;
+            if state.preview_style.is_some() {
+                let mut bitmap = BITMAPINFO::default();
+                bitmap.bmiHeader.biSize = std::mem::size_of_val(&bitmap.bmiHeader) as u32;
+                bitmap.bmiHeader.biWidth = 101;
+                bitmap.bmiHeader.biHeight = -1;
+                bitmap.bmiHeader.biPlanes = 1;
+                bitmap.bmiHeader.biBitCount = 32;
+                bitmap.bmiHeader.biCompression = BI_RGB;
+                StretchDIBits(
+                    hdc,
+                    geometry.x(inset),
+                    geometry.y(644),
+                    geometry.size(full_width - 160),
+                    geometry.size(10),
+                    0,
+                    0,
+                    101,
+                    1,
+                    state.gradient_bgra.as_ptr().cast(),
+                    &bitmap,
+                    DIB_RGB_COLORS,
+                    SRCCOPY,
+                );
+            }
             for (role, column) in [
                 (ControlRole::RedColor, 0),
                 (ControlRole::YellowColor, 1),
@@ -385,13 +417,8 @@ impl Appearance {
                     u32::from(color[0]) | (u32::from(color[1]) << 8) | (u32::from(color[2]) << 16),
                 );
                 if !brush.is_null() {
-                    let x = offset + inset + (column_width + gap) * column + 2;
-                    let swatch = RECT {
-                        left: x,
-                        top: 560,
-                        right: x + 22,
-                        bottom: 582,
-                    };
+                    let x = inset + (column_width + gap) * column + 2;
+                    let swatch = geometry.rect(x, 560, x + 22, 582);
                     FillRect(hdc, &swatch, brush);
                     DeleteObject(brush);
                 }
@@ -405,14 +432,24 @@ impl Appearance {
                 bitmap.bmiHeader.biBitCount = 32;
                 bitmap.bmiHeader.biCompression = BI_RGB;
                 bitmap.bmiHeader.biSizeImage = state.preview_bgra.len() as u32;
-                let preview_x = offset + width - 124;
-                RoundRect(hdc, preview_x - 8, 590, preview_x + 72, 670, 10, 10);
+                let preview_x = width - 124;
+                let bounds = geometry.rect(preview_x - 8, 590, preview_x + 72, 670);
+                let radius = geometry.size(SECTION_RADIUS * 2);
+                RoundRect(
+                    hdc,
+                    bounds.left,
+                    bounds.top,
+                    bounds.right,
+                    bounds.bottom,
+                    radius,
+                    radius,
+                );
                 StretchDIBits(
                     hdc,
-                    preview_x - 4,
-                    594,
-                    72,
-                    72,
+                    geometry.x(preview_x - 4),
+                    geometry.y(594),
+                    geometry.size(72),
+                    geometry.size(72),
                     0,
                     0,
                     32,

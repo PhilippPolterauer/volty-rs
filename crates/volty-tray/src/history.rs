@@ -342,6 +342,7 @@ impl HistoryStore {
         &mut self,
         cutoff: i64,
         identity: Option<&str>,
+        expected: HistoryDeletion,
     ) -> Result<HistoryDeletion, Box<dyn Error>> {
         let transaction = self
             .connection
@@ -358,6 +359,7 @@ impl HistoryStore {
                 })
             },
         )?;
+        check_cleanup_scope(counts, expected)?;
         transaction.execute(
             "DELETE FROM samples
              WHERE recorded_at < ?1 AND (?2 IS NULL OR identity = ?2)",
@@ -372,6 +374,7 @@ impl HistoryStore {
         &mut self,
         cutoff: i64,
         identity: Option<&str>,
+        expected: HistoryDeletion,
     ) -> Result<HistoryDeletion, Box<dyn Error>> {
         let transaction = self
             .connection
@@ -393,6 +396,7 @@ impl HistoryStore {
                 })
             },
         )?;
+        check_cleanup_scope(counts, expected)?;
         transaction.execute(
             "DELETE FROM samples
              WHERE identity IN (
@@ -412,6 +416,7 @@ impl HistoryStore {
     pub(crate) fn delete_identity(
         &mut self,
         identity: &str,
+        expected: HistoryDeletion,
     ) -> Result<HistoryDeletion, Box<dyn Error>> {
         if identity.is_empty() {
             return Err(io::Error::new(
@@ -435,6 +440,7 @@ impl HistoryStore {
                 })
             },
         )?;
+        check_cleanup_scope(counts, expected)?;
         transaction.execute("DELETE FROM samples WHERE identity = ?1", [identity])?;
         transaction.commit()?;
         Ok(counts)
@@ -571,6 +577,18 @@ fn retention_cutoff() -> Result<i64, Box<dyn Error>> {
 
 fn window_start(days: u32) -> Result<i64, Box<dyn Error>> {
     Ok(unix_now()?.saturating_sub(i64::from(days).saturating_mul(86_400)))
+}
+
+pub(crate) fn check_cleanup_scope(
+    actual: HistoryDeletion,
+    expected: HistoryDeletion,
+) -> io::Result<()> {
+    if actual != expected {
+        return Err(io::Error::other(
+            "History changed after the preview. Review the updated scope before deleting.",
+        ));
+    }
+    Ok(())
 }
 
 pub(crate) fn unix_now() -> Result<i64, Box<dyn Error>> {
@@ -946,9 +964,16 @@ mod tests {
             .unwrap();
         assert_eq!(older.samples, 1);
         assert_eq!(older.devices, 1);
+        assert!(store
+            .delete_older_than(
+                now - 10 * 86_400,
+                Some("hid:keyboard#1"),
+                HistoryDeletion::default()
+            )
+            .is_err());
         assert_eq!(
             store
-                .delete_older_than(now - 10 * 86_400, Some("hid:keyboard#1"))
+                .delete_older_than(now - 10 * 86_400, Some("hid:keyboard#1"), older)
                 .unwrap(),
             older
         );
@@ -957,11 +982,21 @@ mod tests {
         assert_eq!(inactive.samples, 1);
         assert_eq!(inactive.devices, 1);
         assert_eq!(
-            store.delete_inactive(now - 10 * 86_400, None).unwrap(),
+            store
+                .delete_inactive(now - 10 * 86_400, None, inactive)
+                .unwrap(),
             inactive
         );
 
-        let exact = store.delete_identity("hid:keyboard#10").unwrap();
+        let exact = store
+            .delete_identity(
+                "hid:keyboard#10",
+                HistoryDeletion {
+                    samples: 1,
+                    devices: 1,
+                },
+            )
+            .unwrap();
         assert_eq!(exact.samples, 1);
         assert_eq!(exact.devices, 1);
         assert_eq!(

@@ -90,6 +90,10 @@ pub(crate) fn render_settings_preview(
     .map_err(|error| error.to_string())
 }
 
+pub(crate) fn system_taskbar_is_dark() -> bool {
+    matches!(system_icon_theme(), Ok(IconTheme::Dark))
+}
+
 const MAX_STATUS_CHARS: usize = 80;
 const MAX_TOOLTIP_UTF16_UNITS: usize = 127;
 // About, separator, Quit, and the optional Check for Updates action.
@@ -273,6 +277,12 @@ pub struct TrayController {
         bool,
         IconTheme,
     )>,
+}
+
+impl TrayController {
+    pub(crate) fn window_handle(&self) -> windows_sys::Win32::Foundation::HWND {
+        self.icon.window_handle()
+    }
 }
 
 struct TrayMenu {

@@ -2,23 +2,30 @@ mod chart;
 mod platform;
 mod worker;
 
-pub(crate) use platform::notify_dashboard;
+pub(crate) use platform::{notify_appearance, notify_dashboard, notify_live};
 
-use std::{error::Error, sync::{atomic::Ordering, Arc}};
+use std::{
+    error::Error,
+    sync::{atomic::Ordering, Arc},
+};
 
 use eframe::egui::{
     self, Align, Button, Color32, ComboBox, Frame, Layout, Modal, RichText, ScrollArea, Stroke,
     ThemePreference, Ui,
 };
 
-use crate::{app_icon, config::AppTheme};
+use crate::{
+    app_icon,
+    config::{AppTheme, BatteryColorMap},
+};
 
 use super::{
-    design::{Palette, CONTROL_HEIGHT, GAP, SECTION_PADDING, SECTION_RADIUS},
+    design::{animation_seconds, Palette, CONTROL_HEIGHT, GAP, SECTION_PADDING, SECTION_RADIUS},
+    live::{LiveDevice, LiveLevel, LiveReading},
     management::{CleanupKind, DashboardBackend},
     model::{DashboardData, DashboardDevice, DashboardInventoryDevice},
 };
-use platform::{Signal, SystemChanges, WindowSignals};
+use platform::{LiveUpdate, Signal, SystemChanges, WindowSignals};
 use worker::{Action, Confirmation, Reply, Snapshot, Worker};
 
 pub(super) fn open_dashboard_window(
@@ -37,7 +44,9 @@ pub(super) fn open_dashboard_window(
         options,
         Box::new(move |cc| {
             let ctx = &cc.egui_ctx;
+            let animation = animation_seconds();
             ctx.all_styles_mut(|style| {
+                style.animation_time = animation;
                 style.spacing.item_spacing = egui::vec2(GAP as f32, GAP as f32);
                 style.spacing.interact_size.y = CONTROL_HEIGHT as f32;
                 style.spacing.button_padding = egui::vec2(12.0, 4.0);
@@ -52,6 +61,7 @@ pub(super) fn open_dashboard_window(
             let system = platform::hwnd(cc)
                 .and_then(|window| platform::listen_to_system(window, ctx.clone()).ok());
             let signals = WindowSignals::start(ctx.clone())?;
+            let backend_is_local = backend.is_local();
             let worker = Worker::start(ctx.clone(), backend)?;
             let mut dashboard = Dashboard {
                 worker,
@@ -59,12 +69,16 @@ pub(super) fn open_dashboard_window(
                 system,
                 contrast,
                 title_theme: None,
+                colors: BatteryColorMap::default(),
+                live: None,
+                show_live: backend_is_local,
                 days,
                 snapshot: None,
                 selected: None,
                 busy: false,
                 loading: false,
                 exporting: false,
+                opening_settings: false,
                 discard_load: false,
                 artifacts_pending: false,
                 artifacts: None,
@@ -72,6 +86,7 @@ pub(super) fn open_dashboard_window(
                 refresh_pending: false,
                 status: None,
                 confirmation: None,
+                confirmation_focus: None,
                 page: Page::History,
                 older_days: 7,
                 inactive_days: 7,
@@ -95,12 +110,16 @@ struct Dashboard {
     system: Option<Arc<SystemChanges>>,
     contrast: Option<Palette>,
     title_theme: Option<egui::Theme>,
+    colors: BatteryColorMap,
+    live: Option<Vec<LiveDevice>>,
+    show_live: bool,
     days: u32,
     snapshot: Option<Arc<Snapshot>>,
     selected: Option<String>,
     busy: bool,
     loading: bool,
     exporting: bool,
+    opening_settings: bool,
     discard_load: bool,
     artifacts_pending: bool,
     artifacts: Option<Result<Vec<super::management::ManagedArtifact>, String>>,
@@ -108,6 +127,7 @@ struct Dashboard {
     refresh_pending: bool,
     status: Option<Result<String, String>>,
     confirmation: Option<Confirmation>,
+    confirmation_focus: Option<Option<egui::Id>>,
     page: Page,
     older_days: u32,
     inactive_days: u32,
@@ -143,21 +163,19 @@ impl Dashboard {
         }
     }
 
-    fn set_snapshot(&mut self, ctx: &egui::Context, snapshot: Snapshot) {
-        ctx.set_theme(match snapshot.theme {
-            AppTheme::System => ThemePreference::System,
-            AppTheme::Light => ThemePreference::Light,
-            AppTheme::Dark => ThemePreference::Dark,
-        });
+    fn set_snapshot(&mut self, snapshot: Snapshot) {
         let data = &snapshot.data;
         if !self.selected.as_deref().is_some_and(|id| {
             data.devices.iter().any(|device| device.identity == id)
                 || data.inventory.iter().any(|device| device.identity == id)
+                || live_device(self.live.as_deref(), id).is_some()
         }) {
-            self.selected = data
-                .devices
-                .first()
+            self.selected = self
+                .live
+                .as_deref()
+                .and_then(|items| items.first())
                 .map(|device| device.identity.clone())
+                .or_else(|| data.devices.first().map(|device| device.identity.clone()))
                 .or_else(|| data.inventory.first().map(|device| device.identity.clone()));
         }
         self.snapshot = Some(Arc::new(snapshot));
@@ -186,10 +204,13 @@ impl Dashboard {
             }
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 if ui
-                    .add_enabled(!self.busy, Button::new("Settings"))
+                    .add_enabled(!self.opening_settings, Button::new("Settings"))
                     .clicked()
                 {
-                    self.request(Action::OpenSettings);
+                    match self.worker.launch_settings() {
+                        Ok(()) => self.opening_settings = true,
+                        Err(error) => self.status = Some(Err(error.to_string())),
+                    }
                 }
                 if ui.button("Refresh").clicked() {
                     self.status = None;
@@ -202,10 +223,18 @@ impl Dashboard {
         if self.page == Page::History {
             if let Some(snapshot) = &self.snapshot {
                 let devices = &snapshot.data.devices;
-                let online = devices.iter().filter(|device| device.online).count();
+                let presence = self.live.as_deref().map_or_else(
+                    || "Monitor status unavailable".to_owned(),
+                    |devices| {
+                        format!(
+                            "{} online",
+                            devices.iter().filter(|item| item.reading.is_some()).count()
+                        )
+                    },
+                );
                 let readings: u64 = devices.iter().map(|device| device.samples).sum();
                 ui.label(format!(
-                    "{} devices with readings  ·  {online} online  ·  {readings} readings",
+                    "{} devices with history  ·  {presence}  ·  {readings} readings",
                     devices.len()
                 ));
             }
@@ -222,8 +251,12 @@ impl Dashboard {
         }
         if let Some(status) = &self.export_status {
             match status {
-                Ok(message) => { ui.label(message); }
-                Err(error) => { ui.colored_label(ui.visuals().error_fg_color, error); }
+                Ok(message) => {
+                    ui.label(message);
+                }
+                Err(error) => {
+                    ui.colored_label(ui.visuals().error_fg_color, error);
+                }
             }
         }
     }
@@ -253,20 +286,38 @@ impl Dashboard {
                             &[1, 3, 7, 14, 30],
                             true,
                         );
-                        if let Some(snapshot) = &self.snapshot {
-                            let query = self.search.trim().to_lowercase();
-                            let matches = |name: &str, identity: &str| {
-                                query.is_empty()
-                                    || name.to_lowercase().contains(&query)
-                                    || identity.to_lowercase().contains(&query)
-                            };
-                            ScrollArea::vertical().id_salt("devices").show(ui, |ui| {
+                        let query = self.search.trim().to_lowercase();
+                        let matches = |name: &str, identity: &str| {
+                            query.is_empty()
+                                || name.to_lowercase().contains(&query)
+                                || identity.to_lowercase().contains(&query)
+                        };
+                        ScrollArea::vertical().id_salt("devices").show(ui, |ui| {
+                            let presence = self.live.as_deref();
+                            for device in presence
+                                .into_iter()
+                                .flatten()
+                                .filter(|device| matches(&device.name, &device.identity))
+                            {
+                                let (level, status) =
+                                    device.reading.map_or((None, "Detected"), |reading| {
+                                        (reading.level.value(), live_status(reading))
+                                    });
+                                device_button(
+                                    ui,
+                                    &mut self.selected,
+                                    &device.identity,
+                                    &device.name,
+                                    &format!("{}  ·  {status}", live_percent(device.reading)),
+                                    level,
+                                );
+                            }
+                            if let Some(snapshot) = &self.snapshot {
                                 let data = &snapshot.data;
-                                for device in data
-                                    .devices
-                                    .iter()
-                                    .filter(|device| matches(&device.name, &device.identity))
-                                {
+                                for device in data.devices.iter().filter(|device| {
+                                    matches(&device.name, &device.identity)
+                                        && live_device(presence, &device.identity).is_none()
+                                }) {
                                     device_button(
                                         ui,
                                         &mut self.selected,
@@ -275,12 +326,14 @@ impl Dashboard {
                                         &format!(
                                             "{}  ·  {}",
                                             percent(device.latest_percent),
-                                            device_status(device)
+                                            device_status(device, presence.is_some())
                                         ),
+                                        device.latest_percent,
                                     );
                                 }
                                 for device in data.inventory.iter().filter(|item| {
                                     matches(&item.name, &item.identity)
+                                        && live_device(presence, &item.identity).is_none()
                                         && data.devices.iter().all(|d| d.identity != item.identity)
                                 }) {
                                     device_button(
@@ -289,14 +342,27 @@ impl Dashboard {
                                         &device.identity,
                                         &device.name,
                                         "No samples in this range",
+                                        None,
                                     );
                                 }
-                            });
-                        }
+                            }
+                        });
                     },
                 );
                 ui.add_space(6.0);
+                let live = self
+                    .selected
+                    .as_deref()
+                    .and_then(|id| live_device(self.live.as_deref(), id));
                 let Some(snapshot) = &self.snapshot else {
+                    if let Some(device) = live {
+                        ui.heading(&device.name);
+                        ui.label(format!(
+                            "{}  ·  {}",
+                            live_percent(device.reading),
+                            device.reading.map_or("Detected", live_status)
+                        ));
+                    }
                     ui.label(if self.loading {
                         "Loading battery history…"
                     } else {
@@ -321,16 +387,37 @@ impl Dashboard {
                                 if let Some(index) = device {
                                     if snapshot.data.window_days != self.days {
                                         ui.horizontal(|ui| {
-                                            if self.loading { ui.spinner(); }
-                                            ui.label(format!("Showing the last {} days", snapshot.data.window_days));
+                                            if self.loading {
+                                                ui.spinner();
+                                            }
+                                            ui.label(format!(
+                                                "Showing the last {} days",
+                                                snapshot.data.window_days
+                                            ));
                                         });
                                     }
-                                    history_detail(ui, snapshot, index, !self.exporting)
+                                    history_detail(
+                                        ui,
+                                        snapshot,
+                                        index,
+                                        !self.exporting,
+                                        live,
+                                        self.live.is_some(),
+                                        self.colors,
+                                    )
                                 } else {
                                     ui.heading(
-                                        inventory
-                                            .map_or("Battery history", |item| item.name.as_str()),
+                                        live.map(|item| item.name.as_str())
+                                            .or_else(|| inventory.map(|item| item.name.as_str()))
+                                            .unwrap_or("Battery history"),
                                     );
+                                    if let Some(reading) = live.and_then(|device| device.reading) {
+                                        ui.label(format!(
+                                            "{}  ·  {}",
+                                            live_percent(Some(reading)),
+                                            live_status(reading)
+                                        ));
+                                    }
                                     ui.label(
                                         if inventory
                                             .is_some_and(|item| !item.history_recording_enabled)
@@ -357,22 +444,23 @@ impl Dashboard {
         }
         if export {
             let Some((snapshot, index)) = self.snapshot.as_ref().and_then(|snapshot| {
-                snapshot.data.devices.iter()
+                snapshot
+                    .data
+                    .devices
+                    .iter()
                     .position(|item| Some(item.identity.as_str()) == self.selected.as_deref())
                     .map(|index| (Arc::clone(snapshot), index))
             }) else {
                 return;
             };
             match platform::save_path(frame) {
-                Ok(Some(path)) => {
-                    match self.worker.export(path, snapshot, index) {
-                        Ok(()) => {
-                            self.exporting = true;
-                            self.export_status = Some(Ok("Exporting readings…".to_owned()));
-                        }
-                        Err(error) => self.export_status = Some(Err(error.to_string())),
+                Ok(Some(path)) => match self.worker.export(path, snapshot, index) {
+                    Ok(()) => {
+                        self.exporting = true;
+                        self.export_status = Some(Ok("Exporting readings…".to_owned()));
                     }
-                }
+                    Err(error) => self.export_status = Some(Err(error.to_string())),
+                },
                 Ok(None) => {}
                 Err(error) => self.status = Some(Err(error.to_string())),
             }
@@ -436,6 +524,13 @@ impl Dashboard {
                                 .map_or_else(|| "—".to_owned(), platform::date)
                         ));
                         ui.add_enabled_ui(enabled, |ui| {
+                            let mut monitored = item.monitored.unwrap_or(true);
+                            if ui.checkbox(&mut monitored, "Monitor device").changed() {
+                                action = Some(Action::Monitoring {
+                                    identity: item.identity.clone(),
+                                    enabled: monitored,
+                                });
+                            }
                             let mut recording = item.history_recording_enabled;
                             if ui
                                 .checkbox(&mut recording, "Record battery history")
@@ -558,28 +653,54 @@ impl Dashboard {
             ui.heading(&confirmation.title);
             ui.label(&confirmation.description);
             ui.horizontal(|ui| {
-                ui.button("Cancel")
-                    .clicked()
-                    .then_some(false)
-                    .or_else(|| ui.button("Confirm deletion").clicked().then_some(true))
+                let cancel = ui.button("Cancel");
+                if self.confirmation_focus.is_none() {
+                    self.confirmation_focus = Some(ctx.memory(|memory| memory.focused()));
+                    cancel.request_focus();
+                }
+                let action = ui.add(Button::new(
+                    RichText::new(confirmation.action).color(ui.visuals().error_fg_color),
+                ));
+                if cancel.clicked() {
+                    Some(false)
+                } else if action.clicked() {
+                    Some(true)
+                } else {
+                    None
+                }
             })
             .inner
         });
-        if response.inner == Some(true) {
-            let Some(confirmation) = self.confirmation.take() else {
-                return;
-            };
-            self.request(Action::Execute(confirmation.operation));
-        } else if response.inner == Some(false) || response.should_close() {
-            self.confirmation = None;
+        if response.inner.is_some() || response.should_close() {
+            if let Some(Some(previous)) = self.confirmation_focus.take() {
+                ctx.memory_mut(|memory| memory.request_focus(previous));
+            }
+            if let Some(confirmation) = self.confirmation.take() {
+                if response.inner == Some(true) {
+                    self.request(Action::Execute(confirmation.operation));
+                }
+            }
         }
     }
 }
 
 impl eframe::App for Dashboard {
     fn logic(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
+        if let Some(LiveUpdate(live)) = self.signals.take_live(ctx) {
+            if self.show_live {
+                if self.selected.is_none() {
+                    self.selected = live
+                        .as_deref()
+                        .and_then(|items| items.first())
+                        .map(|item| item.identity.clone());
+                }
+                self.live = live;
+            }
+        }
         if let Some(system) = &self.system {
             if system.appearance.swap(false, Ordering::AcqRel) {
+                let animation = animation_seconds();
+                ctx.all_styles_mut(|style| style.animation_time = animation);
                 let contrast = Palette::system_contrast();
                 if self.contrast != contrast {
                     self.contrast = contrast;
@@ -602,6 +723,14 @@ impl eframe::App for Dashboard {
                 Signal::Shutdown => {
                     ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                     return;
+                }
+                Signal::Appearance(theme, colors) => {
+                    self.colors = colors;
+                    ctx.set_theme(match theme {
+                        AppTheme::System => ThemePreference::System,
+                        AppTheme::Light => ThemePreference::Light,
+                        AppTheme::Dark => ThemePreference::Dark,
+                    });
                 }
             }
         }
@@ -635,7 +764,7 @@ impl eframe::App for Dashboard {
                         }
                     }
                     if days == self.days && !self.discard_load {
-                        self.set_snapshot(ctx, snapshot);
+                        self.set_snapshot(snapshot);
                     }
                 }
                 Err(error) if days == self.days && !self.discard_load => {
@@ -647,6 +776,12 @@ impl eframe::App for Dashboard {
         if let Some(result) = self.worker.exported() {
             self.exporting = false;
             self.export_status = Some(result);
+        }
+        if let Some(result) = self.worker.settings_launched() {
+            self.opening_settings = false;
+            if let Err(error) = result {
+                self.status = Some(Err(error.to_string()));
+            }
         }
         if self.refresh_pending && !self.loading {
             self.refresh();
@@ -683,11 +818,35 @@ fn selected_inventory<'a>(
         .find(|item| Some(item.identity.as_str()) == selected)
 }
 
-fn device_status(device: &DashboardDevice) -> &'static str {
-    match (device.online, device.charging) {
-        (true, true) => "Charging",
-        (true, false) => "Online",
-        (false, _) => "Offline",
+fn live_device<'a>(devices: Option<&'a [LiveDevice]>, identity: &str) -> Option<&'a LiveDevice> {
+    let devices = devices?;
+    devices
+        .binary_search_by(|device| device.identity.as_str().cmp(identity))
+        .ok()
+        .map(|index| &devices[index])
+}
+
+fn live_status(reading: LiveReading) -> &'static str {
+    if reading.charging {
+        "Charging"
+    } else {
+        "Online"
+    }
+}
+
+fn live_percent(reading: Option<LiveReading>) -> String {
+    match reading.map(|reading| reading.level) {
+        Some(LiveLevel::Estimated(value)) => format!("≈{value}%"),
+        Some(LiveLevel::Exact(value)) => format!("{value}%"),
+        _ => "—".to_owned(),
+    }
+}
+
+fn device_status(device: &DashboardDevice, monitor_active: bool) -> &'static str {
+    if monitor_active || !device.online {
+        "Last known"
+    } else {
+        "Recently recorded"
     }
 }
 
@@ -697,17 +856,82 @@ fn device_button(
     identity: &str,
     name: &str,
     subtitle: &str,
+    level: Option<u8>,
 ) {
     let active = selected.as_deref() == Some(identity);
     ui.push_id(identity, |ui| {
+        ui.spacing_mut().button_padding.x = 26.0;
         let label = Button::new(format!("{name}\n{subtitle}"))
             .selected(active)
             .wrap()
             .min_size(egui::vec2(ui.available_width(), 50.0));
-        if ui.add(label).on_hover_text(identity).clicked() {
+        let response = ui.add(label).on_hover_text(format!("{name}\n{identity}"));
+        if response.clicked() {
             *selected = Some(identity.to_owned());
         }
+        let rect = response.rect;
+        paint_device_icon(ui, rect, identity, active);
+        if let Some(level) = level {
+            let width = (rect.width() - 8.0).max(0.0);
+            let start = egui::pos2(rect.left() + 4.0, rect.bottom() - 3.0);
+            ui.painter().line_segment(
+                [start, start + egui::vec2(width, 0.0)],
+                ui.visuals().window_stroke,
+            );
+            ui.painter().line_segment(
+                [
+                    start,
+                    start + egui::vec2(width * f32::from(level) / 100.0, 0.0),
+                ],
+                Stroke::new(2.0, accent(ui)),
+            );
+        }
     });
+}
+
+fn paint_device_icon(ui: &Ui, row: egui::Rect, identity: &str, active: bool) {
+    let center = egui::pos2(row.left() + 13.0, row.center().y);
+    let color = if active {
+        ui.visuals().selection.stroke.color
+    } else {
+        ui.visuals().widgets.inactive.fg_stroke.color
+    };
+    let stroke = Stroke::new(1.2, color);
+    let point = |x, y| center + egui::vec2(x, y);
+    let painter = ui.painter();
+    if identity.starts_with("bluetooth:") {
+        painter.add(egui::Shape::line(
+            [
+                (-4.0, -4.0),
+                (4.0, 4.0),
+                (0.0, 7.0),
+                (0.0, -7.0),
+                (4.0, -4.0),
+                (-4.0, 4.0),
+            ]
+            .map(|(x, y)| point(x, y))
+            .to_vec(),
+            stroke,
+        ));
+    } else if identity.starts_with("xinput:") {
+        painter.rect_stroke(
+            egui::Rect::from_center_size(center, egui::vec2(16.0, 10.0)),
+            4.0,
+            stroke,
+            egui::StrokeKind::Inside,
+        );
+        painter.line_segment([point(-5.0, 0.0), point(-1.0, 0.0)], stroke);
+        painter.line_segment([point(-3.0, -2.0), point(-3.0, 2.0)], stroke);
+        painter.circle_filled(point(3.5, 0.0), 1.0, color);
+    } else {
+        painter.rect_stroke(
+            egui::Rect::from_center_size(center, egui::vec2(13.0, 10.0)),
+            2.0,
+            stroke,
+            egui::StrokeKind::Inside,
+        );
+        painter.line_segment([point(-3.0, 0.0), point(3.0, 0.0)], stroke);
+    }
 }
 
 fn day_picker(ui: &mut Ui, id: &str, days: &mut u32, choices: &[u32], enabled: bool) {
@@ -734,7 +958,7 @@ fn canvas(ui: &Ui) -> Color32 {
 }
 
 fn accent(ui: &Ui) -> Color32 {
-    ui.visuals().selection.bg_fill
+    ui.visuals().hyperlink_color
 }
 
 fn card<R>(ui: &mut Ui, content: impl FnOnce(&mut Ui) -> R) -> R {
@@ -755,18 +979,35 @@ fn apply_visuals(ctx: &egui::Context, contrast: Option<Palette>) {
     for theme in [egui::Theme::Light, egui::Theme::Dark] {
         let dark = theme == egui::Theme::Dark;
         let palette = contrast.unwrap_or_else(|| Palette::standard(dark));
-        let mut visual = if dark { egui::Visuals::dark() } else { egui::Visuals::light() };
+        let mut visual = if dark {
+            egui::Visuals::dark()
+        } else {
+            egui::Visuals::light()
+        };
         visual.panel_fill = color(palette.canvas);
         visual.window_fill = color(palette.surface);
         visual.extreme_bg_color = color(palette.canvas);
         visual.window_stroke = Stroke::new(1.0, color(palette.border));
         visual.error_fg_color = color(palette.destructive);
-        visual.selection.bg_fill = color(palette.accent);
-        visual.selection.stroke.color = color(palette.on_accent);
+        visual.hyperlink_color = color(palette.accent);
+        visual.selection.bg_fill = if contrast.is_some() {
+            color(palette.accent)
+        } else {
+            color(palette.accent).linear_multiply(0.24)
+        };
+        visual.selection.stroke.color = color(if contrast.is_some() {
+            palette.on_accent
+        } else {
+            palette.text
+        });
         visual.widgets.noninteractive.fg_stroke.color = color(palette.secondary);
         visual.widgets.noninteractive.bg_stroke.color = color(palette.border);
         visual.widgets.inactive.weak_bg_fill = color(palette.raised);
-        for widget in [&mut visual.widgets.inactive, &mut visual.widgets.hovered, &mut visual.widgets.active] {
+        for widget in [
+            &mut visual.widgets.inactive,
+            &mut visual.widgets.hovered,
+            &mut visual.widgets.active,
+        ] {
             widget.fg_stroke.color = color(palette.text);
             widget.bg_stroke = Stroke::new(1.0, color(palette.border));
             widget.corner_radius = egui::CornerRadius::same(5);
@@ -784,6 +1025,9 @@ fn percent(value: Option<u8>) -> String {
 }
 
 fn duration(seconds: i64) -> String {
+    if seconds == 0 {
+        return "0m".to_owned();
+    }
     let minutes = seconds / 60;
     match minutes {
         0 => "<1m".to_owned(),
@@ -793,33 +1037,56 @@ fn duration(seconds: i64) -> String {
     }
 }
 
-fn history_detail(ui: &mut Ui, snapshot: &Snapshot, index: usize, enabled: bool) -> bool {
+fn history_detail(
+    ui: &mut Ui,
+    snapshot: &Snapshot,
+    index: usize,
+    enabled: bool,
+    live: Option<&LiveDevice>,
+    monitor_active: bool,
+    colors: BatteryColorMap,
+) -> bool {
     let device = &snapshot.data.devices[index];
     let chart = &snapshot.charts[index];
-    ui.heading(&device.name);
+    let live_reading = live.and_then(|device| device.reading);
+    ui.heading(live.map_or(device.name.as_str(), |device| device.name.as_str()));
     ui.label(format!(
         "{}  ·  Last reading {}",
-        device_status(device),
+        live_reading.map_or_else(|| device_status(device, monitor_active), live_status),
         platform::date(device.last_at)
     ));
     card(ui, |ui| {
         ui.horizontal_wrapped(|ui| {
-            let level_color = device.latest_percent.map_or_else(
+            let level = live_reading.map_or(device.latest_percent, |reading| reading.level.value());
+            let level_color = level.map_or_else(
                 || accent(ui),
                 |value| {
-                    let [r, g, b] = snapshot.colors.color_for(value);
+                    let [r, g, b] = colors.color_for(value);
                     Color32::from_rgb(r, g, b)
                 },
             );
             metric(
                 ui,
                 "Battery",
-                RichText::new(percent(device.latest_percent)).color(level_color),
+                RichText::new(if live_reading.is_some() {
+                    live_percent(live_reading)
+                } else {
+                    percent(level)
+                })
+                .color(level_color),
             );
             metric(
                 ui,
                 "Est. remaining",
-                RichText::new(device.eta_seconds.map_or_else(|| "—".to_owned(), duration)),
+                RichText::new(
+                    live_reading
+                        .map_or(device.eta_seconds, |reading| {
+                            reading
+                                .remaining_seconds
+                                .and_then(|seconds| i64::try_from(seconds).ok())
+                        })
+                        .map_or_else(|| "—".to_owned(), duration),
+                ),
             );
             metric(
                 ui,
@@ -847,12 +1114,26 @@ fn history_detail(ui: &mut Ui, snapshot: &Snapshot, index: usize, enabled: bool)
     card(ui, |ui| {
         ui.heading("Activity");
         chart.timeline(ui, device);
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
+            let observed = device.online_seconds + device.offline_seconds;
+            if observed > 0 {
+                ui.label(format!(
+                    "{:.0}% online",
+                    device.online_seconds as f64 / observed as f64 * 100.0
+                ))
+                .on_hover_text(
+                    "Estimated from recorded samples and gaps. Unknown time is excluded.",
+                );
+            }
             ui.colored_label(
                 accent(ui),
                 format!("Online {}", duration(device.online_seconds)),
             );
             ui.label(format!("Offline {}", duration(device.offline_seconds)));
+            let unknown = chart.unknown_seconds(device);
+            if unknown > 0 {
+                ui.label(format!("Unknown {}", duration(unknown)));
+            }
         });
     });
     card(ui, |ui| {
@@ -867,10 +1148,22 @@ fn history_detail(ui: &mut Ui, snapshot: &Snapshot, index: usize, enabled: bool)
             })
             .inner;
         egui::CollapsingHeader::new("View readings").show(ui, |ui| {
-            ui.monospace(format!(
-                "{:<19}  {:>7}  {:>9}  {:>9}",
-                "Local time", "Battery", "Voltage", "Charging"
-            ));
+            let sort = ui.scope_id().with("readings-order");
+            let mut oldest_first = ui.data(|data| data.get_temp::<bool>(sort)).unwrap_or(false);
+            ui.horizontal_wrapped(|ui| {
+                if ui
+                    .button(if oldest_first {
+                        "Local time ↑"
+                    } else {
+                        "Local time ↓"
+                    })
+                    .clicked()
+                {
+                    oldest_first = !oldest_first;
+                    ui.data_mut(|data| data.insert_temp(sort, oldest_first));
+                }
+                ui.monospace("Battery · Voltage · Charging");
+            });
             ScrollArea::vertical()
                 .id_salt("reading rows")
                 .max_height(240.0)
@@ -880,10 +1173,15 @@ fn history_detail(ui: &mut Ui, snapshot: &Snapshot, index: usize, enabled: bool)
                     device.points.len(),
                     |ui, rows| {
                         for row in rows {
-                            let point = &device.points[device.points.len() - 1 - row];
+                            let index = if oldest_first {
+                                row
+                            } else {
+                                device.points.len() - 1 - row
+                            };
+                            let point = &device.points[index];
                             ui.monospace(format!(
                                 "{:<19}  {:>7}  {:>9}  {:>9}",
-                                platform::date(point.t),
+                                platform::exact_date(point.t),
                                 percent(point.p),
                                 chart::voltage(point.v),
                                 if point.c { "Yes" } else { "No" }

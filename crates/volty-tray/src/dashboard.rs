@@ -1,13 +1,14 @@
 //! CLI orchestration for the native dashboard and standalone HTML export.
 
 mod design;
+pub(crate) mod live;
 mod management;
 mod model;
 mod render;
 mod settings_window;
 mod window;
 
-pub(crate) use window::notify_dashboard;
+pub(crate) use window::{notify_appearance, notify_dashboard};
 
 use std::{
     error::Error,

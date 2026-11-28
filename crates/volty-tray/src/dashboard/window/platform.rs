@@ -1,6 +1,9 @@
 use std::{
     io,
-    sync::{atomic::{AtomicBool, Ordering}, mpsc, Arc},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        mpsc, Arc, Mutex, TryLockError,
+    },
     thread,
 };
 
@@ -10,8 +13,8 @@ use windows_sys::Win32::{
     Foundation::{CloseHandle, FILETIME, HANDLE, HWND, SYSTEMTIME, WAIT_FAILED, WAIT_OBJECT_0},
     System::{
         Threading::{
-            CreateEventW, OpenEventW, SetEvent, WaitForMultipleObjects, INFINITE,
-            EVENT_MODIFY_STATE, SYNCHRONIZATION_SYNCHRONIZE,
+            CreateEventW, OpenEventW, SetEvent, WaitForMultipleObjects, EVENT_MODIFY_STATE,
+            INFINITE, SYNCHRONIZATION_SYNCHRONIZE,
         },
         Time::{FileTimeToSystemTime, SystemTimeToTzSpecificLocalTimeEx},
     },
@@ -23,8 +26,14 @@ use windows_sys::Win32::{
 
 use std::{ffi::OsString, os::windows::ffi::OsStringExt, path::PathBuf, ptr};
 
-use crate::win32::to_wide;
-use super::super::design::{apply_title_bar, Palette};
+use super::super::{
+    design::{apply_title_bar, Palette},
+    live::{self, LiveDevice},
+};
+use crate::{
+    config::{AppConfig, AppTheme, BatteryColorMap},
+    win32::to_wide,
+};
 
 pub(super) fn hwnd(window: &impl HasWindowHandle) -> Option<HWND> {
     match window.window_handle().ok()?.as_raw() {
@@ -44,16 +53,24 @@ pub(super) fn listen_to_system(window: HWND, ctx: Context) -> io::Result<Arc<Sys
     let changes = Arc::new(SystemChanges::default());
     let state = Box::into_raw(Box::new((ctx, Arc::clone(&changes))));
     // SAFETY: installation runs on the window's owning thread. WM_NCDESTROY reclaims state.
-    if unsafe { SetWindowSubclass(window, Some(system_message), 1, state.expose_provenance()) } == 0 {
+    if unsafe { SetWindowSubclass(window, Some(system_message), 1, state.expose_provenance()) } == 0
+    {
         // SAFETY: failed installation leaves ownership with this function.
         drop(unsafe { Box::from_raw(state) });
-        return Err(io::Error::other("Could not subscribe to dashboard system messages"));
+        return Err(io::Error::other(
+            "Could not subscribe to dashboard system messages",
+        ));
     }
     Ok(changes)
 }
 
 unsafe extern "system" fn system_message(
-    window: HWND, message: u32, wparam: usize, lparam: isize, id: usize, data: usize,
+    window: HWND,
+    message: u32,
+    wparam: usize,
+    lparam: isize,
+    id: usize,
+    data: usize,
 ) -> isize {
     use windows_sys::Win32::UI::{
         Shell::{DefSubclassProc, RemoveWindowSubclass},
@@ -88,18 +105,37 @@ unsafe extern "system" fn system_message(
     unsafe { DefSubclassProc(window, message, wparam, lparam) }
 }
 
-pub(super) fn update_title_bar(window: &impl HasWindowHandle, theme: egui::Theme, contrast: Option<Palette>) {
+pub(super) fn update_title_bar(
+    window: &impl HasWindowHandle,
+    theme: egui::Theme,
+    contrast: Option<Palette>,
+) {
     if let Some(window) = hwnd(window) {
         apply_title_bar(window, contrast.is_none() && theme == egui::Theme::Dark);
     }
 }
 
 const DATA_CHANGED: &str = "Local\\VoltyDashboardDataChanged";
+const LIVE_CHANGED: &str = "Local\\VoltyLiveDevicesChanged";
+const APPEARANCE_CHANGED: &str = "Local\\VoltyDashboardAppearanceChanged";
 
 pub(crate) fn notify_dashboard() {
-    let name = to_wide(DATA_CHANGED);
+    signal_event(DATA_CHANGED);
+}
+
+pub(crate) fn notify_live() {
+    signal_event(LIVE_CHANGED);
+}
+
+pub(crate) fn notify_appearance() {
+    signal_event(APPEARANCE_CHANGED);
+}
+
+fn signal_event(name: &str) {
+    let name = to_wide(name);
     // SAFETY: the name is NUL-terminated and only signaling access is requested.
-    if let Ok(event) = Event::from_handle(unsafe { OpenEventW(EVENT_MODIFY_STATE, 0, name.as_ptr()) }) {
+    let handle = unsafe { OpenEventW(EVENT_MODIFY_STATE, 0, name.as_ptr()) };
+    if let Ok(event) = Event::from_handle(handle) {
         // SAFETY: the event is live and opened with modify access.
         unsafe { SetEvent(event.handle()) };
     }
@@ -108,7 +144,10 @@ pub(crate) fn notify_dashboard() {
 pub(super) enum Signal {
     Activate,
     Shutdown,
+    Appearance(AppTheme, BatteryColorMap),
 }
+
+pub(super) struct LiveUpdate(pub(super) Option<Vec<LiveDevice>>);
 
 struct Event(HANDLE);
 
@@ -149,17 +188,21 @@ pub(super) struct WindowSignals {
     pub(super) receive: mpsc::Receiver<Signal>,
     stop: Arc<Event>,
     changed: Arc<AtomicBool>,
+    live: Arc<Mutex<Option<LiveUpdate>>>,
 }
 
 impl WindowSignals {
     pub(super) fn start(ctx: Context) -> io::Result<Self> {
         let activation = Event::open(crate::DASHBOARD_ACTIVATION_EVENT)?;
         let shutdown = Event::open(crate::DASHBOARD_SHUTDOWN_EVENT)?;
-        let name = to_wide(DATA_CHANGED);
-        // SAFETY: the name is NUL-terminated and the remaining arguments select an auto-reset event.
-        let changed_event = Event::from_handle(unsafe {
-            CreateEventW(ptr::null(), 0, 0, name.as_ptr())
-        })?;
+        let named_event = |name| {
+            let name = to_wide(name);
+            // SAFETY: name is terminated and the remaining arguments select an auto-reset event.
+            Event::from_handle(unsafe { CreateEventW(ptr::null(), 0, 0, name.as_ptr()) })
+        };
+        let changed_event = named_event(DATA_CHANGED)?;
+        let live_event = named_event(LIVE_CHANGED)?;
+        let appearance_event = named_event(APPEARANCE_CHANGED)?;
         // SAFETY: null pointers request default security attributes and an unnamed event.
         let stop = Arc::new(Event::from_handle(unsafe {
             CreateEventW(ptr::null(), 1, 0, ptr::null())
@@ -167,11 +210,36 @@ impl WindowSignals {
         let thread_stop = Arc::clone(&stop);
         let changed = Arc::new(AtomicBool::new(false));
         let thread_changed = Arc::clone(&changed);
+        let live = Arc::new(Mutex::new(None));
+        let thread_live = Arc::clone(&live);
         let (send, receive) = mpsc::channel();
         thread::Builder::new()
             .name("volty-dashboard-events".to_owned())
             .spawn(move || {
-                let handles = [thread_stop.handle(), shutdown.handle(), activation.handle(), changed_event.handle()];
+                let update_live = || {
+                    let state = live::read();
+                    *thread_live.lock().unwrap() = Some(LiveUpdate(state));
+                    ctx.request_repaint();
+                };
+                let update_appearance = || {
+                    if let Ok(config) = AppConfig::load() {
+                        let _ = send.send(Signal::Appearance(
+                            config.app_theme,
+                            config.battery_color_map,
+                        ));
+                        ctx.request_repaint();
+                    }
+                };
+                update_live();
+                update_appearance();
+                let handles = [
+                    thread_stop.handle(),
+                    shutdown.handle(),
+                    activation.handle(),
+                    changed_event.handle(),
+                    live_event.handle(),
+                    appearance_event.handle(),
+                ];
                 loop {
                     // SAFETY: all event handles stay valid for the lifetime of this thread.
                     match unsafe {
@@ -188,12 +256,16 @@ impl WindowSignals {
                                 break;
                             }
                             ctx.request_repaint();
+                            update_live();
+                            update_appearance();
                         }
                         result if result == WAIT_OBJECT_0 + 3 => {
                             if !thread_changed.swap(true, Ordering::AcqRel) {
                                 ctx.request_repaint();
                             }
                         }
+                        result if result == WAIT_OBJECT_0 + 4 => update_live(),
+                        result if result == WAIT_OBJECT_0 + 5 => update_appearance(),
                         WAIT_FAILED => {
                             eprintln!(
                                 "Dashboard event wait failed: {}",
@@ -212,11 +284,23 @@ impl WindowSignals {
             receive,
             stop,
             changed,
+            live,
         })
     }
 
     pub(super) fn take_change(&self) -> bool {
         self.changed.swap(false, Ordering::AcqRel)
+    }
+
+    pub(super) fn take_live(&self, ctx: &Context) -> Option<LiveUpdate> {
+        match self.live.try_lock() {
+            Ok(mut live) => live.take(),
+            Err(TryLockError::WouldBlock) => {
+                ctx.request_repaint();
+                None
+            }
+            Err(TryLockError::Poisoned(_)) => None,
+        }
     }
 }
 
@@ -228,7 +312,8 @@ impl Drop for WindowSignals {
 }
 
 pub(super) fn save_path(frame: &eframe::Frame) -> io::Result<Option<PathBuf>> {
-    let window = hwnd(frame).ok_or_else(|| io::Error::other("expected a Win32 dashboard window"))?;
+    let window =
+        hwnd(frame).ok_or_else(|| io::Error::other("expected a Win32 dashboard window"))?;
     let mut filename = [0_u16; 32768];
     let default = to_wide("volty-battery-history.csv");
     filename[..default.len()].copy_from_slice(&default);
@@ -262,6 +347,14 @@ pub(super) fn save_path(frame: &eframe::Frame) -> io::Result<Option<PathBuf>> {
 }
 
 pub(super) fn date(timestamp: i64) -> String {
+    format_date(timestamp, false)
+}
+
+pub(super) fn exact_date(timestamp: i64) -> String {
+    format_date(timestamp, true)
+}
+
+fn format_date(timestamp: i64, with_seconds: bool) -> String {
     let ticks = timestamp
         .checked_add(11_644_473_600)
         .and_then(|seconds| u64::try_from(seconds).ok())
@@ -286,8 +379,13 @@ pub(super) fn date(timestamp: i64) -> String {
             utc
         }
     };
-    format!(
+    let mut date = format!(
         "{:04}-{:02}-{:02} {:02}:{:02}",
         time.wYear, time.wMonth, time.wDay, time.wHour, time.wMinute
-    )
+    );
+    if with_seconds {
+        use std::fmt::Write;
+        let _ = write!(date, ":{:02}", time.wSecond);
+    }
+    date
 }

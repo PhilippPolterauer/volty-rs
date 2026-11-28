@@ -7,6 +7,7 @@ use windows_sys::Win32::{
     },
     Graphics::Gdi::{GetSysColorBrush, COLOR_WINDOW},
     UI::{
+        Input::KeyboardAndMouse::GetFocus,
         Shell::ShellExecuteW,
         WindowsAndMessaging::{
             CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetMessageW,
@@ -263,6 +264,7 @@ pub fn run_message_loop<T>(
         false,
         false,
         set_create_complete,
+        |_, _| {},
     )
 }
 
@@ -280,6 +282,7 @@ pub fn run_foreground_message_loop<T>(
         true,
         false,
         set_create_complete,
+        |_, _| {},
     )
 }
 
@@ -288,8 +291,17 @@ pub fn run_dialog_message_loop<T>(
     show_command: i32,
     state: Box<T>,
     set_create_complete: impl Fn(&mut T, bool),
+    focus_changed: impl Fn(HWND, &T),
 ) -> io::Result<()> {
-    run_message_loop_inner(window, show_command, state, true, true, set_create_complete)
+    run_message_loop_inner(
+        window,
+        show_command,
+        state,
+        true,
+        true,
+        set_create_complete,
+        focus_changed,
+    )
 }
 
 fn run_message_loop_inner<T>(
@@ -299,6 +311,7 @@ fn run_message_loop_inner<T>(
     foreground: bool,
     dialog_navigation: bool,
     set_create_complete: impl Fn(&mut T, bool),
+    focus_changed: impl Fn(HWND, &T),
 ) -> io::Result<()> {
     // SAFETY: window is the live HWND created by the caller on this thread.
     unsafe { ShowWindow(window, show_command) };
@@ -310,6 +323,7 @@ fn run_message_loop_inner<T>(
     }
     // SAFETY: MSG is a plain Win32 output structure where every bit pattern is valid.
     let mut message: MSG = unsafe { mem::zeroed() };
+    let mut focused = ptr::null_mut();
     let message_error = loop {
         // SAFETY: GetMessageW writes into the valid stack slot; a null HWND requests the thread queue.
         match unsafe { GetMessageW(ptr::addr_of_mut!(message), ptr::null_mut(), 0, 0) } {
@@ -325,6 +339,16 @@ fn run_message_loop_inner<T>(
                     unsafe {
                         TranslateMessage(ptr::addr_of!(message));
                         DispatchMessageW(ptr::addr_of!(message));
+                    }
+                }
+                if dialog_navigation {
+                    // SAFETY: reads focus for the current UI thread.
+                    let current = unsafe { GetFocus() };
+                    if focused != current {
+                        focused = current;
+                        if !focused.is_null() {
+                            focus_changed(focused, state.as_ref());
+                        }
                     }
                 }
             }

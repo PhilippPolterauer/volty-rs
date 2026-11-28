@@ -1,23 +1,22 @@
 use std::{
     error::Error,
     io, ptr,
-    sync::{
-        atomic::{AtomicBool, Ordering},
-        mpsc, Arc,
-    },
-    thread::{self, JoinHandle},
+    sync::{mpsc, Arc},
+    thread,
 };
 
 use windows_sys::Win32::{
-    Foundation::{
-        COLORREF, HWND, LPARAM, LRESULT, RECT, WAIT_FAILED, WAIT_OBJECT_0, WAIT_TIMEOUT, WPARAM,
-    },
+    Foundation::{COLORREF, HWND, LPARAM, LRESULT, RECT, WAIT_FAILED, WAIT_OBJECT_0, WPARAM},
     System::LibraryLoader::GetModuleHandleW,
     UI::{
         Controls::Dialogs::{ChooseColorW, CC_FULLOPEN, CC_RGBINIT, CHOOSECOLORW},
         Controls::{
-            InitCommonControlsEx, BST_CHECKED, EM_LIMITTEXT, ICC_BAR_CLASSES,
-            INITCOMMONCONTROLSEX, TBM_SETPOS, TBM_SETRANGEMAX, TBM_SETRANGEMIN,
+            InitCommonControlsEx, BST_CHECKED, EM_LIMITTEXT, ICC_BAR_CLASSES, INITCOMMONCONTROLSEX,
+            TBM_SETPOS, TBM_SETRANGEMAX, TBM_SETRANGEMIN,
+        },
+        HiDpi::{
+            GetDpiForSystem, GetDpiForWindow, SetThreadDpiAwarenessContext,
+            DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
         },
         Input::KeyboardAndMouse::EnableWindow,
         WindowsAndMessaging::{
@@ -26,9 +25,10 @@ use windows_sys::Win32::{
             BM_SETCHECK, BS_AUTOCHECKBOX, BS_DEFPUSHBUTTON, BS_PUSHBUTTON, CBS_DROPDOWNLIST,
             CBS_HASSTRINGS, CB_ADDSTRING, CB_GETCURSEL, CB_SETCURSEL, ES_AUTOHSCROLL, ES_NUMBER,
             IDCANCEL, IDYES, MB_DEFBUTTON2, MB_ICONWARNING, MB_YESNO, MINMAXINFO, SWP_NOACTIVATE,
-            SWP_NOREDRAW, SWP_NOZORDER, SW_SHOWNORMAL, WM_APP, WM_CLOSE, WM_COMMAND,
-            WM_CTLCOLORSTATIC, WM_DESTROY, WM_GETMINMAXINFO, WM_HSCROLL, WM_NCCREATE, WM_SIZE,
-            WS_CHILD, WS_EX_CLIENTEDGE, WS_OVERLAPPEDWINDOW, WS_TABSTOP, WS_VISIBLE, WS_VSCROLL,
+            SWP_NOREDRAW, SWP_NOZORDER, SW_SHOWNA, SW_SHOWNORMAL, WM_APP, WM_CLOSE, WM_COMMAND,
+            WM_CTLCOLORSTATIC, WM_DESTROY, WM_DPICHANGED, WM_GETMINMAXINFO, WM_HSCROLL,
+            WM_MOUSEHWHEEL, WM_MOUSEWHEEL, WM_NCCREATE, WM_SIZE, WM_VSCROLL, WS_CHILD,
+            WS_EX_CLIENTEDGE, WS_HSCROLL, WS_OVERLAPPEDWINDOW, WS_TABSTOP, WS_VISIBLE, WS_VSCROLL,
         },
     },
 };
@@ -36,6 +36,7 @@ use windows_sys::Win32::{
 use crate::{
     config::{AppTheme, BatteryColorMap, DashboardSettingsUpdate},
     native_ui::{set_control_font, FontSet},
+    state::{TrayIconStyle, TrayIconTheme},
     win32::{self, ControlSpec},
 };
 
@@ -52,7 +53,8 @@ const WINDOW_TITLE: &str = "Volty Settings";
 const WINDOW_WIDTH: i32 = 940;
 const WINDOW_HEIGHT: i32 = 820;
 const MIN_WINDOW_WIDTH: i32 = 820;
-const MIN_WINDOW_HEIGHT: i32 = 820;
+const MIN_WINDOW_HEIGHT: i32 = 360;
+const CONTENT_HEIGHT: i32 = 792;
 const MARGIN: i32 = 32;
 const TOP_CARD_GAP: i32 = 20;
 const THRESHOLDS_ID: usize = 1002;
@@ -75,6 +77,7 @@ const PICK_RED_ID: usize = 1018;
 const PICK_YELLOW_ID: usize = 1019;
 const PICK_GREEN_ID: usize = 1020;
 const PREVIEW_LEVEL_ID: usize = 1021;
+const RESTORE_COLORS_ID: usize = 1022;
 const SETTINGS_ACTIVATE_MESSAGE: u32 = WM_APP + 1;
 const SETTINGS_SHUTDOWN_MESSAGE: u32 = WM_APP + 2;
 const SETTINGS_DATA_MESSAGE: u32 = WM_APP + 3;
@@ -153,6 +156,7 @@ enum ControlRole {
     PreviewLabel,
     PreviewLevel,
     PreviewValue,
+    RestoreColors,
     StartupHeading,
     StartupDescription,
     Startup,
@@ -183,25 +187,24 @@ struct SettingsWindow {
     pin_values: Vec<Option<String>>,
     controls: Vec<LayoutControl>,
     fonts: FontSet,
+    dpi: u32,
     appearance: Appearance,
     original: Option<FormValues>,
     preview_bgra: Vec<u8>,
+    gradient_bgra: [u8; 404],
+    preview_style: Option<PreviewStyle>,
+    preview_level: Option<u8>,
+    taskbar_dark: bool,
+    updating_colors: bool,
     custom_colors: [COLORREF; 16],
     activation_listener: Option<SettingsEventListener>,
     create_complete: bool,
+    controls_ready: bool,
 }
 
-impl Drop for SettingsWindow {
-    fn drop(&mut self) {
-        if let Some(mut listener) = self.activation_listener.take() {
-            listener.stop();
-        }
-    }
-}
-
-pub(super) fn open_settings_window(
-    backend: DashboardBackend,
-) -> Result<(), Box<dyn Error>> {
+pub(super) fn open_settings_window(backend: DashboardBackend) -> Result<(), Box<dyn Error>> {
+    // SAFETY: Settings owns this process's UI thread and has yet to create a window.
+    unsafe { SetThreadDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2) };
     win32::enable_system_dark_menus();
     let class_name = win32::to_wide(WINDOW_CLASS);
     let title = win32::to_wide("Volty Settings — Loading…");
@@ -220,7 +223,9 @@ pub(super) fn open_settings_window(
     }
     win32::register_window_class(&class_name, window_proc, instance)?;
 
-    let fonts = FontSet::new()?;
+    // SAFETY: reads the system DPI for the initial window placement.
+    let dpi = unsafe { GetDpiForSystem() }.max(96);
+    let fonts = FontSet::new_for_dpi(dpi)?;
     let appearance = Appearance::new(AppTheme::System)?;
     let mut state = Box::new(SettingsWindow {
         worker: None,
@@ -230,15 +235,22 @@ pub(super) fn open_settings_window(
         pin_values: Vec::new(),
         controls: Vec::new(),
         fonts,
+        dpi,
         appearance,
         original: None,
         preview_bgra: Vec::new(),
+        gradient_bgra: [0; 404],
+        preview_style: None,
+        preview_level: None,
+        taskbar_dark: crate::tray::system_taskbar_is_dark(),
+        updating_colors: false,
         custom_colors: [0; 16],
         activation_listener: None,
         create_complete: false,
+        controls_ready: false,
     });
 
-    let (window_width, window_height) = initial_window_size();
+    let (window_width, window_height) = initial_window_size(dpi);
     // SAFETY: class/title are NUL-terminated and live through creation; the Box-backed state pointer
     // remains valid until the window is destroyed and the message loop exits.
     let window = unsafe {
@@ -246,7 +258,10 @@ pub(super) fn open_settings_window(
             0,
             class_name.as_ptr(),
             title.as_ptr(),
-            WS_OVERLAPPEDWINDOW | windows_sys::Win32::UI::WindowsAndMessaging::WS_CLIPCHILDREN,
+            WS_OVERLAPPEDWINDOW
+                | WS_HSCROLL
+                | WS_VSCROLL
+                | windows_sys::Win32::UI::WindowsAndMessaging::WS_CLIPCHILDREN,
             windows_sys::Win32::UI::WindowsAndMessaging::CW_USEDEFAULT,
             windows_sys::Win32::UI::WindowsAndMessaging::CW_USEDEFAULT,
             window_width,
@@ -259,6 +274,11 @@ pub(super) fn open_settings_window(
     };
     if window.is_null() {
         return Err(io::Error::last_os_error().into());
+    }
+    // SAFETY: the window has just been created and belongs to this thread.
+    let actual_dpi = unsafe { GetDpiForWindow(window) };
+    if actual_dpi != 0 && actual_dpi != state.dpi {
+        refresh_fonts(&mut state, actual_dpi);
     }
 
     let services = SettingsWorker::start(window, backend).and_then(|worker| {
@@ -278,19 +298,23 @@ pub(super) fn open_settings_window(
     win32::allow_dark_mode_for_current_thread_windows();
     state.appearance.apply_native_theme(window, &state);
     state.create_complete = true;
-    win32::run_dialog_message_loop(window, SW_SHOWNORMAL, state, |state, value| {
-        state.create_complete = value;
-    })?;
+    win32::run_dialog_message_loop(
+        window,
+        SW_SHOWNORMAL,
+        state,
+        |state, value| state.create_complete = value,
+        |focused, state| reveal_control(window, focused, state),
+    )?;
     Ok(())
 }
 
 enum SettingsAction {
-    Save(DashboardSettingsUpdate),
+    Save(Box<DashboardSettingsUpdate>),
     Test,
 }
 
 enum SettingsReply {
-    Loaded(Result<SettingsData, String>),
+    Loaded(Result<Box<SettingsData>, String>),
     Saved(Result<(), String>),
     Tested(Result<(), String>),
 }
@@ -305,32 +329,43 @@ impl SettingsWorker {
         let (actions, requests) = mpsc::sync_channel(2);
         let (responses, replies) = mpsc::channel();
         let window = SendableWindow(window);
-        thread::Builder::new().name("volty-settings-data".to_owned()).spawn(move || {
-            let reply = SettingsReply::Loaded(backend.get_settings_data().map_err(|e| e.to_string()));
-            if responses.send(reply).is_err() || !window.post_message(SETTINGS_DATA_MESSAGE) {
-                return;
-            }
-            while let Ok(action) = requests.recv() {
-                let reply = match action {
-                    SettingsAction::Save(update) => {
-                        let result = backend.update_settings(&update).map_err(|e| e.to_string());
-                        super::notify_dashboard();
-                        SettingsReply::Saved(result)
-                    }
-                    SettingsAction::Test => SettingsReply::Tested(
-                        backend.test_notification().map_err(|e| e.to_string())
-                    ),
-                };
+        thread::Builder::new()
+            .name("volty-settings-data".to_owned())
+            .spawn(move || {
+                let reply = SettingsReply::Loaded(
+                    backend
+                        .get_settings_data()
+                        .map(Box::new)
+                        .map_err(|e| e.to_string()),
+                );
                 if responses.send(reply).is_err() || !window.post_message(SETTINGS_DATA_MESSAGE) {
-                    break;
+                    return;
                 }
-            }
-        })?;
+                while let Ok(action) = requests.recv() {
+                    let reply = match action {
+                        SettingsAction::Save(update) => {
+                            let result =
+                                backend.update_settings(&update).map_err(|e| e.to_string());
+                            crate::app::notify_preferences();
+                            super::notify_appearance();
+                            super::notify_dashboard();
+                            SettingsReply::Saved(result)
+                        }
+                        SettingsAction::Test => SettingsReply::Tested(
+                            backend.test_notification().map_err(|e| e.to_string()),
+                        ),
+                    };
+                    if responses.send(reply).is_err() || !window.post_message(SETTINGS_DATA_MESSAGE)
+                    {
+                        break;
+                    }
+                }
+            })?;
         Ok(Self { actions, replies })
     }
 }
 
-fn initial_window_size() -> (i32, i32) {
+fn initial_window_size(dpi: u32) -> (i32, i32) {
     use windows_sys::Win32::UI::WindowsAndMessaging::{SystemParametersInfoW, SPI_GETWORKAREA};
 
     let mut work_area = windows_sys::Win32::Foundation::RECT::default();
@@ -338,14 +373,109 @@ fn initial_window_size() -> (i32, i32) {
     if unsafe { SystemParametersInfoW(SPI_GETWORKAREA, 0, ptr::from_mut(&mut work_area).cast(), 0) }
         == 0
     {
-        return (WINDOW_WIDTH, WINDOW_HEIGHT);
+        return (scale(WINDOW_WIDTH, dpi), scale(WINDOW_HEIGHT, dpi));
     }
-    let available_width = (work_area.right - work_area.left - 16).max(MIN_WINDOW_WIDTH);
-    let available_height = (work_area.bottom - work_area.top - 4).max(MIN_WINDOW_HEIGHT);
+    let available_width = (work_area.right - work_area.left - 16).max(1);
+    let available_height = (work_area.bottom - work_area.top - 4).max(1);
     (
-        WINDOW_WIDTH.min(available_width),
-        WINDOW_HEIGHT.min(available_height),
+        scale(WINDOW_WIDTH, dpi).min(available_width),
+        scale(WINDOW_HEIGHT, dpi).min(available_height),
     )
+}
+
+fn scale(value: i32, dpi: u32) -> i32 {
+    value * dpi as i32 / 96
+}
+
+fn refresh_fonts(state: &mut SettingsWindow, dpi: u32) {
+    use windows_sys::Win32::UI::WindowsAndMessaging::WM_GETFONT;
+    let Ok(fonts) = FontSet::new_for_dpi(dpi) else {
+        return;
+    };
+    for child in &state.controls {
+        let old = send_message(child.handle, WM_GETFONT, 0, 0) as usize;
+        let font = [
+            (state.fonts.body, fonts.body),
+            (state.fonts.body_small, fonts.body_small),
+            (state.fonts.heading, fonts.heading),
+            (state.fonts.monospace, fonts.monospace),
+            (state.fonts.section, fonts.section),
+        ]
+        .iter()
+        .find_map(|(before, after)| (before.expose_provenance() == old).then_some(*after));
+        if let Some(font) = font {
+            set_control_font(child.handle, font);
+        }
+        if child.role.is_combo() {
+            use windows_sys::Win32::UI::WindowsAndMessaging::CB_SETITEMHEIGHT;
+            send_message(child.handle, CB_SETITEMHEIGHT, 0, scale(24, dpi) as isize);
+            send_message(
+                child.handle,
+                CB_SETITEMHEIGHT,
+                usize::MAX,
+                scale(26, dpi) as isize,
+            );
+        }
+    }
+    state.fonts = fonts;
+    state.dpi = dpi;
+}
+
+#[derive(Clone, Copy)]
+struct Geometry {
+    dpi: u32,
+    width: i32,
+    height: i32,
+    offset_x: i32,
+    offset_y: i32,
+    scroll_x: i32,
+}
+
+impl Geometry {
+    fn for_client(window: HWND, dpi: u32, client: RECT) -> Self {
+        use windows_sys::Win32::UI::WindowsAndMessaging::{
+            GetScrollInfo, SB_HORZ, SB_VERT, SCROLLINFO, SIF_POS,
+        };
+        let client_width = client.right * 96 / dpi as i32;
+        let width = client_width.clamp(820, 960);
+        let mut scroll = SCROLLINFO {
+            cbSize: size_of::<SCROLLINFO>() as u32,
+            fMask: SIF_POS,
+            ..Default::default()
+        };
+        // SAFETY: the structure is writable and the HWND is live.
+        unsafe { GetScrollInfo(window, SB_VERT, &mut scroll) };
+        let offset_y = scroll.nPos;
+        scroll.nPos = 0;
+        // SAFETY: as above, querying the horizontal position.
+        unsafe { GetScrollInfo(window, SB_HORZ, &mut scroll) };
+        Self {
+            dpi,
+            width,
+            height: (client.bottom * 96 / dpi as i32).max(CONTENT_HEIGHT),
+            offset_x: ((client_width - width) / 2).max(0),
+            offset_y,
+            scroll_x: scroll.nPos,
+        }
+    }
+
+    fn x(self, x: i32) -> i32 {
+        self.size(x + self.offset_x) - self.scroll_x
+    }
+    fn y(self, y: i32) -> i32 {
+        self.size(y) - self.offset_y
+    }
+    fn size(self, size: i32) -> i32 {
+        scale(size, self.dpi)
+    }
+    fn rect(self, left: i32, top: i32, right: i32, bottom: i32) -> RECT {
+        RECT {
+            left: self.x(left),
+            top: self.y(top),
+            right: self.x(right),
+            bottom: self.y(bottom),
+        }
+    }
 }
 
 pub(super) fn top_card_layout(width: i32) -> (i32, i32, i32) {
@@ -792,7 +922,18 @@ fn create_controls(
         instance,
         state,
         ControlRole::ColorMapDescription,
-        "Set color blend points, choose colors, and preview the tray icon.",
+        "Set the color blend points and preview them on the tray icon.",
+        state.fonts.body_small,
+    )?;
+    add_control(
+        window,
+        instance,
+        state,
+        ControlRole::RestoreColors,
+        "BUTTON",
+        "Restore defaults",
+        WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON as u32,
+        RESTORE_COLORS_ID,
         state.fonts.body_small,
     )?;
     add_label(
@@ -1177,8 +1318,11 @@ fn layout_controls(window: HWND, state: &SettingsWindow) {
     if unsafe { GetClientRect(window, &mut client) } == 0 {
         return;
     }
-    let width = client.right.min(960);
-    let offset = (client.right - width) / 2;
+    update_scrollbars(window, client, state.dpi);
+    // SAFETY: a scrollbar visibility change can resize the live client area.
+    unsafe { GetClientRect(window, &mut client) };
+    let geometry = Geometry::for_client(window, state.dpi, client);
+    let width = geometry.width;
     let inset = MARGIN + 24;
     let (left_card_width, right_card_width, right_card_x) = top_card_layout(width);
     let battery_input_width = 148;
@@ -1186,7 +1330,7 @@ fn layout_controls(window: HWND, state: &SettingsWindow) {
     let tray_combo_width = (right_card_width - 160).clamp(156, 180);
     let tray_combo_x = right_card_x + right_card_width - 24 - tray_combo_width;
     let full_width = width - inset * 2;
-    let footer_y = client.bottom - 52;
+    let footer_y = geometry.height - 52;
     let cutoff_gap = 24;
     let cutoff_width = (full_width - cutoff_gap) / 2;
     let color_gap = 16;
@@ -1400,7 +1544,20 @@ fn layout_controls(window: HWND, state: &SettingsWindow) {
             right_card_width - 48,
             30,
         ),
-        (ControlRole::ColorMapHeading, inset, 412, full_width, 26),
+        (
+            ControlRole::ColorMapHeading,
+            inset,
+            412,
+            full_width - 146,
+            26,
+        ),
+        (
+            ControlRole::RestoreColors,
+            inset + full_width - 134,
+            411,
+            134,
+            32,
+        ),
         (ControlRole::ColorMapDescription, inset, 440, full_width, 20),
         (ControlRole::RedCutoffLabel, inset, 466, cutoff_width, 20),
         (
@@ -1476,7 +1633,7 @@ fn layout_controls(window: HWND, state: &SettingsWindow) {
             inset,
             612,
             preview_track_width,
-            38,
+            28,
         ),
         (
             ControlRole::PreviewValue,
@@ -1529,18 +1686,18 @@ fn layout_controls(window: HWND, state: &SettingsWindow) {
             use windows_sys::Win32::UI::WindowsAndMessaging::{CB_GETCOUNT, CB_GETITEMHEIGHT};
             let count = send_message(handle, CB_GETCOUNT, 0, 0).clamp(1, 8) as i32;
             let item_height = send_message(handle, CB_GETITEMHEIGHT, 0, 0).max(1) as i32;
-            h + count * item_height + 8
+            geometry.size(h + 8) + count * item_height
         } else {
-            h
+            geometry.size(h)
         };
         // SAFETY: each role resolves to a live child; redraw is deferred until every control moves.
         unsafe {
             SetWindowPos(
                 handle,
                 ptr::null_mut(),
-                x + offset,
-                y,
-                w.max(1),
+                geometry.x(x),
+                geometry.y(y),
+                geometry.size(w).max(1),
                 h,
                 SWP_NOACTIVATE | SWP_NOREDRAW | SWP_NOZORDER,
             );
@@ -1573,6 +1730,129 @@ fn layout_controls(window: HWND, state: &SettingsWindow) {
                 | windows_sys::Win32::Graphics::Gdi::RDW_ALLCHILDREN
                 | windows_sys::Win32::Graphics::Gdi::RDW_NOERASE,
         );
+    }
+}
+
+fn update_scrollbars(window: HWND, client: RECT, dpi: u32) {
+    use windows_sys::Win32::UI::{
+        Controls::SetScrollInfo,
+        WindowsAndMessaging::{SB_HORZ, SB_VERT, SCROLLINFO, SIF_PAGE, SIF_RANGE},
+    };
+    for (bar, total, page) in [
+        (SB_HORZ, scale(820, dpi), client.right),
+        (SB_VERT, scale(CONTENT_HEIGHT, dpi), client.bottom),
+    ] {
+        let info = SCROLLINFO {
+            cbSize: size_of::<SCROLLINFO>() as u32,
+            fMask: SIF_RANGE | SIF_PAGE,
+            nMax: total - 1,
+            nPage: page.max(0) as u32,
+            ..Default::default()
+        };
+        // SAFETY: the window is live and info describes the selected standard scrollbar.
+        unsafe { SetScrollInfo(window, bar, &info, 1) };
+    }
+}
+
+fn scroll_settings(window: HWND, state: &SettingsWindow, bar: i32, command: i32, wheel: i32) {
+    use windows_sys::Win32::UI::{
+        Controls::SetScrollInfo,
+        WindowsAndMessaging::{
+            GetScrollInfo, SB_BOTTOM, SB_LINEDOWN, SB_LINEUP, SB_PAGEDOWN, SB_PAGEUP,
+            SB_THUMBPOSITION, SB_THUMBTRACK, SB_TOP, SCROLLINFO, SIF_ALL, SIF_POS,
+        },
+    };
+    let mut info = SCROLLINFO {
+        cbSize: size_of::<SCROLLINFO>() as u32,
+        fMask: SIF_ALL,
+        ..Default::default()
+    };
+    // SAFETY: info is writable and window is the owner of the selected scrollbar.
+    if unsafe { GetScrollInfo(window, bar, &mut info) } == 0 {
+        return;
+    }
+    let maximum = (info.nMax - info.nPage as i32 + 1).max(0);
+    let position = if wheel != 0 {
+        info.nPos - wheel * scale(72, state.dpi) / 120
+    } else {
+        match command {
+            SB_LINEDOWN => info.nPos + scale(32, state.dpi),
+            SB_LINEUP => info.nPos - scale(32, state.dpi),
+            SB_PAGEDOWN => info.nPos + info.nPage as i32,
+            SB_PAGEUP => info.nPos - info.nPage as i32,
+            SB_THUMBPOSITION | SB_THUMBTRACK => info.nTrackPos,
+            SB_TOP => 0,
+            SB_BOTTOM => maximum,
+            _ => return,
+        }
+    }
+    .clamp(0, maximum);
+    if position != info.nPos {
+        info.fMask = SIF_POS;
+        info.nPos = position;
+        // SAFETY: the window is live and info supplies the new position.
+        unsafe { SetScrollInfo(window, bar, &info, 1) };
+        layout_controls(window, state);
+    }
+}
+
+fn reveal_control(window: HWND, focused: HWND, state: &SettingsWindow) {
+    use windows_sys::Win32::{
+        Foundation::POINT,
+        Graphics::Gdi::MapWindowPoints,
+        UI::{
+            Controls::SetScrollInfo,
+            WindowsAndMessaging::{
+                GetScrollInfo, GetWindowRect, SB_HORZ, SB_VERT, SCROLLINFO, SIF_POS,
+            },
+        },
+    };
+    if !state.controls_ready || !state.controls.iter().any(|item| item.handle == focused) {
+        return;
+    }
+    let mut bounds = RECT::default();
+    let mut client = RECT::default();
+    // SAFETY: both windows are live and the local bounds hold two writable POINT-sized pairs.
+    unsafe {
+        if GetWindowRect(focused, &mut bounds) == 0 || GetClientRect(window, &mut client) == 0 {
+            return;
+        }
+        MapWindowPoints(
+            ptr::null_mut(),
+            window,
+            (&raw mut bounds).cast::<POINT>(),
+            2,
+        );
+    }
+    let pad = scale(8, state.dpi);
+    let mut changed = false;
+    for (bar, start, end, available) in [
+        (SB_HORZ, bounds.left, bounds.right, client.right),
+        (SB_VERT, bounds.top, bounds.bottom, client.bottom),
+    ] {
+        let delta = if start < pad {
+            start - pad
+        } else {
+            (end + pad - available).max(0)
+        };
+        if delta == 0 {
+            continue;
+        }
+        let mut info = SCROLLINFO {
+            cbSize: size_of::<SCROLLINFO>() as u32,
+            fMask: SIF_POS,
+            ..Default::default()
+        };
+        // SAFETY: window is the scrollbar owner and info is writable.
+        if unsafe { GetScrollInfo(window, bar, &mut info) } != 0 {
+            let old = info.nPos;
+            info.nPos = old.saturating_add(delta);
+            // SAFETY: info supplies a position, which Windows clamps to the available range.
+            changed |= unsafe { SetScrollInfo(window, bar, &info, 1) } != old;
+        }
+    }
+    if changed {
+        layout_controls(window, state);
     }
 }
 
@@ -1729,10 +2009,11 @@ fn validate_color_map(
 }
 
 fn canonical_hex_color(value: &str) -> String {
-    parse_hex_color(value).map_or_else(
-        || value.to_owned(),
-        |color| format!("#{:02X}{:02X}{:02X}", color[0], color[1], color[2]),
-    )
+    parse_hex_color(value).map_or_else(|| value.to_owned(), hex_color)
+}
+
+fn hex_color([r, g, b]: [u8; 3]) -> String {
+    format!("#{r:02X}{g:02X}{b:02X}")
 }
 
 fn update_validation(window: HWND, state: &SettingsWindow) -> bool {
@@ -1805,6 +2086,7 @@ fn refresh_controls(window: HWND, state: &SettingsWindow) {
         ControlRole::PickRed,
         ControlRole::PickYellow,
         ControlRole::PickGreen,
+        ControlRole::RestoreColors,
     ] {
         // SAFETY: each role is a live color picker button owned by the settings window.
         unsafe { EnableWindow(control(state, role), i32::from(editable)) };
@@ -1849,6 +2131,14 @@ fn set_control_text(window: HWND, text: &str) {
     }
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct PreviewStyle {
+    colors: BatteryColorMap,
+    icon: TrayIconStyle,
+    dark: bool,
+    overlay: bool,
+}
+
 fn refresh_preview_icon(state: &mut SettingsWindow) {
     let red_cutoff = get_control_text(control(state, ControlRole::RedCutoff));
     let yellow_cutoff = get_control_text(control(state, ControlRole::YellowCutoff));
@@ -1863,10 +2153,42 @@ fn refresh_preview_icon(state: &mut SettingsWindow) {
         1 => crate::state::TrayIconStyle::Percentage,
         _ => crate::state::TrayIconStyle::Battery,
     };
-    let theme = match send_message(control(state, ControlRole::IconTheme), CB_GETCURSEL, 0, 0) {
-        1 => crate::state::TrayIconTheme::Light,
-        2 => crate::state::TrayIconTheme::Dark,
-        _ => crate::state::TrayIconTheme::System,
+    let dark = match send_message(control(state, ControlRole::IconTheme), CB_GETCURSEL, 0, 0) {
+        1 => false,
+        2 => true,
+        _ => state.taskbar_dark,
+    };
+    let preview = PreviewStyle {
+        colors: color_map,
+        icon: style,
+        dark,
+        overlay: check_control(control(state, ControlRole::PercentageOverlay)),
+    };
+    if state.preview_style != Some(preview) {
+        if state
+            .preview_style
+            .is_none_or(|old| old.colors != color_map)
+        {
+            for (percentage, pixel) in state
+                .gradient_bgra
+                .as_chunks_mut::<4>()
+                .0
+                .iter_mut()
+                .enumerate()
+            {
+                let [r, g, b] = color_map.color_for(percentage as u8);
+                pixel.copy_from_slice(&[b, g, r, 255]);
+            }
+        }
+        state.preview_style = Some(preview);
+        state.preview_level = None;
+    }
+    render_preview_level(state);
+}
+
+fn render_preview_level(state: &mut SettingsWindow) {
+    let Some(preview) = state.preview_style else {
+        return;
     };
     let percentage = send_message(
         control(state, ControlRole::PreviewLevel),
@@ -1875,72 +2197,65 @@ fn refresh_preview_icon(state: &mut SettingsWindow) {
         0,
     )
     .clamp(0, 100) as u8;
-    let show_percentage = check_control(control(state, ControlRole::PercentageOverlay));
+    if state.preview_level == Some(percentage) {
+        return;
+    }
     let Ok(rgba) = crate::tray::render_settings_preview(
         percentage,
         32,
-        color_map,
-        theme,
-        style,
-        show_percentage,
+        preview.colors,
+        if preview.dark {
+            TrayIconTheme::Dark
+        } else {
+            TrayIconTheme::Light
+        },
+        preview.icon,
+        preview.overlay,
     ) else {
         return;
     };
-    let background = state.appearance.surface_rgb();
+    state.preview_level = Some(percentage);
+    let background: [u8; 3] = if preview.dark { [32; 3] } else { [243; 3] };
     let (pixels, _) = rgba.as_chunks::<4>();
-    state.preview_bgra = pixels
-        .iter()
-        .flat_map(|pixel| {
-            let alpha = u16::from(pixel[3]);
-            let inverse = 255 - alpha;
-            let red = ((u16::from(pixel[0]) * alpha + u16::from(background[0]) * inverse + 127)
-                / 255) as u8;
-            let green = ((u16::from(pixel[1]) * alpha + u16::from(background[1]) * inverse + 127)
-                / 255) as u8;
-            let blue = ((u16::from(pixel[2]) * alpha + u16::from(background[2]) * inverse + 127)
-                / 255) as u8;
-            [blue, green, red, 255]
-        })
-        .collect();
+    state.preview_bgra.clear();
+    state.preview_bgra.extend(pixels.iter().flat_map(|pixel| {
+        let alpha = u16::from(pixel[3]);
+        let inverse = 255 - alpha;
+        let red =
+            ((u16::from(pixel[0]) * alpha + u16::from(background[0]) * inverse + 127) / 255) as u8;
+        let green =
+            ((u16::from(pixel[1]) * alpha + u16::from(background[1]) * inverse + 127) / 255) as u8;
+        let blue =
+            ((u16::from(pixel[2]) * alpha + u16::from(background[2]) * inverse + 127) / 255) as u8;
+        [blue, green, red, 255]
+    }));
     set_control_text(
         control(state, ControlRole::PreviewValue),
         &format!("{percentage}%"),
     );
 }
 
-fn invalidate_preview(window: HWND) {
+fn invalidate_preview(window: HWND, dpi: u32) {
     let mut client = RECT::default();
     // SAFETY: `window` is the live settings window receiving the update.
     if unsafe { GetClientRect(window, &mut client) } == 0 {
         return;
     }
-    let width = (client.right - client.left).min(960);
-    let offset = (client.right - width) / 2;
-    let preview_x = offset + width - 124;
-    let preview = RECT {
-        left: preview_x - 8,
-        top: 590,
-        right: preview_x + 73,
-        bottom: 661,
-    };
+    let geometry = Geometry::for_client(window, dpi, client);
+    let preview_x = geometry.width - 124;
+    let preview = geometry.rect(preview_x - 8, 590, preview_x + 73, 670);
     // SAFETY: only the custom painted icon tile needs repainting; skip background erase.
     unsafe { windows_sys::Win32::Graphics::Gdi::InvalidateRect(window, &preview, 0) };
 }
 
-fn invalidate_color_map_preview(window: HWND) {
+fn invalidate_color_map_preview(window: HWND, dpi: u32) {
     let mut client = RECT::default();
     // SAFETY: `window` is the live settings window receiving the update.
     if unsafe { GetClientRect(window, &mut client) } == 0 {
         return;
     }
-    let width = (client.right - client.left).min(960);
-    let offset = (client.right - width) / 2;
-    let color_map = RECT {
-        left: offset + 48,
-        top: 560,
-        right: offset + width - 32,
-        bottom: 661,
-    };
+    let geometry = Geometry::for_client(window, dpi, client);
+    let color_map = geometry.rect(48, 560, geometry.width - 32, 670);
     // SAFETY: this covers the custom color samples and the icon tile, without erasing the page.
     unsafe { windows_sys::Win32::Graphics::Gdi::InvalidateRect(window, &color_map, 0) };
 }
@@ -1978,7 +2293,7 @@ fn open_color_picker(window: HWND, state: &mut SettingsWindow, role: ControlRole
         );
         refresh_preview_icon(state);
         let _ = update_validation(window, state);
-        invalidate_color_map_preview(window);
+        invalidate_color_map_preview(window, state.dpi);
     }
 }
 
@@ -2004,6 +2319,27 @@ fn handle_command(window: HWND, state: &mut SettingsWindow, wparam: WPARAM) -> L
             open_color_picker(window, state, ControlRole::PickGreen);
             0
         }
+        RESTORE_COLORS_ID => {
+            let colors = BatteryColorMap::default();
+            state.updating_colors = true;
+            for (role, value) in [
+                (ControlRole::RedCutoff, colors.red_max_percent.to_string()),
+                (
+                    ControlRole::YellowCutoff,
+                    colors.yellow_max_percent.to_string(),
+                ),
+                (ControlRole::RedColor, hex_color(colors.red)),
+                (ControlRole::YellowColor, hex_color(colors.yellow)),
+                (ControlRole::GreenColor, hex_color(colors.green)),
+            ] {
+                set_control_text(control(state, role), &value);
+            }
+            state.updating_colors = false;
+            refresh_preview_icon(state);
+            invalidate_color_map_preview(window, state.dpi);
+            update_validation(window, state);
+            0
+        }
         TEST_NOTIFICATION_ID if !state.testing => {
             if let Some(worker) = &state.worker {
                 if let Err(error) = worker.actions.try_send(SettingsAction::Test) {
@@ -2012,7 +2348,10 @@ fn handle_command(window: HWND, state: &mut SettingsWindow, wparam: WPARAM) -> L
                     state.testing = true;
                     // SAFETY: the Test button is a live child of the settings window.
                     unsafe { EnableWindow(control_by_id(window, TEST_NOTIFICATION_ID), 0) };
-                    set_control_text(control(state, ControlRole::Status), "Sending test notification…");
+                    set_control_text(
+                        control(state, ControlRole::Status),
+                        "Sending test notification…",
+                    );
                 }
             }
             0
@@ -2023,21 +2362,22 @@ fn handle_command(window: HWND, state: &mut SettingsWindow, wparam: WPARAM) -> L
         }
         THRESHOLDS_ID | COOLDOWN_ID | RED_CUTOFF_ID | YELLOW_CUTOFF_ID | RED_COLOR_ID
         | YELLOW_COLOR_ID | GREEN_COLOR_ID
-            if notification == windows_sys::Win32::UI::WindowsAndMessaging::EN_CHANGE as usize =>
+            if notification == windows_sys::Win32::UI::WindowsAndMessaging::EN_CHANGE as usize
+                && !state.updating_colors =>
         {
             if matches!(
                 id,
                 RED_CUTOFF_ID | YELLOW_CUTOFF_ID | RED_COLOR_ID | YELLOW_COLOR_ID | GREEN_COLOR_ID
             ) {
                 refresh_preview_icon(state);
-                invalidate_color_map_preview(window);
+                invalidate_color_map_preview(window, state.dpi);
             }
             let _ = update_validation(window, state);
             0
         }
         ICON_STYLE_ID | ICON_THEME_ID | PERCENTAGE_OVERLAY_ID => {
             refresh_preview_icon(state);
-            invalidate_preview(window);
+            invalidate_preview(window, state.dpi);
             let _ = update_validation(window, state);
             0
         }
@@ -2076,9 +2416,6 @@ fn save_settings(window: HWND, state: &mut SettingsWindow) {
     if !update_validation(window, state) {
         return;
     }
-    let Some(settings) = state.settings.as_ref() else {
-        return;
-    };
     let Some(form) = current_form(state) else {
         return;
     };
@@ -2151,14 +2488,21 @@ fn save_settings(window: HWND, state: &mut SettingsWindow) {
         tray_icon_theme: theme.to_owned(),
         show_percentage_in_battery_icon: form.percentage_overlay,
         pinned_device: state.pin_values.get(form.pinned_device).cloned().flatten(),
-        start_on_boot: settings
-            .start_on_boot
-            .map(|_| form.start_on_boot.unwrap_or(false)),
+        start_on_boot: form.start_on_boot.filter(|enabled| {
+            state
+                .original
+                .as_ref()
+                .and_then(|original| original.start_on_boot)
+                != Some(*enabled)
+        }),
     };
     let Some(worker) = &state.worker else {
         return;
     };
-    match worker.actions.try_send(SettingsAction::Save(update)) {
+    match worker
+        .actions
+        .try_send(SettingsAction::Save(Box::new(update)))
+    {
         Ok(()) => {
             state.saving = Some(form);
             update_validation(window, state);
@@ -2180,14 +2524,34 @@ fn apply_worker_reply(window: HWND, state: &mut SettingsWindow, reply: SettingsR
             set_control_text(window, WINDOW_TITLE);
             match result {
                 Ok(()) => {
+                    state.controls_ready = true;
+                    let startup_error = state
+                        .settings
+                        .as_ref()
+                        .is_some_and(|s| s.startup_error.is_some());
+                    for child in &state.controls {
+                        let show = match child.role {
+                            ControlRole::StartupError => startup_error,
+                            ControlRole::StartupDescription => !startup_error,
+                            _ => true,
+                        };
+                        if show {
+                            // SAFETY: the child is live and its parent remains active.
+                            unsafe { ShowWindow(child.handle, SW_SHOWNA) };
+                        }
+                    }
+                    layout_controls(window, state);
                     refresh_appearance(window, state);
+                    refresh_preview_icon(state);
                     state.appearance.apply_native_theme(window, state);
                 }
                 Err(error) => {
                     let message = win32::to_wide(&format!("Could not load Settings. {error}"));
                     let title = win32::to_wide(WINDOW_TITLE);
                     // SAFETY: both strings are terminated and the owner HWND is live.
-                    unsafe { MessageBoxW(window, message.as_ptr(), title.as_ptr(), MB_ICONWARNING) };
+                    unsafe {
+                        MessageBoxW(window, message.as_ptr(), title.as_ptr(), MB_ICONWARNING)
+                    };
                     destroy_window(window);
                 }
             }
@@ -2270,7 +2634,8 @@ unsafe extern "system" fn window_proc(
                 >(lparam as usize)
             };
             if item.CtlType == windows_sys::Win32::UI::Controls::ODT_COMBOBOX {
-                item.itemHeight = 24;
+                // SAFETY: the combo's parent is a live HWND.
+                item.itemHeight = scale(24, unsafe { GetDpiForWindow(window) }.max(96)) as u32;
                 return 1;
             }
             win32::default_window_proc(window, message, wparam, lparam)
@@ -2335,32 +2700,77 @@ unsafe extern "system" fn window_proc(
             if !state.is_null() {
                 // SAFETY: the attached state lives through the message loop.
                 let state = unsafe { &mut *state };
-                if state.create_complete {
+                if state.controls_ready {
+                    state.taskbar_dark = crate::tray::system_taskbar_is_dark();
                     refresh_appearance(window, state);
                     refresh_preview_icon(state);
-                    invalidate_preview(window);
+                    invalidate_preview(window, state.dpi);
                 }
             }
             0
         }
         WM_COMMAND => {
             let state = win32::window_state::<SettingsWindow>(window);
-            if state.is_null() {
+            // SAFETY: a non-null state pointer belongs to this live window.
+            if state.is_null() || !unsafe { (*state).controls_ready } {
                 0
             } else {
                 // SAFETY: the attached Box remains alive until the message loop exits.
                 handle_command(window, unsafe { &mut *state }, wparam)
             }
         }
-        WM_HSCROLL => {
+        WM_HSCROLL if lparam != 0 => {
             let state = win32::window_state::<SettingsWindow>(window);
             if !state.is_null() {
                 // SAFETY: the state and trackbar control are live for this parent notification.
                 let state = unsafe { &mut *state };
                 if lparam as usize == control(state, ControlRole::PreviewLevel).expose_provenance()
                 {
-                    refresh_preview_icon(state);
-                    invalidate_preview(window);
+                    render_preview_level(state);
+                    invalidate_preview(window, state.dpi);
+                }
+            }
+            0
+        }
+        WM_HSCROLL | WM_VSCROLL | WM_MOUSEWHEEL | WM_MOUSEHWHEEL => {
+            use windows_sys::Win32::UI::WindowsAndMessaging::{SB_HORZ, SB_VERT};
+            let state = win32::window_state::<SettingsWindow>(window);
+            if !state.is_null() {
+                // SAFETY: the attached state lives through the message loop.
+                let state = unsafe { &*state };
+                if state.controls_ready {
+                    let bar = if matches!(message, WM_HSCROLL | WM_MOUSEHWHEEL) {
+                        SB_HORZ
+                    } else {
+                        SB_VERT
+                    };
+                    let delta = i32::from((wparam >> 16) as i16);
+                    let wheel = match message {
+                        WM_MOUSEWHEEL => delta,
+                        WM_MOUSEHWHEEL => -delta,
+                        _ => 0,
+                    };
+                    scroll_settings(window, state, bar, (wparam & 0xffff) as i32, wheel);
+                }
+            }
+            0
+        }
+        WM_DPICHANGED if lparam != 0 => {
+            let state = win32::window_state::<SettingsWindow>(window);
+            if !state.is_null() {
+                // SAFETY: the attached state is live and Windows supplies a suggested RECT.
+                unsafe {
+                    refresh_fonts(&mut *state, (wparam & 0xffff) as u32);
+                    let bounds = *ptr::with_exposed_provenance::<RECT>(lparam as usize);
+                    SetWindowPos(
+                        window,
+                        ptr::null_mut(),
+                        bounds.left,
+                        bounds.top,
+                        bounds.right - bounds.left,
+                        bounds.bottom - bounds.top,
+                        SWP_NOACTIVATE | SWP_NOZORDER,
+                    );
                 }
             }
             0
@@ -2368,7 +2778,7 @@ unsafe extern "system" fn window_proc(
         WM_SIZE => {
             let state = win32::window_state::<SettingsWindow>(window);
             // SAFETY: a non-null state pointer remains attached for the lifetime of this window.
-            let created = !state.is_null() && unsafe { (*state).create_complete };
+            let created = !state.is_null() && unsafe { (*state).controls_ready };
             if created {
                 // SAFETY: the attached Box remains alive until the message loop exits.
                 layout_controls(window, unsafe { &*state });
@@ -2391,7 +2801,11 @@ unsafe extern "system" fn window_proc(
             if !state.is_null() {
                 // SAFETY: the attached Box remains alive until the message loop exits.
                 let state = unsafe { &mut *state };
-                if let Some(reply) = state.worker.as_ref().and_then(|worker| worker.replies.try_recv().ok()) {
+                if let Some(reply) = state
+                    .worker
+                    .as_ref()
+                    .and_then(|worker| worker.replies.try_recv().ok())
+                {
                     apply_worker_reply(window, state, reply);
                 }
             }
@@ -2407,8 +2821,10 @@ unsafe extern "system" fn window_proc(
                 let info = unsafe {
                     &mut *ptr::with_exposed_provenance_mut::<MINMAXINFO>(lparam.cast_unsigned())
                 };
-                info.ptMinTrackSize.x = MIN_WINDOW_WIDTH;
-                info.ptMinTrackSize.y = MIN_WINDOW_HEIGHT;
+                // SAFETY: the incoming HWND is live, including during its creation.
+                let dpi = unsafe { GetDpiForWindow(window) }.max(96);
+                info.ptMinTrackSize.x = scale(MIN_WINDOW_WIDTH.min(520), dpi);
+                info.ptMinTrackSize.y = scale(MIN_WINDOW_HEIGHT, dpi);
             }
             0
         }
@@ -2444,8 +2860,21 @@ struct EventHandle(windows_sys::Win32::Foundation::HANDLE);
 
 // SAFETY: named synchronization handles may be waited on from a worker thread.
 unsafe impl Send for EventHandle {}
+// SAFETY: the event is accessed only through thread-safe Win32 signaling and waiting APIs.
+unsafe impl Sync for EventHandle {}
 
 impl EventHandle {
+    fn stop_event() -> io::Result<Self> {
+        use windows_sys::Win32::System::Threading::CreateEventW;
+        // SAFETY: creates an unnamed event with default security attributes.
+        let handle = unsafe { CreateEventW(ptr::null(), 1, 0, ptr::null()) };
+        if handle.is_null() {
+            Err(io::Error::last_os_error())
+        } else {
+            Ok(Self(handle))
+        }
+    }
+
     fn open(name: &str) -> io::Result<Self> {
         use windows_sys::Win32::System::Threading::{OpenEventW, SYNCHRONIZATION_SYNCHRONIZE};
 
@@ -2479,39 +2908,38 @@ unsafe impl Send for SendableWindow {}
 
 impl SendableWindow {
     fn post_message(&self, message: u32) -> bool {
-        // SAFETY: the owner keeps the Settings HWND alive until this event listener has stopped.
+        // SAFETY: PostMessageW accepts HWNDs from other threads and this message carries no pointers.
         unsafe { PostMessageW(self.0, message, 0, 0) != 0 }
     }
 }
 
 struct SettingsEventListener {
-    stopped: Arc<AtomicBool>,
-    worker: Option<JoinHandle<()>>,
+    stop: Arc<EventHandle>,
 }
 
 impl SettingsEventListener {
     fn start(window: HWND) -> io::Result<Self> {
-        use windows_sys::Win32::System::Threading::WaitForMultipleObjects;
+        use windows_sys::Win32::System::Threading::{WaitForMultipleObjects, INFINITE};
 
         let events = [
             EventHandle::open(crate::DASHBOARD_SETTINGS_ACTIVATION_EVENT)?,
             EventHandle::open(crate::DASHBOARD_SETTINGS_SHUTDOWN_EVENT)?,
         ];
         let window = SendableWindow(window);
-        let stopped = Arc::new(AtomicBool::new(false));
-        let worker_stopped = Arc::clone(&stopped);
-        let worker = thread::Builder::new()
+        let stop = Arc::new(EventHandle::stop_event()?);
+        let worker_stop = Arc::clone(&stop);
+        thread::Builder::new()
             .name("volty-settings-events".to_owned())
             .spawn(move || {
-                let handles = [events[0].0, events[1].0];
-                while !worker_stopped.load(Ordering::Acquire) {
-                    // SAFETY: both event handles are valid and remain owned for the worker lifetime.
+                let handles = [worker_stop.0, events[0].0, events[1].0];
+                loop {
+                    // SAFETY: all event handles remain owned for the worker lifetime.
                     let result = unsafe {
-                        WaitForMultipleObjects(handles.len() as u32, handles.as_ptr(), 0, 250)
+                        WaitForMultipleObjects(handles.len() as u32, handles.as_ptr(), 0, INFINITE)
                     };
                     match result {
-                        WAIT_OBJECT_0 => {
-                            // SAFETY: window remains live until this listener is stopped during teardown.
+                        WAIT_OBJECT_0 => break,
+                        value if value == WAIT_OBJECT_0 + 1 => {
                             if !window.post_message(SETTINGS_ACTIVATE_MESSAGE) {
                                 eprintln!(
                                     "Volty could not activate the Settings window: {}",
@@ -2519,12 +2947,10 @@ impl SettingsEventListener {
                                 );
                             }
                         }
-                        value if value == WAIT_OBJECT_0 + 1 => {
-                            // SAFETY: window remains live until its listener is stopped.
+                        value if value == WAIT_OBJECT_0 + 2 => {
                             let _ = window.post_message(SETTINGS_SHUTDOWN_MESSAGE);
                             break;
                         }
-                        WAIT_TIMEOUT => {}
                         WAIT_FAILED => {
                             eprintln!(
                                 "Volty could not wait for Settings events: {}",
@@ -2539,25 +2965,14 @@ impl SettingsEventListener {
                     }
                 }
             })?;
-        Ok(Self {
-            stopped,
-            worker: Some(worker),
-        })
-    }
-
-    fn stop(&mut self) {
-        self.stopped.store(true, Ordering::Release);
-        if let Some(worker) = self.worker.take() {
-            if worker.join().is_err() {
-                eprintln!("The Settings event listener panicked");
-            }
-        }
+        Ok(Self { stop })
     }
 }
 
 impl Drop for SettingsEventListener {
     fn drop(&mut self) {
-        self.stop();
+        // SAFETY: the listener and the window both hold the stop event while it is in use.
+        unsafe { windows_sys::Win32::System::Threading::SetEvent(self.stop.0) };
     }
 }
 
