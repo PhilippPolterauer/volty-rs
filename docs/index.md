@@ -60,3 +60,7 @@ Get the executable from the
 [latest GitHub release](https://github.com/PhilippPolterauer/volty-rs/releases/latest).
 For project changes, see the
 [changelog](https://github.com/PhilippPolterauer/volty-rs/blob/main/CHANGELOG.md).
+
+## AI usage disclosure
+
+AI tools have been used to help write code and documentation for Volty.

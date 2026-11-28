@@ -67,3 +67,7 @@ The executable is at `target\release\volty.exe`. The
 reports. See the [changelog](CHANGELOG.md) for release notes.
 
 Volty is an independent open source project under the [MIT license](LICENSE).
+
+## AI usage disclosure
+
+AI tools have been used to help write code and documentation for Volty.
